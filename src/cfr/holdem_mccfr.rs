@@ -30,7 +30,9 @@ impl HoldemMCCFRSolver {
             return Arc::clone(&node);
         }
         let node = Arc::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
-        self.nodes.entry(key.to_string()).or_insert_with(|| Arc::clone(&node));
+        self.nodes
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::clone(&node));
         Arc::clone(&self.nodes.get(key).unwrap())
     }
 
@@ -64,31 +66,35 @@ impl HoldemMCCFRSolver {
 
             batch.into_par_iter().for_each(|iter_idx| {
                 let thread_entropy = entropy_ref.fetch_add(1, AtomicOrdering::Relaxed);
-                let seed = iter_idx
-                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                    ^ thread_entropy;
+                let seed = iter_idx.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread_entropy;
                 let mut rng = SmallRng::seed_from_u64(seed);
                 let updating_player = (iter_idx % 2) as usize;
                 let game = TexasHoldemGame::new_random(&mut rng);
-                let solver_ref = HoldemMCCFRSolver { nodes: Arc::clone(&nodes_ref) };
+                let solver_ref = HoldemMCCFRSolver {
+                    nodes: Arc::clone(&nodes_ref),
+                };
                 solver_ref.traverse(&game, updating_player, iter_idx as f64, &mut rng);
             });
 
             done = batch_end;
 
             if log_every > 0 {
-                let elapsed     = train_start.elapsed().as_secs_f64();
-                let batch_secs  = batch_start.elapsed().as_secs_f64().max(1e-9);
-                let iter_per_s  = chunk_size as f64 / batch_secs;
-                let remaining   = iterations - done;
-                let eta_secs    = remaining as f64 / iter_per_s;
-                let pct         = done as f64 / iterations as f64 * 100.0;
+                let elapsed = train_start.elapsed().as_secs_f64();
+                let batch_secs = batch_start.elapsed().as_secs_f64().max(1e-9);
+                let iter_per_s = chunk_size as f64 / batch_secs;
+                let remaining = iterations - done;
+                let eta_secs = remaining as f64 / iter_per_s;
+                let pct = done as f64 / iterations as f64 * 100.0;
 
                 let fmt_secs = |s: f64| -> String {
                     let s = s as u64;
-                    if s < 60 { format!("{s}s") }
-                    else if s < 3600 { format!("{}m{:02}s", s/60, s%60) }
-                    else { format!("{}h{:02}m", s/3600, (s%3600)/60) }
+                    if s < 60 {
+                        format!("{s}s")
+                    } else if s < 3600 {
+                        format!("{}m{:02}s", s / 60, s % 60)
+                    } else {
+                        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+                    }
                 };
 
                 eprintln!(
@@ -120,15 +126,20 @@ impl HoldemMCCFRSolver {
         let curr_player = game.current_player();
         let actions = game.legal_actions();
         let n = actions.len();
-        if n == 0 { return 0.0; }
+        if n == 0 {
+            return 0.0;
+        }
 
-        let key = get_holdem_infoset_key(&game.hole[curr_player], &game.board, game.round, &game.history);
+        let key = get_holdem_infoset_key(
+            &game.hole[curr_player],
+            &game.board,
+            game.round,
+            &game.history,
+        );
         let node = self.get_node(&key);
         let strategy = node.get_strategy();
 
-        let legal_probs: Vec<f64> = actions.iter()
-            .map(|&a| strategy[a as usize])
-            .collect();
+        let legal_probs: Vec<f64> = actions.iter().map(|&a| strategy[a as usize]).collect();
         let prob_sum: f64 = legal_probs.iter().sum();
         let legal_probs: Vec<f64> = if prob_sum > 0.0 {
             legal_probs.iter().map(|p| p / prob_sum).collect()
@@ -169,7 +180,8 @@ impl HoldemMCCFRSolver {
     }
 
     pub fn export_strategy(&self) -> std::collections::HashMap<String, Vec<f64>> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .map(|entry| {
                 let key = entry.key().clone();
                 let avg = entry.value().get_average_strategy();

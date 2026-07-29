@@ -50,5 +50,9 @@ fn main() {
 
     let json = serde_json::to_string_pretty(&strategy).expect("Failed to serialize strategy");
     std::fs::write(&args.save_path, json).expect("Failed to save strategy JSON");
-    println!("Strategy saved to {} ({} infosets)", args.save_path, strategy.len());
+    println!(
+        "Strategy saved to {} ({} infosets)",
+        args.save_path,
+        strategy.len()
+    );
 }

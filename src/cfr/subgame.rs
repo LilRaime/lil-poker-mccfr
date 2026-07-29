@@ -72,7 +72,13 @@ impl SubgameSolver {
             };
 
             let updating_player = (iter_idx % 2) as usize;
-            self.cfr(&game, updating_player, iter_idx as f64, &mut nodes, &mut rng);
+            self.cfr(
+                &game,
+                updating_player,
+                iter_idx as f64,
+                &mut nodes,
+                &mut rng,
+            );
         }
 
         /* Extract average strategy for root infoset */
@@ -102,15 +108,12 @@ impl SubgameSolver {
             return game.get_returns()[updating_player];
         }
 
-        let key = get_holdem_infoset_key(
-            &game.hole[cur_p],
-            &game.board,
-            game.round,
-            &game.history,
-        );
+        let key = get_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history);
 
         let strategy = {
-            let node = nodes.entry(key.clone()).or_insert_with(|| InfosetNode::new(4));
+            let node = nodes
+                .entry(key.clone())
+                .or_insert_with(|| InfosetNode::new(4));
             node.get_strategy()
         };
 

@@ -26,7 +26,9 @@ impl MCCFRSolver {
             return Arc::clone(&node);
         }
         let node = Arc::new(InfosetNode::new(NUM_ACTIONS));
-        self.nodes.entry(key.to_string()).or_insert_with(|| Arc::clone(&node));
+        self.nodes
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::clone(&node));
         Arc::clone(&self.nodes.get(key).unwrap())
     }
 
@@ -37,10 +39,10 @@ impl MCCFRSolver {
             .build_global()
             .unwrap_or(());
 
-        let nodes      = Arc::clone(&self.nodes);
+        let nodes = Arc::clone(&self.nodes);
         let chunk_size = if log_every > 0 { log_every } else { iterations };
-        let width      = iterations.to_string().len();
-        let mut done   = 0u64;
+        let width = iterations.to_string().len();
+        let mut done = 0u64;
 
         let entropy_base = Arc::new(AtomicU64::new(
             std::time::SystemTime::now()
@@ -50,20 +52,20 @@ impl MCCFRSolver {
         ));
 
         while done < iterations {
-            let batch_end  = (done + chunk_size).min(iterations);
-            let batch      = done..batch_end;
-            let nodes_ref  = Arc::clone(&nodes);
+            let batch_end = (done + chunk_size).min(iterations);
+            let batch = done..batch_end;
+            let nodes_ref = Arc::clone(&nodes);
             let entropy_ref = Arc::clone(&entropy_base);
 
             batch.into_par_iter().for_each(|iter_idx| {
                 let thread_entropy = entropy_ref.fetch_add(1, AtomicOrdering::Relaxed);
-                let seed = iter_idx
-                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                    ^ thread_entropy;
+                let seed = iter_idx.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread_entropy;
                 let mut rng = SmallRng::seed_from_u64(seed);
                 let updating_player = (iter_idx % 2) as usize;
                 let game = LeducGame::new_random(&mut rng);
-                let solver_ref = MCCFRSolver { nodes: Arc::clone(&nodes_ref) };
+                let solver_ref = MCCFRSolver {
+                    nodes: Arc::clone(&nodes_ref),
+                };
                 solver_ref.traverse(&game, updating_player, iter_idx as f64, &mut rng);
             });
 
@@ -72,7 +74,9 @@ impl MCCFRSolver {
             if log_every > 0 {
                 eprint!(
                     "\r  [{:>width$}/{}] nodes={}",
-                    done, iterations, nodes.len(),
+                    done,
+                    iterations,
+                    nodes.len(),
                     width = width,
                 );
             }
@@ -83,27 +87,27 @@ impl MCCFRSolver {
 
     fn traverse(
         &self,
-        game:             &LeducGame,
-        updating_player:  usize,
-        iter_idx:         f64,
-        rng:              &mut SmallRng,
+        game: &LeducGame,
+        updating_player: usize,
+        iter_idx: f64,
+        rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
             return game.get_returns()[updating_player];
         }
 
         let curr_player = game.current_player();
-        let actions     = game.legal_actions();
-        let n           = actions.len();
-        if n == 0 { return 0.0; }
+        let actions = game.legal_actions();
+        let n = actions.len();
+        if n == 0 {
+            return 0.0;
+        }
 
-        let key  = game.infoset_key(curr_player);
+        let key = game.infoset_key(curr_player);
         let node = self.get_node(&key);
         let strategy = node.get_strategy();
 
-        let legal_probs: Vec<f64> = actions.iter()
-            .map(|&a| strategy[a as usize])
-            .collect();
+        let legal_probs: Vec<f64> = actions.iter().map(|&a| strategy[a as usize]).collect();
         let prob_sum: f64 = legal_probs.iter().sum();
         let legal_probs: Vec<f64> = if prob_sum > 0.0 {
             legal_probs.iter().map(|p| p / prob_sum).collect()
@@ -113,12 +117,12 @@ impl MCCFRSolver {
 
         if curr_player == updating_player {
             let mut action_utils = vec![0.0f64; n];
-            let mut node_util    = 0.0f64;
+            let mut node_util = 0.0f64;
 
             for (idx, &act) in actions.iter().enumerate() {
                 let child = game.apply_action(act);
                 action_utils[idx] = self.traverse(&child, updating_player, iter_idx, rng);
-                node_util        += legal_probs[idx] * action_utils[idx];
+                node_util += legal_probs[idx] * action_utils[idx];
             }
 
             let mut regrets = vec![0.0f64; NUM_ACTIONS];
@@ -145,7 +149,8 @@ impl MCCFRSolver {
 
     /* Collect average strategies as a map from infoset key → probabilities */
     pub fn export_strategy(&self) -> std::collections::HashMap<String, Vec<f64>> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .map(|entry| {
                 let key = entry.key().clone();
                 let avg = entry.value().get_average_strategy();

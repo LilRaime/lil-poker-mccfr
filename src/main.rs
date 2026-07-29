@@ -1,10 +1,9 @@
-mod game;
 mod cfr;
+mod game;
 
+use cfr::mccfr::MCCFRSolver;
 use clap::Parser;
 use std::fs;
-use cfr::mccfr::MCCFRSolver;
-
 
 /* Parallel MCCFR (CFR+) Poker Solver — Leduc Hold'em */
 #[derive(Parser, Debug)]
@@ -54,8 +53,7 @@ fn main() {
 
     println!(
         "Training complete! {} nodes visited in {:.2?}",
-        node_count,
-        elapsed
+        node_count, elapsed
     );
 
     /* Export strategy to JSON */
@@ -76,5 +74,8 @@ fn main() {
     }
 
     fs::write(&args.save_path, &json).expect("Failed to write strategy file");
-    println!("Strategy saved to {} ({} infosets)", args.save_path, node_count);
+    println!(
+        "Strategy saved to {} ({} infosets)",
+        args.save_path, node_count
+    );
 }

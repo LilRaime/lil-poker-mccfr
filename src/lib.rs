@@ -1,2 +1,2 @@
-pub mod game;
 pub mod cfr;
+pub mod game;

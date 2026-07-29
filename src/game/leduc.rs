@@ -5,8 +5,8 @@
 use crate::game::card::{Card, ALL_CARDS};
 use rand::seq::SliceRandom;
 
-pub const FOLD: u8  = 0;
-pub const CALL: u8  = 1;
+pub const FOLD: u8 = 0;
+pub const CALL: u8 = 1;
 pub const RAISE: u8 = 2;
 
 pub const NUM_ACTIONS: usize = 3;
@@ -14,10 +14,10 @@ pub const NUM_ACTIONS: usize = 3;
 /* Compact round-history string used as part of the infoset key. */
 fn action_char(a: u8) -> char {
     match a {
-        FOLD  => 'f',
-        CALL  => 'c',
+        FOLD => 'f',
+        CALL => 'c',
         RAISE => 'r',
-        _     => '?',
+        _ => '?',
     }
 }
 
@@ -46,16 +46,16 @@ impl LeducGame {
     /* Create a game with a specific card deal (for exploitability enumeration). */
     pub fn new_with_cards(hole0: Card, hole1: Card, board: Card) -> Self {
         LeducGame {
-            hole:               [hole0, hole1],
-            board_card:         board,
-            board:              None,
-            current_player:     0,
-            round:              1,
-            raises_this_round:  0,
-            contributions:      [1, 1],
-            history:            [Vec::new(), Vec::new()],
-            terminal:           false,
-            returns:            [0.0, 0.0],
+            hole: [hole0, hole1],
+            board_card: board,
+            board: None,
+            current_player: 0,
+            round: 1,
+            raises_this_round: 0,
+            contributions: [1, 1],
+            history: [Vec::new(), Vec::new()],
+            terminal: false,
+            returns: [0.0, 0.0],
         }
     }
 
@@ -77,8 +77,8 @@ impl LeducGame {
             return vec![];
         }
         let round_idx = (self.round - 1) as usize;
-        let history   = &self.history[round_idx];
-        let last      = history.last().copied();
+        let history = &self.history[round_idx];
+        let last = history.last().copied();
 
         match last {
             Some(RAISE) => {
@@ -97,7 +97,7 @@ impl LeducGame {
         let card = self.hole[player].name();
         let board = match self.board {
             Some(c) => c.name().to_string(),
-            None    => String::from("_"),
+            None => String::from("_"),
         };
         let h1: String = self.history[0].iter().map(|&a| action_char(a)).collect();
         let h2: String = self.history[1].iter().map(|&a| action_char(a)).collect();
@@ -114,14 +114,16 @@ impl LeducGame {
             FOLD => {
                 let pot = next.contributions[0] + next.contributions[1];
                 let winner = 1 - next.current_player;
-                next.returns[winner]         =  (pot - next.contributions[winner]) as f64;
-                next.returns[next.current_player] = -(next.contributions[next.current_player]) as f64;
+                next.returns[winner] = (pot - next.contributions[winner]) as f64;
+                next.returns[next.current_player] =
+                    -(next.contributions[next.current_player]) as f64;
                 next.terminal = true;
             }
 
             CALL => {
                 let opp = 1 - next.current_player;
-                let diff = (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 next.contributions[next.current_player] += diff;
 
                 next = next.advance_round_if_done();
@@ -130,7 +132,8 @@ impl LeducGame {
             RAISE => {
                 let bet = if next.round == 1 { 2 } else { 4 };
                 let opp = 1 - next.current_player;
-                let diff = (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 next.contributions[next.current_player] += diff + bet;
                 next.raises_this_round += 1;
                 next.current_player = 1 - next.current_player;
@@ -152,8 +155,8 @@ impl LeducGame {
             if n < 2 {
                 false
             } else {
-                let last  = history[n - 1];
-                let prev  = history[n - 2];
+                let last = history[n - 1];
+                let prev = history[n - 2];
                 (last == CALL && prev == CALL) || (last == CALL && prev == RAISE)
             }
         };
@@ -186,20 +189,24 @@ impl LeducGame {
         let pair1 = rank1 == board_rank;
 
         let winner: Option<usize> = match (pair0, pair1) {
-            (true,  false) => Some(0),
-            (false, true)  => Some(1),
-            (true,  true)  => None,
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            (true, true) => None,
             (false, false) => {
-                if (rank0 as u8) > (rank1 as u8) { Some(0) }
-                else if (rank1 as u8) > (rank0 as u8) { Some(1) }
-                else { None }
+                if (rank0 as u8) > (rank1 as u8) {
+                    Some(0)
+                } else if (rank1 as u8) > (rank0 as u8) {
+                    Some(1)
+                } else {
+                    None
+                }
             }
         };
 
         match winner {
             Some(w) => {
                 let loser = 1 - w;
-                self.returns[w]     =  (pot - self.contributions[w]) as f64;
+                self.returns[w] = (pot - self.contributions[w]) as f64;
                 self.returns[loser] = -(self.contributions[loser]) as f64;
             }
             None => {

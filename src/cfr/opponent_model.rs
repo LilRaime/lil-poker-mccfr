@@ -25,11 +25,15 @@ impl OpponentTracker {
             0 => self.fold_count += 1,
             1 => {
                 self.call_count += 1;
-                if is_preflop { self.vpip_hands += 1; }
+                if is_preflop {
+                    self.vpip_hands += 1;
+                }
             }
             2 | 3 => {
                 self.raise_count += 1;
-                if is_preflop { self.vpip_hands += 1; }
+                if is_preflop {
+                    self.vpip_hands += 1;
+                }
             }
             _ => {}
         }
@@ -45,17 +49,29 @@ impl OpponentTracker {
 
     pub fn fold_ratio(&self) -> f64 {
         let tot = self.total_actions();
-        if tot == 0 { 0.33 } else { self.fold_count as f64 / tot as f64 }
+        if tot == 0 {
+            0.33
+        } else {
+            self.fold_count as f64 / tot as f64
+        }
     }
 
     pub fn call_ratio(&self) -> f64 {
         let tot = self.total_actions();
-        if tot == 0 { 0.33 } else { self.call_count as f64 / tot as f64 }
+        if tot == 0 {
+            0.33
+        } else {
+            self.call_count as f64 / tot as f64
+        }
     }
 
     pub fn raise_ratio(&self) -> f64 {
         let tot = self.total_actions();
-        if tot == 0 { 0.33 } else { self.raise_count as f64 / tot as f64 }
+        if tot == 0 {
+            0.33
+        } else {
+            self.raise_count as f64 / tot as f64
+        }
     }
 
     /* Blends Blueprint action probabilities with an exploitative adjustment. */

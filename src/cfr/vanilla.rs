@@ -3,9 +3,9 @@
  * Computes exact counterfactual regrets without sampling.
  */
 
-use std::collections::HashMap;
-use crate::game::leduc::{LeducGame, NUM_ACTIONS};
 use crate::game::card::ALL_CARDS;
+use crate::game::leduc::{LeducGame, NUM_ACTIONS};
+use std::collections::HashMap;
 
 pub struct VanillaCFRNode {
     pub regret_sum: Vec<f64>,
@@ -64,9 +64,13 @@ impl VanillaCFRSolver {
             /* Traverse all 120 card deals */
             for i in 0..n {
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     for k in 0..n {
-                        if k == i || k == j { continue; }
+                        if k == i || k == j {
+                            continue;
+                        }
                         let game = LeducGame::new_with_cards(cards[i], cards[j], cards[k]);
                         self.cfr(&game, [1.0, 1.0], weight);
                     }
@@ -86,7 +90,10 @@ impl VanillaCFRSolver {
         let actions = game.legal_actions();
         let key = game.infoset_key(cp);
 
-        let node = self.nodes.entry(key.clone()).or_insert_with(VanillaCFRNode::new);
+        let node = self
+            .nodes
+            .entry(key.clone())
+            .or_insert_with(VanillaCFRNode::new);
         let strategy = node.get_strategy(reach[cp]);
 
         let legal_probs: Vec<f64> = actions.iter().map(|&a| strategy[a as usize]).collect();
@@ -136,7 +143,8 @@ impl VanillaCFRSolver {
     }
 
     pub fn export_strategy(&self) -> HashMap<String, Vec<f64>> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .map(|(k, v)| (k.clone(), v.get_average_strategy()))
             .collect()
     }

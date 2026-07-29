@@ -7,8 +7,10 @@
 use clap::Parser;
 use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
 use lil_poker_mccfr::game::card::Card;
-use lil_poker_mccfr::game::leduc::{LeducGame, FOLD, CALL, RAISE};
-use lil_poker_mccfr::game::holdem::{TexasHoldemGame, FOLD as H_FOLD, CALL_CHECK, RAISE_MIN, RAISE_HALF_POT};
+use lil_poker_mccfr::game::holdem::{
+    TexasHoldemGame, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN,
+};
+use lil_poker_mccfr::game::leduc::{LeducGame, CALL, FOLD, RAISE};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde_json::Value;
@@ -63,7 +65,12 @@ fn main() {
         } else {
             args.strategy.clone()
         };
-        run_holdem_episodes_log_mode(&holdem_strategy_path, args.hands, args.delay, args.subgame_search);
+        run_holdem_episodes_log_mode(
+            &holdem_strategy_path,
+            args.hands,
+            args.delay,
+            args.subgame_search,
+        );
         return;
     }
 
@@ -77,14 +84,22 @@ fn main() {
             println!("============================================================");
             println!("        ♠️  lil-poker-mccfr: Leduc Poker Game CLI  ♥️        ");
             println!("============================================================");
-            println!("Loaded Strategy: {} infosets from {}", strategy.len(), args.strategy);
+            println!(
+                "Loaded Strategy: {} infosets from {}",
+                strategy.len(),
+                args.strategy
+            );
             run_watch_mode(&strategy, args.hands, args.delay);
         }
         _ => {
             println!("============================================================");
             println!("        ♠️  lil-poker-mccfr: Leduc Poker Game CLI  ♥️        ");
             println!("============================================================");
-            println!("Loaded Strategy: {} infosets from {}", strategy.len(), args.strategy);
+            println!(
+                "Loaded Strategy: {} infosets from {}",
+                strategy.len(),
+                args.strategy
+            );
             run_human_mode(&strategy, args.hands);
         }
     }
@@ -118,12 +133,8 @@ fn sample_holdem_action(
     let n = legal.len();
 
     if let Some(strat) = strategy {
-        let key = get_holdem_infoset_key(
-            &game.hole[player],
-            &game.board,
-            game.round,
-            &game.history,
-        );
+        let key =
+            get_holdem_infoset_key(&game.hole[player], &game.board, game.round, &game.history);
         if let Some(s) = strat.get(&key) {
             let raw: Vec<f64> = legal.iter().map(|&a| s[a as usize].max(0.0)).collect();
             let sum: f64 = raw.iter().sum();
@@ -201,14 +212,24 @@ fn run_holdem_episodes_log_mode(
 
                 let board_str = format!(
                     "[{}]",
-                    game.board.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ")
+                    game.board
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
 
                 let legal = game.legal_actions();
 
                 /* 1. Get raw Blueprint/Subgame probabilities */
                 let raw_probs = if enable_subgame_search && game.round >= 3 {
-                    subgame_solver.solve(&game.hole[my_player], &game.board, game.round, &game.history, my_player)
+                    subgame_solver.solve(
+                        &game.hole[my_player],
+                        &game.board,
+                        game.round,
+                        &game.history,
+                        my_player,
+                    )
                 } else if let Some(ref strat) = strategy {
                     let key = get_holdem_infoset_key(
                         &game.hole[my_player],
@@ -230,7 +251,10 @@ fn run_holdem_episodes_log_mode(
 
                 /* 3. Sample action */
                 let act = {
-                    let legal_probs: Vec<f64> = legal.iter().map(|&a| adjusted_probs[a as usize].max(0.0)).collect();
+                    let legal_probs: Vec<f64> = legal
+                        .iter()
+                        .map(|&a| adjusted_probs[a as usize].max(0.0))
+                        .collect();
                     let sum: f64 = legal_probs.iter().sum();
                     if sum > 1e-12 {
                         let probs: Vec<f64> = legal_probs.iter().map(|p| p / sum).collect();
@@ -251,11 +275,11 @@ fn run_holdem_episodes_log_mode(
                 };
 
                 let act_name = match act {
-                    H_FOLD         => "FOLD",
-                    CALL_CHECK     => "CALL_CHECK",
-                    RAISE_MIN      => "RAISE_MIN",
+                    H_FOLD => "FOLD",
+                    CALL_CHECK => "CALL_CHECK",
+                    RAISE_MIN => "RAISE_MIN",
                     RAISE_HALF_POT => "RAISE_HALF_POT",
-                    _              => "UNKNOWN",
+                    _ => "UNKNOWN",
                 };
 
                 game = game.apply_action(act);
@@ -285,7 +309,9 @@ fn run_holdem_episodes_log_mode(
             } else {
                 /* Opponent turn */
                 let legal = game.legal_actions();
-                if legal.is_empty() { break; }
+                if legal.is_empty() {
+                    break;
+                }
                 let act = legal[rng.gen_range(0..legal.len())];
                 /* Record opponent action for opponent modeling tracker */
                 opp_tracker.record_action(act, game.round == 1);
@@ -300,7 +326,11 @@ fn run_holdem_episodes_log_mode(
             step_count += 1;
             let board_str = format!(
                 "[{}]",
-                game.board.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ")
+                game.board
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             let pot = 0;
             let my_chips = (initial_chips + final_ret as i32).max(0);
@@ -322,8 +352,12 @@ fn run_holdem_episodes_log_mode(
     if opp_tracker.total_actions() > 0 {
         println!("\n=== Opponent Modeling Tracker Stats ===");
         println!("Opponent Total Hands: {}", opp_tracker.total_hands);
-        println!("Opponent VPIP: {:.1}%", opp_tracker.vpip_hands as f64 / opp_tracker.total_hands.max(1) as f64 * 100.0);
-        println!("Fold Ratio: {:.1}% | Call Ratio: {:.1}% | Raise Ratio: {:.1}%",
+        println!(
+            "Opponent VPIP: {:.1}%",
+            opp_tracker.vpip_hands as f64 / opp_tracker.total_hands.max(1) as f64 * 100.0
+        );
+        println!(
+            "Fold Ratio: {:.1}% | Call Ratio: {:.1}% | Raise Ratio: {:.1}%",
             opp_tracker.fold_ratio() * 100.0,
             opp_tracker.call_ratio() * 100.0,
             opp_tracker.raise_ratio() * 100.0
@@ -350,13 +384,13 @@ fn load_strategy(path: &str) -> Strategy {
 
 fn format_card(card: Card) -> String {
     let suit_symbol = match card.suit {
-        lil_poker_mccfr::game::card::Suit::Club    => "♣",
+        lil_poker_mccfr::game::card::Suit::Club => "♣",
         lil_poker_mccfr::game::card::Suit::Diamond => "♦",
     };
     let rank_str = match card.rank {
-        lil_poker_mccfr::game::card::Rank::Jack  => "J",
+        lil_poker_mccfr::game::card::Rank::Jack => "J",
         lil_poker_mccfr::game::card::Rank::Queen => "Q",
-        lil_poker_mccfr::game::card::Rank::King  => "K",
+        lil_poker_mccfr::game::card::Rank::King => "K",
     };
     format!("'{}{}'", rank_str, suit_symbol)
 }
@@ -366,7 +400,11 @@ fn action_rl_name(action: u8, round: u8) -> &'static str {
         FOLD => "FOLD",
         CALL => "CALL_CHECK",
         RAISE => {
-            if round == 1 { "RAISE_MIN" } else { "RAISE_HALF_POT" }
+            if round == 1 {
+                "RAISE_MIN"
+            } else {
+                "RAISE_HALF_POT"
+            }
         }
         _ => "UNKNOWN",
     }
@@ -484,7 +522,10 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
     let mut rng = SmallRng::from_entropy();
     let mut score = [0.0f64; 2];
 
-    println!("\n>>> Starting Spectator Mode (Bot vs Random) — {} hands <<<\n", total_hands);
+    println!(
+        "\n>>> Starting Spectator Mode (Bot vs Random) — {} hands <<<\n",
+        total_hands
+    );
 
     for hand_num in 1..=total_hands {
         println!("------------------------------------------------------------");
@@ -498,9 +539,14 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
         println!("Dealt Hole Cards:");
         println!("  🤖 Model  (Player 0): {}", format_card(hole0));
         println!("  🎲 Random (Player 1): {}", format_card(hole1));
-        println!("  Pot: {} chips (Antes: P0=1, P1=1)", game.contributions[0] + game.contributions[1]);
+        println!(
+            "  Pot: {} chips (Antes: P0=1, P1=1)",
+            game.contributions[0] + game.contributions[1]
+        );
 
-        if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)); }
+        if delay_ms > 0 {
+            sleep(Duration::from_millis(delay_ms));
+        }
 
         let mut prev_round = 1;
         while !game.is_terminal() {
@@ -510,19 +556,28 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
                 if let Some(board) = game.board {
                     println!("  Community Board Card: {}", format_card(board));
                 }
-                if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)); }
+                if delay_ms > 0 {
+                    sleep(Duration::from_millis(delay_ms));
+                }
             }
 
             let cp = game.current_player();
-            let p_name = if cp == 0 { "🤖 Model (P0)" } else { "🎲 Random (P1)" };
+            let p_name = if cp == 0 {
+                "🤖 Model (P0)"
+            } else {
+                "🎲 Random (P1)"
+            };
 
             let act = if cp == 0 {
                 let probs = get_action_probs(strategy, &game, cp);
                 let legal = game.legal_actions();
                 let chosen = sample_action(&probs, &mut rng);
-                let prob_str: String = legal.iter().zip(probs.iter())
+                let prob_str: String = legal
+                    .iter()
+                    .zip(probs.iter())
                     .map(|(&a, &p)| format!("{}={:.2}", action_name(a), p))
-                    .collect::<Vec<_>>().join(" ");
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 println!(
                     "  {} evaluates infoset '{}' -> [{}] => Action: {}",
                     p_name,
@@ -534,17 +589,25 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
             } else {
                 let legal = game.legal_actions();
                 let act = legal[rng.gen_range(0..legal.len())];
-                println!("  {} chooses random action => Action: {}", p_name, action_name(act));
+                println!(
+                    "  {} chooses random action => Action: {}",
+                    p_name,
+                    action_name(act)
+                );
                 act
             };
 
             game = game.apply_action(act);
-            println!("  Current Pot: {} chips (P0: {}, P1: {})",
+            println!(
+                "  Current Pot: {} chips (P0: {}, P1: {})",
                 game.contributions[0] + game.contributions[1],
-                game.contributions[0], game.contributions[1]
+                game.contributions[0],
+                game.contributions[1]
             );
 
-            if delay_ms > 0 { sleep(Duration::from_millis(delay_ms)); }
+            if delay_ms > 0 {
+                sleep(Duration::from_millis(delay_ms));
+            }
         }
 
         let rets = game.get_returns();
@@ -554,7 +617,11 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
         println!("\n🏆 HAND #{} RESULT:", hand_num);
         if let Some(board) = game.board {
             println!("  Board revealed: {}", format_card(board));
-            println!("  Showdown hands: P0 {} vs P1 {}", format_card(hole0), format_card(hole1));
+            println!(
+                "  Showdown hands: P0 {} vs P1 {}",
+                format_card(hole0),
+                format_card(hole1)
+            );
         }
         if rets[0] > 0.0 {
             println!("  --> 🤖 Model (P0) WINS +{:.0} chips!", rets[0]);
@@ -564,14 +631,27 @@ fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
             println!("  --> TIE / SPLIT POT!");
         }
 
-        println!("  Cumulative Score: 🤖 Model = {:+.1} chips | 🎲 Random = {:+.1} chips\n", score[0], score[1]);
-        if delay_ms > 0 { sleep(Duration::from_millis(delay_ms * 2)); }
+        println!(
+            "  Cumulative Score: 🤖 Model = {:+.1} chips | 🎲 Random = {:+.1} chips\n",
+            score[0], score[1]
+        );
+        if delay_ms > 0 {
+            sleep(Duration::from_millis(delay_ms * 2));
+        }
     }
 
     println!("============================================================");
     println!("FINAL SCORE after {} hands:", total_hands);
-    println!("  🤖 Model  (P0): {:+.1} chips ({:+.1} mbb/hand)", score[0], (score[0] / total_hands as f64) * 1000.0);
-    println!("  🎲 Random (P1): {:+.1} chips ({:+.1} mbb/hand)", score[1], (score[1] / total_hands as f64) * 1000.0);
+    println!(
+        "  🤖 Model  (P0): {:+.1} chips ({:+.1} mbb/hand)",
+        score[0],
+        (score[0] / total_hands as f64) * 1000.0
+    );
+    println!(
+        "  🎲 Random (P1): {:+.1} chips ({:+.1} mbb/hand)",
+        score[1],
+        (score[1] / total_hands as f64) * 1000.0
+    );
     println!("============================================================");
 }
 
@@ -589,8 +669,16 @@ fn run_human_mode(strategy: &Strategy, total_hands: u64) {
         let bot_p = 1 - human_p;
 
         println!("------------------------------------------------------------");
-        println!("  🎴 HAND #{}/{}  | You are Player {} ({})",
-            hand_num, total_hands, human_p, if human_p == 0 { "OOP - First to act" } else { "IP - In position" }
+        println!(
+            "  🎴 HAND #{}/{}  | You are Player {} ({})",
+            hand_num,
+            total_hands,
+            human_p,
+            if human_p == 0 {
+                "OOP - First to act"
+            } else {
+                "IP - In position"
+            }
         );
         println!("------------------------------------------------------------");
 
@@ -631,7 +719,10 @@ fn run_human_mode(strategy: &Strategy, total_hands: u64) {
                 game = game.apply_action(bot_act);
             }
 
-            println!("Current Pot: {} chips", game.contributions[0] + game.contributions[1]);
+            println!(
+                "Current Pot: {} chips",
+                game.contributions[0] + game.contributions[1]
+            );
         }
 
         let rets = game.get_returns();
@@ -654,7 +745,10 @@ fn run_human_mode(strategy: &Strategy, total_hands: u64) {
             println!("  --> TIE / SPLIT POT!");
         }
 
-        println!("Total Score: YOU = {:+.1} chips | BOT = {:+.1} chips\n", human_score, bot_score);
+        println!(
+            "Total Score: YOU = {:+.1} chips | BOT = {:+.1} chips\n",
+            human_score, bot_score
+        );
     }
 
     println!("============================================================");
@@ -709,7 +803,9 @@ fn sample_action(probs: &[f64], rng: &mut SmallRng) -> usize {
     let mut cum = 0.0;
     for (i, &p) in probs.iter().enumerate() {
         cum += p;
-        if r < cum { return i; }
+        if r < cum {
+            return i;
+        }
     }
     probs.len() - 1
 }

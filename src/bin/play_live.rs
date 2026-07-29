@@ -17,13 +17,20 @@ use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use lil_poker_mccfr::cfr::abstraction::{get_holdem_infoset_key, postflop_equity_bucket, preflop_bucket};
+use lil_poker_mccfr::cfr::abstraction::{
+    get_holdem_infoset_key, postflop_equity_bucket, preflop_bucket,
+};
 use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
 use lil_poker_mccfr::cfr::subgame::SubgameSolver;
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
 
 #[derive(Parser, Debug)]
-#[command(name = "play_live", author, version, about = "Live Native Rust Bot for lil-poker")]
+#[command(
+    name = "play_live",
+    author,
+    version,
+    about = "Live Native Rust Bot for lil-poker"
+)]
 struct Args {
     #[arg(short, long, default_value = "http://localhost:8090")]
     url: String,
@@ -61,7 +68,9 @@ struct ActPayload {
 }
 
 fn parse_json_i32(v: Option<&Value>) -> i32 {
-    let Some(val) = v else { return 0; };
+    let Some(val) = v else {
+        return 0;
+    };
     if let Some(i) = val.as_i64() {
         i as i32
     } else if let Some(f) = val.as_f64() {
@@ -87,10 +96,19 @@ fn parse_card_str(s: &str) -> Option<Card> {
     };
 
     let rank = match rank_str {
-        "2" => Rank::Two, "3" => Rank::Three, "4" => Rank::Four, "5" => Rank::Five,
-        "6" => Rank::Six, "7" => Rank::Seven, "8" => Rank::Eight, "9" => Rank::Nine,
-        "10" | "T" => Rank::Ten, "J" => Rank::Jack, "Q" => Rank::Queen,
-        "K" => Rank::King, "A" => Rank::Ace,
+        "2" => Rank::Two,
+        "3" => Rank::Three,
+        "4" => Rank::Four,
+        "5" => Rank::Five,
+        "6" => Rank::Six,
+        "7" => Rank::Seven,
+        "8" => Rank::Eight,
+        "9" => Rank::Nine,
+        "10" | "T" => Rank::Ten,
+        "J" => Rank::Jack,
+        "Q" => Rank::Queen,
+        "K" => Rank::King,
+        "A" => Rank::Ace,
         _ => return None,
     };
 
@@ -121,7 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reader = BufReader::new(file);
         serde_json::from_reader(reader)?
     } else {
-        println!("WARNING: Strategy file {} not found! Using random play.", args.strategy);
+        println!(
+            "WARNING: Strategy file {} not found! Using random play.",
+            args.strategy
+        );
         HashMap::new()
     };
     println!("Loaded strategy with {} infosets.", strategy_map.len());
@@ -146,24 +167,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let user_info: GuestResponse = resp.json().await?;
     let player_id = user_info.uuid;
-    println!("Logged in successfully. Player ID: {}, Chips: {}", player_id, user_info.chips);
+    println!(
+        "Logged in successfully. Player ID: {}, Chips: {}",
+        player_id, user_info.chips
+    );
 
     /* 3. Join Room */
-    let join_url = format!("{}/api/game/players?room={}", args.url.trim_end_matches('/'), args.room);
+    let join_url = format!(
+        "{}/api/game/players?room={}",
+        args.url.trim_end_matches('/'),
+        args.room
+    );
     let _ = client
         .post(&join_url)
-        .json(&JoinRoomPayload { uuid: player_id.clone() })
+        .json(&JoinRoomPayload {
+            uuid: player_id.clone(),
+        })
         .send()
         .await;
-    println!("Joined room '{}'. Starting hand & connecting to WebSocket...", args.room);
+    println!(
+        "Joined room '{}'. Starting hand & connecting to WebSocket...",
+        args.room
+    );
 
     /* Trigger initial start in case table is waiting */
-    let start_url = format!("{}/api/game/start?room={}", args.url.trim_end_matches('/'), args.room);
+    let start_url = format!(
+        "{}/api/game/start?room={}",
+        args.url.trim_end_matches('/'),
+        args.room
+    );
     let _ = client.post(&start_url).send().await;
 
     /* 4. Connect WebSocket */
-    let ws_scheme = if args.url.starts_with("https://") { "wss" } else { "ws" };
-    let domain = args.url.split("://").nth(1).unwrap_or("localhost:8090").trim_end_matches('/');
+    let ws_scheme = if args.url.starts_with("https://") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let domain = args
+        .url
+        .split("://")
+        .nth(1)
+        .unwrap_or("localhost:8090")
+        .trim_end_matches('/');
     let ws_url = format!("{}://{}/api/game/ws?room={}", ws_scheme, domain, args.room);
 
     let mut request = ws_url.into_client_request()?;
@@ -209,7 +255,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if phase.eq_ignore_ascii_case("Waiting") {
                 if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
                     if players.len() >= 2 {
-                        let start_url = format!("{}/api/game/start?room={}", args.url.trim_end_matches('/'), args.room);
+                        let start_url = format!(
+                            "{}/api/game/start?room={}",
+                            args.url.trim_end_matches('/'),
+                            args.room
+                        );
                         let _ = client.post(&start_url).send().await;
                     }
                 }
@@ -217,7 +267,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let active_id = state.get("active_player_id").and_then(|v| v.as_str()).unwrap_or("");
+        let active_id = state
+            .get("active_player_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !active_id.eq_ignore_ascii_case(&player_id) {
             continue;
         }
@@ -226,7 +279,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut hole_cards: Vec<Card> = Vec::new();
         if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
             for p in players {
-                let p_id = p.get("id").or_else(|| p.get("uuid")).and_then(|v| v.as_str()).unwrap_or("");
+                let p_id = p
+                    .get("id")
+                    .or_else(|| p.get("uuid"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if p_id.eq_ignore_ascii_case(&player_id) {
                     if let Some(cards) = p.get("hole").and_then(|v| v.as_array()) {
                         for c in cards {
@@ -263,7 +320,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let legal_actions: Vec<String> = state
             .get("legal_actions")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_lowercase())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
             .unwrap_or_else(|| vec!["check".to_string(), "fold".to_string()]);
 
         let mut max_bet_on_table = 0i32;
@@ -276,22 +337,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     max_bet_on_table = p_bet;
                 }
 
-                let p_id = p.get("id").or_else(|| p.get("uuid")).and_then(|v| v.as_str()).unwrap_or("");
+                let p_id = p
+                    .get("id")
+                    .or_else(|| p.get("uuid"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if p_id.eq_ignore_ascii_case(&player_id) {
                     my_bet = p_bet;
                 }
             }
         }
 
-        let state_bet = parse_json_i32(state.get("current_bet").or_else(|| state.get("currentBet")).or_else(|| state.get("call_amount")));
+        let state_bet = parse_json_i32(
+            state
+                .get("current_bet")
+                .or_else(|| state.get("currentBet"))
+                .or_else(|| state.get("call_amount")),
+        );
         let current_bet = max_bet_on_table.max(state_bet);
         let to_call = (current_bet - my_bet).max(0);
         let pot = parse_json_i32(state.get("pot"));
-        let hist_len = state.get("history").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        let hist_len = state
+            .get("history")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
 
         /* Prevent duplicate action execution on identical state updates */
-        let hand_id = state.get("hand_number").or_else(|| state.get("hand_id")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let action_seq_key = format!("{}:{}:{}:{}:{}:{}:{}", hand_id, phase, board_cards.len(), current_bet, my_bet, pot, hist_len);
+        let hand_id = state
+            .get("hand_number")
+            .or_else(|| state.get("hand_id"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let action_seq_key = format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            hand_id,
+            phase,
+            board_cards.len(),
+            current_bet,
+            my_bet,
+            pot,
+            hist_len
+        );
         if action_seq_key == last_action_key {
             continue;
         }
@@ -314,11 +401,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-        let hole_str = format!("[{} {}]", hole[0].to_string().trim_matches('\''), hole[1].to_string().trim_matches('\''));
+        let hole_str = format!(
+            "[{} {}]",
+            hole[0].to_string().trim_matches('\''),
+            hole[1].to_string().trim_matches('\'')
+        );
         let board_str = if board_cards.is_empty() {
             "[]".to_string()
         } else {
-            let cards: Vec<String> = board_cards.iter().map(|c| c.to_string().trim_matches('\'').to_string()).collect();
+            let cards: Vec<String> = board_cards
+                .iter()
+                .map(|c| c.to_string().trim_matches('\'').to_string())
+                .collect();
             format!("[{}]", cards.join(" "))
         };
 
@@ -333,7 +427,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         last_action_key = action_seq_key;
 
-        let act_url = format!("{}/api/game/act?room={}", args.url.trim_end_matches('/'), args.room);
+        let act_url = format!(
+            "{}/api/game/act?room={}",
+            args.url.trim_end_matches('/'),
+            args.room
+        );
         let resp = client
             .post(&act_url)
             .json(&ActPayload {
@@ -348,11 +446,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !r.status().is_success() {
                 let status = r.status();
                 let err_text = r.text().await.unwrap_or_default();
-                eprintln!("⚠️ Act server notice ({}) [{}]: {}", chosen_action, status, err_text);
+                eprintln!(
+                    "⚠️ Act server notice ({}) [{}]: {}",
+                    chosen_action, status, err_text
+                );
                 last_action_key.clear();
 
                 /* Automatic fallback retry if server rejected 'check' in favor of 'call' */
-                if chosen_action == "check" && (err_text.contains("cannot check") || err_text.contains("call")) {
+                if chosen_action == "check"
+                    && (err_text.contains("cannot check") || err_text.contains("call"))
+                {
                     println!("-> Auto-fallback: Retrying action CALL (amt: 0)");
                     let _ = client
                         .post(&act_url)
@@ -417,7 +520,12 @@ fn decide_action(
             format!("P:{}/", name)
         } else {
             let bucket = postflop_equity_bucket(hole, board);
-            let r_code = match round { 2 => "F", 3 => "T", 4 => "R", _ => "X" };
+            let r_code = match round {
+                2 => "F",
+                3 => "T",
+                4 => "R",
+                _ => "X",
+            };
             format!("{}:B{:02}/", r_code, bucket)
         };
 
@@ -460,16 +568,24 @@ fn decide_action(
     if board.is_empty() {
         let (pf_idx, _pf_name) = preflop_bucket(hole[0], hole[1]);
         if pf_idx < 40 {
-            if let Some(res) = map_action_index(2, legal, to_call) { return res; }
+            if let Some(res) = map_action_index(2, legal, to_call) {
+                return res;
+            }
         } else if pf_idx < 110 {
-            if let Some(res) = map_action_index(1, legal, to_call) { return res; }
+            if let Some(res) = map_action_index(1, legal, to_call) {
+                return res;
+            }
         }
     } else {
         let bucket = postflop_equity_bucket(hole, board);
         if bucket >= 30 {
-            if let Some(res) = map_action_index(2, legal, to_call) { return res; }
+            if let Some(res) = map_action_index(2, legal, to_call) {
+                return res;
+            }
         } else if bucket >= 12 {
-            if let Some(res) = map_action_index(1, legal, to_call) { return res; }
+            if let Some(res) = map_action_index(1, legal, to_call) {
+                return res;
+            }
         }
     }
 

@@ -9,7 +9,7 @@ const SCALE: f64 = 1_000_000.0;
 
 pub struct InfosetNode {
     pub num_actions: usize,
-    regret_sum:   Box<[AtomicI64]>,
+    regret_sum: Box<[AtomicI64]>,
     strategy_sum: Box<[AtomicI64]>,
 }
 
@@ -18,14 +18,22 @@ impl InfosetNode {
         let make = |_| AtomicI64::new(0);
         InfosetNode {
             num_actions,
-            regret_sum:   (0..num_actions).map(make).collect::<Vec<_>>().into_boxed_slice(),
-            strategy_sum: (0..num_actions).map(make).collect::<Vec<_>>().into_boxed_slice(),
+            regret_sum: (0..num_actions)
+                .map(make)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            strategy_sum: (0..num_actions)
+                .map(make)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         }
     }
 
     /* Current strategy via regret matching (positive part normalised). */
     pub fn get_strategy(&self) -> Vec<f64> {
-        let regrets: Vec<f64> = self.regret_sum.iter()
+        let regrets: Vec<f64> = self
+            .regret_sum
+            .iter()
             .map(|r| (r.load(Ordering::Relaxed) as f64 / SCALE).max(0.0))
             .collect();
 
@@ -39,7 +47,9 @@ impl InfosetNode {
 
     /* Average strategy (used as final policy after training). */
     pub fn get_average_strategy(&self) -> Vec<f64> {
-        let sums: Vec<f64> = self.strategy_sum.iter()
+        let sums: Vec<f64> = self
+            .strategy_sum
+            .iter()
             .map(|s| (s.load(Ordering::Relaxed) as f64 / SCALE).max(0.0))
             .collect();
         let total: f64 = sums.iter().sum();

@@ -48,19 +48,28 @@ fn main() {
     display_sample_strategy(&strategy, args.verbose);
 
     /* 2. Win rate & Simulation against Random Agent */
-    println!("\n--- Simulation Benchmark vs Random Opponent ({} hands) ---", args.hands);
+    println!(
+        "\n--- Simulation Benchmark vs Random Opponent ({} hands) ---",
+        args.hands
+    );
     let sim0 = simulate_vs_random(&strategy, args.hands, 0, 42);
     let sim1 = simulate_vs_random(&strategy, args.hands, 1, 99);
 
     println!("Player 0 (OOP / Out of Position):");
     println!("  Win Percentage : {:.2}%", sim0.win_pct);
     println!("  Average Profit : {:+.3} chips/hand", sim0.avg_chips);
-    println!("  Win Rate       : {:+.1} mbb/hand (±{:.1})", sim0.mbb, sim0.mbb_se);
+    println!(
+        "  Win Rate       : {:+.1} mbb/hand (±{:.1})",
+        sim0.mbb, sim0.mbb_se
+    );
 
     println!("\nPlayer 1 (IP / In Position):");
     println!("  Win Percentage : {:.2}%", sim1.win_pct);
     println!("  Average Profit : {:+.3} chips/hand", sim1.avg_chips);
-    println!("  Win Rate       : {:+.1} mbb/hand (±{:.1})", sim1.mbb, sim1.mbb_se);
+    println!(
+        "  Win Rate       : {:+.1} mbb/hand (±{:.1})",
+        sim1.mbb, sim1.mbb_se
+    );
 
     let combined_mbb = (sim0.mbb + sim1.mbb) / 2.0;
     println!("\nCombined Average Win Rate: {:+.1} mbb/hand", combined_mbb);
@@ -105,21 +114,47 @@ fn load_strategy(path: &str) -> Strategy {
 /* Tabular Strategy Display */
 fn display_sample_strategy(strategy: &Strategy, verbose: bool) {
     println!("\n--- Strategy Profile Highlights ---");
-    println!("{:<14} | {:<8} | {:<8} | {:<8}", "Infoset Key", "Fold", "Call/Check", "Raise");
+    println!(
+        "{:<14} | {:<8} | {:<8} | {:<8}",
+        "Infoset Key", "Fold", "Call/Check", "Raise"
+    );
     println!("--------------------------------------------------");
 
     let sample_keys = if verbose {
         /* Show 20 representative keys */
         vec![
-            "Jc/_//", "Jc/_/r/", "Qc/_//", "Qc/_/r/", "Kc/_//", "Kc/_/r/", "Kc/_/c/", "Kc/_/cr/",
-            "Jc/Jd/cc/", "Jc/Jd/cc/r", "Jc/Qd/cc/", "Jc/Qd/cc/r", "Kc/Jd/cc/", "Kc/Jd/cc/r",
-            "Kc/Kd/cc/", "Kc/Kd/cc/r", "Qc/Qd/cc/", "Qc/Qd/cc/r", "Jc/_/crr/", "Kc/_/crr/",
+            "Jc/_//",
+            "Jc/_/r/",
+            "Qc/_//",
+            "Qc/_/r/",
+            "Kc/_//",
+            "Kc/_/r/",
+            "Kc/_/c/",
+            "Kc/_/cr/",
+            "Jc/Jd/cc/",
+            "Jc/Jd/cc/r",
+            "Jc/Qd/cc/",
+            "Jc/Qd/cc/r",
+            "Kc/Jd/cc/",
+            "Kc/Jd/cc/r",
+            "Kc/Kd/cc/",
+            "Kc/Kd/cc/r",
+            "Qc/Qd/cc/",
+            "Qc/Qd/cc/r",
+            "Jc/_/crr/",
+            "Kc/_/crr/",
         ]
     } else {
         /* Show core 8 preflop & postflop keys */
         vec![
-            "Jc/_//", "Jc/_/r/", "Qc/_//", "Qc/_/r/", "Kc/_//", "Kc/_/r/",
-            "Jc/Jd/cc/", "Kc/Kd/cc/",
+            "Jc/_//",
+            "Jc/_/r/",
+            "Qc/_//",
+            "Qc/_/r/",
+            "Kc/_//",
+            "Kc/_/r/",
+            "Jc/Jd/cc/",
+            "Kc/Kd/cc/",
         ]
     };
 
@@ -155,7 +190,9 @@ fn simulate_vs_random(
     for _ in 0..hands {
         let mut game = LeducGame::new_random(&mut rng);
         loop {
-            if game.is_terminal() { break; }
+            if game.is_terminal() {
+                break;
+            }
             let cp = game.current_player();
             let act = if cp == model_player {
                 sample_model_action(strategy, &game, cp, &mut rng)
@@ -183,7 +220,12 @@ fn simulate_vs_random(
     let mbb_se = se_chips * 1000.0;
     let win_pct = (wins as f64 / hands as f64) * 100.0;
 
-    SimResult { win_pct, avg_chips, mbb, mbb_se }
+    SimResult {
+        win_pct,
+        avg_chips,
+        mbb,
+        mbb_se,
+    }
 }
 
 fn sample_model_action(
@@ -228,8 +270,13 @@ fn compute_exploitability(strategy: &Strategy) -> f64 {
 
     for i in 0..n {
         for j in 0..n {
-            if j == i { continue; }
-            let rem_boards: Vec<_> = (0..n).filter(|&k| k != i && k != j).map(|k| cards[k]).collect();
+            if j == i {
+                continue;
+            }
+            let rem_boards: Vec<_> = (0..n)
+                .filter(|&k| k != i && k != j)
+                .map(|k| cards[k])
+                .collect();
 
             let dummy = rem_boards[0];
             let g = LeducGame::new_with_cards(cards[i], cards[j], dummy);
@@ -253,7 +300,8 @@ fn br_recurse_r1(
     }
 
     if game.round == 2 {
-        let sum: f64 = rem_boards.iter()
+        let sum: f64 = rem_boards
+            .iter()
             .map(|&b| {
                 let mut g2 = LeducGame::new_with_cards(game.hole[0], game.hole[1], b);
                 for &a in &game.history[0] {
@@ -269,22 +317,23 @@ fn br_recurse_r1(
     let actions = game.legal_actions();
 
     if cp == br_player {
-        actions.iter()
+        actions
+            .iter()
             .map(|&a| br_recurse_r1(&game.apply_action(a), rem_boards, br_player, strategy))
             .fold(f64::NEG_INFINITY, f64::max)
     } else {
         let probs = get_action_probs_evaluate(strategy, game, cp);
-        actions.iter().zip(probs.iter())
-            .map(|(&a, &p)| p * br_recurse_r1(&game.apply_action(a), rem_boards, br_player, strategy))
+        actions
+            .iter()
+            .zip(probs.iter())
+            .map(|(&a, &p)| {
+                p * br_recurse_r1(&game.apply_action(a), rem_boards, br_player, strategy)
+            })
             .sum()
     }
 }
 
-fn br_recurse_r2(
-    game: &LeducGame,
-    br_player: usize,
-    strategy: &Strategy,
-) -> f64 {
+fn br_recurse_r2(game: &LeducGame, br_player: usize, strategy: &Strategy) -> f64 {
     if game.is_terminal() {
         return game.get_returns()[br_player];
     }
@@ -293,12 +342,15 @@ fn br_recurse_r2(
     let actions = game.legal_actions();
 
     if cp == br_player {
-        actions.iter()
+        actions
+            .iter()
             .map(|&a| br_recurse_r2(&game.apply_action(a), br_player, strategy))
             .fold(f64::NEG_INFINITY, f64::max)
     } else {
         let probs = get_action_probs_evaluate(strategy, game, cp);
-        actions.iter().zip(probs.iter())
+        actions
+            .iter()
+            .zip(probs.iter())
             .map(|(&a, &p)| p * br_recurse_r2(&game.apply_action(a), br_player, strategy))
             .sum()
     }
