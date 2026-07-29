@@ -54,9 +54,9 @@ impl SubgameSolver {
             let opp_hole = [deck[0], deck[1]];
 
             let (p0_hole, p1_hole) = if my_player == 0 {
-                (hole.clone(), opp_hole)
+                (*hole, opp_hole)
             } else {
-                (opp_hole, hole.clone())
+                (opp_hole, *hole)
             };
 
             let game = TexasHoldemGame {
@@ -71,7 +71,7 @@ impl SubgameSolver {
                 returns: [0.0, 0.0],
             };
 
-            let updating_player = (iter_idx % 2) as usize;
+            let updating_player = iter_idx % 2;
             self.cfr(
                 &game,
                 updating_player,
@@ -118,7 +118,7 @@ impl SubgameSolver {
         };
 
         if cur_p == updating_player {
-            let mut util = vec![0.0f64; 4];
+            let mut util = [0.0f64; 4];
             let mut node_util = 0.0f64;
 
             for &a in &legal {

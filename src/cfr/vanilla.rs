@@ -12,6 +12,12 @@ pub struct VanillaCFRNode {
     pub strategy_sum: Vec<f64>,
 }
 
+impl Default for VanillaCFRNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VanillaCFRNode {
     pub fn new() -> Self {
         VanillaCFRNode {
@@ -90,10 +96,7 @@ impl VanillaCFRSolver {
         let actions = game.legal_actions();
         let key = game.infoset_key(cp);
 
-        let node = self
-            .nodes
-            .entry(key.clone())
-            .or_insert_with(VanillaCFRNode::new);
+        let node = self.nodes.entry(key.clone()).or_default();
         let strategy = node.get_strategy(reach[cp]);
 
         let legal_probs: Vec<f64> = actions.iter().map(|&a| strategy[a as usize]).collect();

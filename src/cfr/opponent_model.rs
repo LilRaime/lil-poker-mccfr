@@ -9,6 +9,12 @@ pub struct OpponentTracker {
     pub raise_count: u64,
 }
 
+impl Default for OpponentTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpponentTracker {
     pub fn new() -> Self {
         OpponentTracker {

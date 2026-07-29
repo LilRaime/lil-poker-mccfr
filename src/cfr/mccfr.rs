@@ -13,6 +13,12 @@ pub struct MCCFRSolver {
     pub nodes: Arc<DashMap<String, Arc<InfosetNode>>>,
 }
 
+impl Default for MCCFRSolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MCCFRSolver {
     pub fn new() -> Self {
         MCCFRSolver {
@@ -89,7 +95,7 @@ impl MCCFRSolver {
         &self,
         game: &LeducGame,
         updating_player: usize,
-        iter_idx: f64,
+        _iter_idx: f64,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
@@ -121,7 +127,7 @@ impl MCCFRSolver {
 
             for (idx, &act) in actions.iter().enumerate() {
                 let child = game.apply_action(act);
-                action_utils[idx] = self.traverse(&child, updating_player, iter_idx, rng);
+                action_utils[idx] = self.traverse(&child, updating_player, _iter_idx, rng);
                 node_util += legal_probs[idx] * action_utils[idx];
             }
 
@@ -143,7 +149,7 @@ impl MCCFRSolver {
             node.accumulate_strategy(&full_strategy, 1.0);
 
             let child = game.apply_action(chosen_act);
-            self.traverse(&child, updating_player, iter_idx, rng)
+            self.traverse(&child, updating_player, _iter_idx, rng)
         }
     }
 

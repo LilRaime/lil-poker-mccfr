@@ -38,8 +38,10 @@ impl Card {
     pub fn new(rank: Rank, suit: Suit) -> Self {
         Card { rank, suit }
     }
+}
 
-    pub fn to_string(self) -> String {
+impl std::fmt::Display for Card {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let r = match self.rank {
             Rank::Two => "2",
             Rank::Three => "3",
@@ -61,7 +63,7 @@ impl Card {
             Suit::Hearts => "♥",
             Suit::Spades => "♠",
         };
-        format!("'{}{}'", r, s)
+        write!(f, "'{}{}'", r, s)
     }
 }
 
@@ -456,7 +458,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     all_cards.extend_from_slice(board);
 
     /*  Sort by rank descending */
-    all_cards.sort_by(|a, b| b.rank.cmp(&a.rank));
+    all_cards.sort_by_key(|b| std::cmp::Reverse(b.rank));
 
     let mut rank_counts = [0u8; 13];
     let mut suit_counts = [0u8; 4];
@@ -552,7 +554,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
             .collect();
         return (3 << 32)
             | (t << 16)
-            | (kickers.get(0).copied().unwrap_or(0) << 8)
+            | (kickers.first().copied().unwrap_or(0) << 8)
             | kickers.get(1).copied().unwrap_or(0);
     }
     if pairs.len() >= 2 {
@@ -573,7 +575,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
             .collect();
         return (1 << 32)
             | (p << 16)
-            | (kickers.get(0).copied().unwrap_or(0) << 8)
+            | (kickers.first().copied().unwrap_or(0) << 8)
             | kickers.get(1).copied().unwrap_or(0);
     }
 

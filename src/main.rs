@@ -1,8 +1,5 @@
-mod cfr;
-mod game;
-
-use cfr::mccfr::MCCFRSolver;
 use clap::Parser;
+use lil_poker_mccfr::cfr::mccfr::MCCFRSolver;
 use std::fs;
 
 /* Parallel MCCFR (CFR+) Poker Solver — Leduc Hold'em */

@@ -191,7 +191,7 @@ fn run_holdem_episodes_log_mode(
         let initial_chips = 1000i32;
 
         let hole = game.hole[my_player];
-        let card_str = format!("[{}, {}]", hole[0].to_string(), hole[1].to_string());
+        let card_str = format!("[{}, {}]", hole[0], hole[1]);
 
         let mut step_count = 0;
         let mut cumulative_reward = 0.0f64;

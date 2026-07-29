@@ -17,6 +17,12 @@ pub struct HoldemMCCFRSolver {
     pub nodes: Arc<DashMap<String, Arc<InfosetNode>>>,
 }
 
+impl Default for HoldemMCCFRSolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HoldemMCCFRSolver {
     pub fn new() -> Self {
         HoldemMCCFRSolver {
@@ -116,7 +122,7 @@ impl HoldemMCCFRSolver {
         &self,
         game: &TexasHoldemGame,
         updating_player: usize,
-        iter_idx: f64,
+        _iter_idx: f64,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
@@ -153,7 +159,7 @@ impl HoldemMCCFRSolver {
 
             for (idx, &act) in actions.iter().enumerate() {
                 let child = game.apply_action(act);
-                action_utils[idx] = self.traverse(&child, updating_player, iter_idx, rng);
+                action_utils[idx] = self.traverse(&child, updating_player, _iter_idx, rng);
                 node_util += legal_probs[idx] * action_utils[idx];
             }
 
@@ -175,7 +181,7 @@ impl HoldemMCCFRSolver {
             node.accumulate_strategy(&full_strategy, 1.0);
 
             let child = game.apply_action(chosen_act);
-            self.traverse(&child, updating_player, iter_idx, rng)
+            self.traverse(&child, updating_player, _iter_idx, rng)
         }
     }
 
