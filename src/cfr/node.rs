@@ -1,77 +1,114 @@
 /*
  * Lock-free information set node for parallel MCCFR.
- * Stores regret and strategy sums as scaled integers (× SCALE) in AtomicI64 using fetch_add.
+ * Stores regret and strategy sums as scaled integers (× SCALE) in AtomicI64.
+ * Uses atomic CAS clamping for true CFR+ (regrets floored at 0).
  */
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /* Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
 const SCALE: f64 = 1_000_000.0;
+pub const MAX_ACTIONS: usize = 4;
 
 pub struct InfosetNode {
     pub num_actions: usize,
-    regret_sum: Box<[AtomicI64]>,
-    strategy_sum: Box<[AtomicI64]>,
+    regret_sum: [AtomicI64; MAX_ACTIONS],
+    strategy_sum: [AtomicI64; MAX_ACTIONS],
 }
 
 impl InfosetNode {
     pub fn new(num_actions: usize) -> Self {
-        let make = |_| AtomicI64::new(0);
+        assert!(num_actions <= MAX_ACTIONS, "num_actions exceeds MAX_ACTIONS");
         InfosetNode {
             num_actions,
-            regret_sum: (0..num_actions)
-                .map(make)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            strategy_sum: (0..num_actions)
-                .map(make)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+            regret_sum: [
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+            ],
+            strategy_sum: [
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+                AtomicI64::new(0),
+            ],
         }
     }
 
-    /* Current strategy via regret matching (positive part normalised). */
-    pub fn get_strategy(&self) -> Vec<f64> {
-        let regrets: Vec<f64> = self
-            .regret_sum
-            .iter()
-            .map(|r| (r.load(Ordering::Relaxed) as f64 / SCALE).max(0.0))
-            .collect();
-
-        let total: f64 = regrets.iter().sum();
-        if total > 0.0 {
-            regrets.iter().map(|&r| r / total).collect()
-        } else {
-            vec![1.0 / self.num_actions as f64; self.num_actions]
+    /* Current strategy via regret matching (positive part normalised) into a stack buffer. */
+    #[inline(always)]
+    pub fn get_strategy_buf(&self, out: &mut [f64; MAX_ACTIONS]) {
+        let n = self.num_actions;
+        let mut total = 0.0f64;
+        for i in 0..n {
+            let r = (self.regret_sum[i].load(Ordering::Relaxed) as f64 / SCALE).max(0.0);
+            out[i] = r;
+            total += r;
         }
+        if total > 0.0 {
+            let inv_total = 1.0 / total;
+            for i in 0..n {
+                out[i] *= inv_total;
+            }
+        } else {
+            let uniform = 1.0 / n as f64;
+            for i in 0..n {
+                out[i] = uniform;
+            }
+        }
+    }
+
+    /* Current strategy via regret matching (allocated Vec). */
+    pub fn get_strategy(&self) -> Vec<f64> {
+        let mut buf = [0.0; MAX_ACTIONS];
+        self.get_strategy_buf(&mut buf);
+        buf[..self.num_actions].to_vec()
     }
 
     /* Average strategy (used as final policy after training). */
     pub fn get_average_strategy(&self) -> Vec<f64> {
-        let sums: Vec<f64> = self
-            .strategy_sum
-            .iter()
-            .map(|s| (s.load(Ordering::Relaxed) as f64 / SCALE).max(0.0))
-            .collect();
-        let total: f64 = sums.iter().sum();
+        let n = self.num_actions;
+        let mut sums = [0.0; MAX_ACTIONS];
+        let mut total = 0.0f64;
+        for i in 0..n {
+            let s = (self.strategy_sum[i].load(Ordering::Relaxed) as f64 / SCALE).max(0.0);
+            sums[i] = s;
+            total += s;
+        }
         if total > 0.0 {
-            sums.iter().map(|&s| s / total).collect()
+            sums[..n].iter().map(|&s| s / total).collect()
         } else {
-            vec![1.0 / self.num_actions as f64; self.num_actions]
+            vec![1.0 / n as f64; n]
         }
     }
 
-    /* Add regrets for each action using fetch_add (CFR+ clamp applied lazily on read). */
+    /* Add regrets for each action using atomic CAS clamp for true CFR+ (floor at 0). */
+    #[inline(always)]
     pub fn update_regrets_cfr_plus(&self, regrets: &[f64]) {
-        for (i, &r) in regrets.iter().enumerate() {
+        for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
             let delta = (r * SCALE) as i64;
-            self.regret_sum[i].fetch_add(delta, Ordering::Relaxed);
+            let mut old = self.regret_sum[i].load(Ordering::Relaxed);
+            loop {
+                let new = (old + delta).max(0);
+                match self.regret_sum[i].compare_exchange_weak(
+                    old,
+                    new,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => old = actual,
+                }
+            }
         }
     }
 
-    /* Accumulate strategy (weighted by iteration index for linear averaging). */
+    /* Accumulate strategy (weighted for linear averaging). */
+    #[inline(always)]
     pub fn accumulate_strategy(&self, strategy: &[f64], weight: f64) {
-        for (i, &s) in strategy.iter().enumerate() {
-            let delta = (s * weight * SCALE) as i64;
+        let scale_weight = weight * SCALE;
+        for (i, &s) in strategy.iter().take(self.num_actions).enumerate() {
+            let delta = (s * scale_weight) as i64;
             self.strategy_sum[i].fetch_add(delta, Ordering::Relaxed);
         }
     }
@@ -79,3 +116,4 @@ impl InfosetNode {
 
 /* InfosetNode is Sync because all interior mutation is atomic. */
 unsafe impl Sync for InfosetNode {}
+

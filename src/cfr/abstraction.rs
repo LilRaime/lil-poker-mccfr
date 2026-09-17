@@ -310,55 +310,244 @@ pub fn calculate_ehs_equity(hole: &[Card; 2], board: &[Card]) -> f64 {
     wins / (num_trials as f64)
 }
 
-/* Fast O(1) postflop equity bucketing for MCCFR training (0..49). */
+/* Fast O(1) draw detection for Flop & Turn (Flush draws and Straight draws) */
+#[inline(always)]
+pub fn detect_draws(hole: &[Card; 2], board: &[Card]) -> (bool, bool) {
+    if board.len() >= 5 {
+        return (false, false);
+    }
+
+    let mut suit_counts = [0u8; 4];
+    suit_counts[hole[0].suit as usize] += 1;
+    suit_counts[hole[1].suit as usize] += 1;
+    for &b in board {
+        suit_counts[b.suit as usize] += 1;
+    }
+    let is_flush_draw = suit_counts.iter().any(|&c| c == 4);
+
+    let mut ranks = [false; 13];
+    ranks[hole[0].rank as usize] = true;
+    ranks[hole[1].rank as usize] = true;
+    for &b in board {
+        ranks[b.rank as usize] = true;
+    }
+
+    let mut is_straight_draw = false;
+    for r in 0..10 {
+        if ranks[r] && ranks[r + 1] && ranks[r + 2] && ranks[r + 3] {
+            is_straight_draw = true;
+            break;
+        }
+    }
+    if !is_straight_draw && ranks[12] {
+        let low_count = (ranks[0] as u8) + (ranks[1] as u8) + (ranks[2] as u8) + (ranks[3] as u8);
+        if low_count >= 3 {
+            is_straight_draw = true;
+        }
+    }
+
+    (is_flush_draw, is_straight_draw)
+}
+
+/* Fast draw-aware postflop equity bucketing for Texas Hold'em (0..49). */
 pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
     let score = evaluate_7cards(hole, board);
     let category = score >> 32;
 
     let bucket = match category {
-        8 => 49,
-        7 => 48,
-        6 => 45 + ((score >> 16) & 0xF).min(3) as usize,
-        5 => 40 + ((score >> 16) & 0xF).min(4) as usize,
-        4 => 35 + ((score & 0xF).min(4)) as usize,
-        3 => 28 + ((score >> 16) & 0xF).min(6) as usize,
-        2 => 20 + ((score >> 16) & 0xF).min(7) as usize,
-        1 => 10 + ((score >> 16) & 0xF).min(9) as usize,
-        _ => ((score >> 16) & 0xF).min(9) as usize,
+        8 => 49, /* Straight Flush */
+        7 => 48, /* Quads */
+        6 => {
+            /* Full House */
+            let trips_rank = ((score >> 16) & 0xF) as usize;
+            if trips_rank >= 8 {
+                47
+            } else if trips_rank >= 4 {
+                46
+            } else {
+                45
+            }
+        }
+        5 => {
+            /* Flush */
+            let high_flush = ((score >> 16) & 0xF) as usize;
+            match high_flush {
+                12 => 44,      /* Ace-high flush */
+                10..=11 => 43, /* King/Queen-high flush */
+                7..=9 => 42,   /* Jack/Ten/Nine-high flush */
+                4..=6 => 41,   /* Mid flush */
+                _ => 40,       /* Low flush */
+            }
+        }
+        4 => {
+            /* Straight */
+            let st_high = (score & 0xF) as usize;
+            match st_high {
+                12 => 39,      /* Broadway A-high straight */
+                10..=11 => 38, /* K/Q-high straight */
+                7..=9 => 37,   /* Mid straight */
+                _ => 36,       /* Low straight */
+            }
+        }
+        3 => {
+            /* Three of a Kind (Trips/Set) */
+            let trips_rank = ((score >> 16) & 0xF) as usize;
+            if trips_rank >= 10 {
+                35 /* Trips A, K, Q */
+            } else if trips_rank >= 6 {
+                34 /* Trips J, T, 9, 8 */
+            } else {
+                33 /* Low trips */
+            }
+        }
+        2 => {
+            /* Two Pair */
+            let top_pair = ((score >> 16) & 0xF) as usize;
+            match top_pair {
+                11..=12 => 32, /* Top Two (AA, KK) */
+                9..=10 => 31,  /* High Two (QQ, JJ) */
+                6..=8 => 30,   /* Mid Two (TT, 99, 88) */
+                _ => 29,       /* Low Two */
+            }
+        }
+        1 => {
+            /* One Pair (12 distinct buckets 17..28: Twos to Aces!) */
+            let pair_rank = ((score >> 16) & 0xF) as usize;
+            17 + pair_rank.min(11)
+        }
+        _ => {
+            /* High Card or Strong Draw on Flop/Turn */
+            let high_rank = ((score >> 16) & 0xF) as usize;
+            if board.len() < 5 {
+                let (has_flush_draw, has_straight_draw) = detect_draws(hole, board);
+                if has_flush_draw && (high_rank >= 11 || has_straight_draw) {
+                    16 /* Combo draw or Nut Flush Draw */
+                } else if has_flush_draw {
+                    15 /* Strong Flush Draw */
+                } else if has_straight_draw && high_rank >= 10 {
+                    14 /* Open-Ended Straight Draw with overcard */
+                } else if has_straight_draw {
+                    13 /* Open-Ended Straight Draw */
+                } else {
+                    /* Regular high card on flop/turn */
+                    match high_rank {
+                        12 => 12, /* Ace-high */
+                        11 => 11, /* King-high */
+                        10 => 10, /* Queen-high */
+                        9 => 9,   /* Jack-high */
+                        8 => 8,   /* Ten-high */
+                        7 => 7,   /* Nine-high */
+                        6 => 6,   /* Eight-high */
+                        5 => 5,   /* Seven-high */
+                        4 => 4,   /* Six-high */
+                        _ => 3,   /* Five-high or lower */
+                    }
+                }
+            } else {
+                /* River (draws completed/dead) */
+                match high_rank {
+                    12 => 14,
+                    11 => 12,
+                    10 => 10,
+                    9 => 8,
+                    8 => 6,
+                    7 => 5,
+                    6 => 4,
+                    5 => 3,
+                    4 => 2,
+                    _ => 1,
+                }
+            }
+        }
     };
 
     bucket.min(49)
 }
 
-/* Generates compact abstracted Information Set key for Texas Hold'em */
-pub fn get_holdem_infoset_key(
+use crate::game::holdem::RoundHistory;
+
+pub trait HistoryActions {
+    fn actions_in_round(&self, r_idx: usize) -> &[u8];
+}
+
+impl HistoryActions for [RoundHistory; 4] {
+    #[inline(always)]
+    fn actions_in_round(&self, r_idx: usize) -> &[u8] {
+        &self[r_idx]
+    }
+}
+
+impl HistoryActions for [Vec<u8>; 4] {
+    #[inline(always)]
+    fn actions_in_round(&self, r_idx: usize) -> &[u8] {
+        &self[r_idx]
+    }
+}
+
+/* Fast zero-allocation infoset key formatting into a reusable String buffer */
+#[inline]
+pub fn format_holdem_infoset_key_slice(
     hole: &[Card; 2],
     board: &[Card],
     round: u8,
-    history: &[Vec<u8>; 4],
-) -> String {
-    let hist_str: String = history[(round - 1) as usize]
-        .iter()
-        .map(|&a| match a {
+    round_history: &[u8],
+    out: &mut String,
+) {
+    out.clear();
+    if round == 1 {
+        let (_, name) = preflop_bucket(hole[0], hole[1]);
+        out.push_str("P:");
+        out.push_str(name);
+        out.push('/');
+    } else {
+        let bucket = postflop_equity_bucket(hole, board);
+        let round_code = match round {
+            2 => "F:B",
+            3 => "T:B",
+            4 => "R:B",
+            _ => "X:B",
+        };
+        out.push_str(round_code);
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+    }
+    for &a in round_history {
+        let ch = match a {
             0 => 'f',
             1 => 'c',
             2 => 'r',
             3 => 'h',
             _ => 'x',
-        })
-        .collect();
-
-    if round == 1 {
-        let (_, name) = preflop_bucket(hole[0], hole[1]);
-        format!("P:{}/{}", name, hist_str)
-    } else {
-        let bucket = postflop_equity_bucket(hole, board);
-        let round_code = match round {
-            2 => "F",
-            3 => "T",
-            4 => "R",
-            _ => "X",
         };
-        format!("{}:B{:02}/{}", round_code, bucket, hist_str)
+        out.push(ch);
     }
 }
+
+#[inline]
+pub fn format_holdem_infoset_key<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &H,
+    out: &mut String,
+) {
+    let r_idx = (round.saturating_sub(1)) as usize;
+    format_holdem_infoset_key_slice(hole, board, round, history.actions_in_round(r_idx), out);
+}
+
+/* Generates compact abstracted Information Set key for Texas Hold'em */
+pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &H,
+) -> String {
+    let mut s = String::with_capacity(16);
+    format_holdem_infoset_key(hole, board, round, history, &mut s);
+    s
+}
+

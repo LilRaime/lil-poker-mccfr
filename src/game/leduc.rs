@@ -3,6 +3,7 @@
  * Actions: 0 = Fold, 1 = Call/Check, 2 = Raise.
  */
 use crate::game::card::{Card, ALL_CARDS};
+use crate::game::holdem::RoundHistory;
 use rand::seq::SliceRandom;
 
 pub const FOLD: u8 = 0;
@@ -12,6 +13,7 @@ pub const RAISE: u8 = 2;
 pub const NUM_ACTIONS: usize = 3;
 
 /* Compact round-history string used as part of the infoset key. */
+#[inline(always)]
 fn action_char(a: u8) -> char {
     match a {
         FOLD => 'f',
@@ -21,7 +23,7 @@ fn action_char(a: u8) -> char {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LeducGame {
     pub hole: [Card; 2],
     board_card: Card,
@@ -30,7 +32,7 @@ pub struct LeducGame {
     pub round: u8,
     pub raises_this_round: u8,
     pub contributions: [i32; 2],
-    pub history: [Vec<u8>; 2],
+    pub history: [RoundHistory; 2],
     pub terminal: bool,
     pub returns: [f64; 2],
 }
@@ -38,7 +40,7 @@ pub struct LeducGame {
 impl LeducGame {
     /* Create a new shuffled game. Deals hole cards AND community card upfront. */
     pub fn new_random<R: rand::Rng>(rng: &mut R) -> Self {
-        let mut deck: Vec<Card> = ALL_CARDS.to_vec();
+        let mut deck = ALL_CARDS;
         deck.shuffle(rng);
         LeducGame::new_with_cards(deck[0], deck[1], deck[2])
     }
@@ -53,28 +55,32 @@ impl LeducGame {
             round: 1,
             raises_this_round: 0,
             contributions: [1, 1],
-            history: [Vec::new(), Vec::new()],
+            history: [RoundHistory::new(), RoundHistory::new()],
             terminal: false,
             returns: [0.0, 0.0],
         }
     }
 
+    #[inline(always)]
     pub fn is_terminal(&self) -> bool {
         self.terminal
     }
 
+    #[inline(always)]
     pub fn get_returns(&self) -> [f64; 2] {
         self.returns
     }
 
+    #[inline(always)]
     pub fn current_player(&self) -> usize {
         self.current_player
     }
 
-    /* Legal actions at the current node. */
-    pub fn legal_actions(&self) -> Vec<u8> {
+    /* Legal actions at the current node into a stack buffer. */
+    #[inline(always)]
+    pub fn legal_actions_buf(&self, out: &mut [u8; 3]) -> usize {
         if self.terminal {
-            return vec![];
+            return 0;
         }
         let round_idx = (self.round - 1) as usize;
         let history = &self.history[round_idx];
@@ -83,30 +89,63 @@ impl LeducGame {
         match last {
             Some(RAISE) => {
                 if self.raises_this_round < 2 {
-                    vec![FOLD, CALL, RAISE]
+                    out[0] = FOLD;
+                    out[1] = CALL;
+                    out[2] = RAISE;
+                    3
                 } else {
-                    vec![FOLD, CALL]
+                    out[0] = FOLD;
+                    out[1] = CALL;
+                    2
                 }
             }
-            _ => vec![CALL, RAISE],
+            _ => {
+                out[0] = CALL;
+                out[1] = RAISE;
+                2
+            }
+        }
+    }
+
+    pub fn legal_actions(&self) -> Vec<u8> {
+        let mut buf = [0u8; 3];
+        let n = self.legal_actions_buf(&mut buf);
+        buf[..n].to_vec()
+    }
+
+    /* Fast zero-allocation information set key into String buffer */
+    #[inline(always)]
+    pub fn infoset_key_buf(&self, player: usize, out: &mut String) {
+        out.clear();
+        let card = self.hole[player].name();
+        let board = match self.board {
+            Some(c) => c.name(),
+            None => "_",
+        };
+        out.push_str(card);
+        out.push('/');
+        out.push_str(board);
+        out.push('/');
+        for &a in self.history[0].iter() {
+            out.push(action_char(a));
+        }
+        out.push('/');
+        for &a in self.history[1].iter() {
+            out.push(action_char(a));
         }
     }
 
     /* Information set key for player */
     pub fn infoset_key(&self, player: usize) -> String {
-        let card = self.hole[player].name();
-        let board = match self.board {
-            Some(c) => c.name().to_string(),
-            None => String::from("_"),
-        };
-        let h1: String = self.history[0].iter().map(|&a| action_char(a)).collect();
-        let h2: String = self.history[1].iter().map(|&a| action_char(a)).collect();
-        format!("{}/{}/{}/{}", card, board, h1, h2)
+        let mut s = String::with_capacity(16);
+        self.infoset_key_buf(player, &mut s);
+        s
     }
 
     /* Apply action and return resulting game state */
+    #[inline(always)]
     pub fn apply_action(&self, action: u8) -> LeducGame {
-        let mut next = self.clone();
+        let mut next = *self;
         let round_idx = (next.round - 1) as usize;
         next.history[round_idx].push(action);
 
@@ -146,6 +185,7 @@ impl LeducGame {
     }
 
     /* Advance round if check-check or raise-call occurs */
+    #[inline(always)]
     fn advance_round_if_done(mut self) -> LeducGame {
         let round_idx = (self.round - 1) as usize;
         let history = &self.history[round_idx];
@@ -177,6 +217,7 @@ impl LeducGame {
 
         self
     }
+
 
     fn resolve_showdown(&mut self) {
         let pot = self.contributions[0] + self.contributions[1];

@@ -21,12 +21,12 @@ impl SubgameSolver {
     }
 
     /* Solves subgame rooted at current board/hole state for my_player. */
-    pub fn solve(
+    pub fn solve<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         &self,
         hole: &[Card; 2],
         board: &[Card],
         round: u8,
-        history: &[Vec<u8>; 4],
+        history: &H,
         my_player: usize,
     ) -> Vec<f64> {
         let mut nodes: HashMap<String, InfosetNode> = HashMap::new();
@@ -61,12 +61,18 @@ impl SubgameSolver {
 
             let game = TexasHoldemGame {
                 hole: [p0_hole, p1_hole],
-                board: board.to_vec(),
-                deck_remaining: deck[2..].to_vec(),
-                history: history.clone(),
+                board: crate::game::holdem::Board::from_slice(board),
+                deck_remaining: crate::game::holdem::DeckRemaining::from_slice(&deck[2..]),
+                history: [
+                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
+                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),
+                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
+                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
+                ],
                 contributions: [100, 100],
                 current_player: my_player,
                 round,
+                raises_this_round: 0,
                 terminal: false,
                 returns: [0.0, 0.0],
             };
@@ -140,7 +146,7 @@ impl SubgameSolver {
 
             node_util
         } else {
-            // Sample opponent action
+            /* Sample opponent action */
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
             self.cfr(&next_game, updating_player, weight, nodes, rng)

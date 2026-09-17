@@ -26,22 +26,23 @@ impl MCCFRSolver {
         }
     }
 
-    /* Get or create a node for key. */
+    /* Fast get or create a node for key. */
+    #[inline(always)]
     fn get_node(&self, key: &str) -> Arc<InfosetNode> {
         if let Some(node) = self.nodes.get(key) {
             return Arc::clone(&node);
         }
-        let node = Arc::new(InfosetNode::new(NUM_ACTIONS));
         self.nodes
             .entry(key.to_string())
-            .or_insert_with(|| Arc::clone(&node));
-        Arc::clone(&self.nodes.get(key).unwrap())
+            .or_insert_with(|| Arc::new(InfosetNode::new(NUM_ACTIONS)))
+            .clone()
     }
 
     /* Run iterations of parallel External Sampling MCCFR. */
     pub fn train(&self, iterations: u64, threads: usize, log_every: u64) {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
+            .stack_size(8 * 1024 * 1024)
             .build_global()
             .unwrap_or(());
 
@@ -49,6 +50,7 @@ impl MCCFRSolver {
         let chunk_size = if log_every > 0 { log_every } else { iterations };
         let width = iterations.to_string().len();
         let mut done = 0u64;
+        let total_iter_f64 = iterations as f64;
 
         let entropy_base = Arc::new(AtomicU64::new(
             std::time::SystemTime::now()
@@ -72,7 +74,8 @@ impl MCCFRSolver {
                 let solver_ref = MCCFRSolver {
                     nodes: Arc::clone(&nodes_ref),
                 };
-                solver_ref.traverse(&game, updating_player, iter_idx as f64, &mut rng);
+                let linear_weight = (iter_idx + 1) as f64 / total_iter_f64;
+                solver_ref.traverse(&game, updating_player, linear_weight, &mut rng);
             });
 
             done = batch_end;
@@ -95,7 +98,7 @@ impl MCCFRSolver {
         &self,
         game: &LeducGame,
         updating_player: usize,
-        _iter_idx: f64,
+        weight: f64,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
@@ -103,53 +106,68 @@ impl MCCFRSolver {
         }
 
         let curr_player = game.current_player();
-        let actions = game.legal_actions();
-        let n = actions.len();
+        let mut actions = [0u8; NUM_ACTIONS];
+        let n = game.legal_actions_buf(&mut actions);
         if n == 0 {
             return 0.0;
         }
 
-        let key = game.infoset_key(curr_player);
-        let node = self.get_node(&key);
-        let strategy = node.get_strategy();
+        let mut key_buf = String::with_capacity(16);
+        game.infoset_key_buf(curr_player, &mut key_buf);
+        let node = self.get_node(&key_buf);
+        let mut strategy = [0.0f64; crate::cfr::node::MAX_ACTIONS];
+        node.get_strategy_buf(&mut strategy);
 
-        let legal_probs: Vec<f64> = actions.iter().map(|&a| strategy[a as usize]).collect();
-        let prob_sum: f64 = legal_probs.iter().sum();
-        let legal_probs: Vec<f64> = if prob_sum > 0.0 {
-            legal_probs.iter().map(|p| p / prob_sum).collect()
+        let mut legal_probs = [0.0f64; NUM_ACTIONS];
+        let mut prob_sum = 0.0f64;
+        for i in 0..n {
+            let p = strategy[actions[i] as usize];
+            legal_probs[i] = p;
+            prob_sum += p;
+        }
+        if prob_sum > 0.0 {
+            let inv_sum = 1.0 / prob_sum;
+            for i in 0..n {
+                legal_probs[i] *= inv_sum;
+            }
         } else {
-            vec![1.0 / n as f64; n]
-        };
+            let uniform = 1.0 / n as f64;
+            for i in 0..n {
+                legal_probs[i] = uniform;
+            }
+        }
 
         if curr_player == updating_player {
-            let mut action_utils = vec![0.0f64; n];
+            let mut action_utils = [0.0f64; NUM_ACTIONS];
             let mut node_util = 0.0f64;
 
-            for (idx, &act) in actions.iter().enumerate() {
+            for i in 0..n {
+                let act = actions[i];
                 let child = game.apply_action(act);
-                action_utils[idx] = self.traverse(&child, updating_player, _iter_idx, rng);
-                node_util += legal_probs[idx] * action_utils[idx];
+                let u = self.traverse(&child, updating_player, weight, rng);
+                action_utils[i] = u;
+                node_util += legal_probs[i] * u;
             }
 
-            let mut regrets = vec![0.0f64; NUM_ACTIONS];
-            for (idx, &act) in actions.iter().enumerate() {
-                regrets[act as usize] = action_utils[idx] - node_util;
+            let mut regrets = [0.0f64; NUM_ACTIONS];
+            for i in 0..n {
+                regrets[actions[i] as usize] = action_utils[i] - node_util;
             }
 
             node.update_regrets_cfr_plus(&regrets);
             node_util
         } else {
-            let chosen_idx = sample_action(&legal_probs, rng);
+            let chosen_idx = sample_action_buf(&legal_probs[..n], rng);
             let chosen_act = actions[chosen_idx];
 
-            let mut full_strategy = vec![0.0f64; NUM_ACTIONS];
-            for (idx, &act) in actions.iter().enumerate() {
-                full_strategy[act as usize] = legal_probs[idx];
+            let mut full_strategy = [0.0f64; NUM_ACTIONS];
+            for i in 0..n {
+                full_strategy[actions[i] as usize] = legal_probs[i];
             }
-            node.accumulate_strategy(&full_strategy, 1.0);
+            node.accumulate_strategy(&full_strategy, weight);
 
             let child = game.apply_action(chosen_act);
-            self.traverse(&child, updating_player, _iter_idx, rng)
+            self.traverse(&child, updating_player, weight, rng)
         }
     }
 
@@ -167,7 +185,8 @@ impl MCCFRSolver {
 }
 
 /* Sample an index from a probability distribution. */
-fn sample_action(probs: &[f64], rng: &mut SmallRng) -> usize {
+#[inline(always)]
+fn sample_action_buf(probs: &[f64], rng: &mut SmallRng) -> usize {
     let r: f64 = rng.gen();
     let mut cumulative = 0.0;
     for (i, &p) in probs.iter().enumerate() {
@@ -176,5 +195,5 @@ fn sample_action(probs: &[f64], rng: &mut SmallRng) -> usize {
             return i;
         }
     }
-    probs.len() - 1
+    probs.len().saturating_sub(1)
 }
