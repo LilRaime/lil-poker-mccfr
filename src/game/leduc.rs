@@ -218,7 +218,6 @@ impl LeducGame {
         self
     }
 
-
     fn resolve_showdown(&mut self) {
         let pot = self.contributions[0] + self.contributions[1];
         let board_rank = self.board.unwrap().rank;

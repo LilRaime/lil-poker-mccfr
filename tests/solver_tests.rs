@@ -1,15 +1,18 @@
+use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
 use lil_poker_mccfr::cfr::node::InfosetNode;
 use lil_poker_mccfr::game::holdem::{
     evaluate_7cards, Card, Rank, Suit, TexasHoldemGame, CALL_CHECK,
 };
-use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
 
 #[test]
 fn test_evaluate_7cards_categories() {
     let card = |rank, suit| Card { rank, suit };
 
     /* 1. Royal / Straight Flush: A♥ K♥ Q♥ J♥ T♥ 9♣ 2♦ */
-    let hole_sf = [card(Rank::Ace, Suit::Hearts), card(Rank::King, Suit::Hearts)];
+    let hole_sf = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_sf = [
         card(Rank::Queen, Suit::Hearts),
         card(Rank::Jack, Suit::Hearts),
@@ -21,7 +24,10 @@ fn test_evaluate_7cards_categories() {
     assert_eq!(score_sf >> 32, 8, "Expected Straight Flush category 8");
 
     /* 2. Four of a kind (Quads): 9♠ 9♥ 9♦ 9♣ K♣ 2♥ 3♦ */
-    let hole_quads = [card(Rank::Nine, Suit::Spades), card(Rank::Nine, Suit::Hearts)];
+    let hole_quads = [
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Nine, Suit::Hearts),
+    ];
     let board_quads = [
         card(Rank::Nine, Suit::Diamonds),
         card(Rank::Nine, Suit::Clubs),
@@ -33,7 +39,10 @@ fn test_evaluate_7cards_categories() {
     assert_eq!(score_quads >> 32, 7, "Expected Quads category 7");
 
     /* 3. Full House: K♠ K♥ K♦ 4♣ 4♥ 2♦ 8♣ */
-    let hole_fh = [card(Rank::King, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole_fh = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_fh = [
         card(Rank::King, Suit::Diamonds),
         card(Rank::Four, Suit::Clubs),
@@ -70,7 +79,10 @@ fn test_evaluate_7cards_categories() {
     assert_eq!(score_st & 0xFF, 3, "Expected 5-high straight");
 
     /* 6. Three of a kind: Q♠ Q♥ Q♦ 9♣ 7♥ 4♦ 2♣ */
-    let hole_trips = [card(Rank::Queen, Suit::Spades), card(Rank::Queen, Suit::Hearts)];
+    let hole_trips = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Queen, Suit::Hearts),
+    ];
     let board_trips = [
         card(Rank::Queen, Suit::Diamonds),
         card(Rank::Nine, Suit::Clubs),
@@ -82,7 +94,10 @@ fn test_evaluate_7cards_categories() {
     assert_eq!(score_trips >> 32, 3, "Expected Trips category 3");
 
     /* 7. Two Pair: J♠ J♥ 8♦ 8♣ A♣ 4♦ 2♥ */
-    let hole_tp = [card(Rank::Jack, Suit::Spades), card(Rank::Jack, Suit::Hearts)];
+    let hole_tp = [
+        card(Rank::Jack, Suit::Spades),
+        card(Rank::Jack, Suit::Hearts),
+    ];
     let board_tp = [
         card(Rank::Eight, Suit::Diamonds),
         card(Rank::Eight, Suit::Clubs),
@@ -106,7 +121,10 @@ fn test_evaluate_7cards_categories() {
     assert_eq!(score_op >> 32, 1, "Expected One Pair category 1");
 
     /* 9. High Card: A♠ K♥ J♦ 8♣ 6♣ 4♦ 2♥ */
-    let hole_hc = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole_hc = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_hc = [
         card(Rank::Jack, Suit::Diamonds),
         card(Rank::Eight, Suit::Clubs),
@@ -158,7 +176,7 @@ fn test_holdem_game_actions_and_transitions() {
 #[test]
 fn test_cfr_plus_non_negative_regret_clamping() {
     let node = InfosetNode::new(4);
-    
+
     /* Add negative regrets */
     node.update_regrets_cfr_plus(&[-10.0, -50.0, -100.0, -5.0]);
 
@@ -167,16 +185,22 @@ fn test_cfr_plus_non_negative_regret_clamping() {
     assert_eq!(strat, vec![0.25, 0.25, 0.25, 0.25]);
 
     /* Now add positive regret for action 1 (+20.0). Because floor was 0 (not -50),
-       action 1 must immediately have positive regret! */
+    action 1 must immediately have positive regret! */
     node.update_regrets_cfr_plus(&[0.0, 20.0, 0.0, 0.0]);
     let strat2 = node.get_strategy();
-    assert_eq!(strat2[1], 1.0, "Action 1 should have 100% prob immediately without negative debt!");
+    assert_eq!(
+        strat2[1], 1.0,
+        "Action 1 should have 100% prob immediately without negative debt!"
+    );
 }
 
 #[test]
 fn test_holdem_infoset_key_consistency() {
     let card = |rank, suit| Card { rank, suit };
-    let hole = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Spades)];
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    ];
     let board = [
         card(Rank::Queen, Suit::Hearts),
         card(Rank::Jack, Suit::Hearts),
@@ -194,7 +218,10 @@ fn test_draw_detection_and_equity_buckets() {
 
     let card = |rank, suit| Card { rank, suit };
     /* Flush draw: A♠ 4♠ on K♠ 8♠ 2♦ */
-    let hole_fd = [card(Rank::Ace, Suit::Spades), card(Rank::Four, Suit::Spades)];
+    let hole_fd = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Four, Suit::Spades),
+    ];
     let board_fd = [
         card(Rank::King, Suit::Spades),
         card(Rank::Eight, Suit::Spades),
@@ -204,7 +231,11 @@ fn test_draw_detection_and_equity_buckets() {
     assert!(is_fd, "Should detect flush draw");
     assert!(!is_sd, "Should not detect straight draw");
     let bucket_fd = postflop_equity_bucket(&hole_fd, &board_fd);
-    assert!(bucket_fd >= 15, "Flush draw with Ace should be high tier draw (bucket >= 15), got {}", bucket_fd);
+    assert!(
+        bucket_fd >= 15,
+        "Flush draw with Ace should be high tier draw (bucket >= 15), got {}",
+        bucket_fd
+    );
 
     /* One Pair AA vs One Pair 22 should NOT have the same bucket! */
     let hole_aa = [card(Rank::Ace, Suit::Hearts), card(Rank::Two, Suit::Clubs)];
@@ -213,7 +244,10 @@ fn test_draw_detection_and_equity_buckets() {
         card(Rank::Seven, Suit::Diamonds),
         card(Rank::Nine, Suit::Clubs),
     ];
-    let hole_22 = [card(Rank::Two, Suit::Hearts), card(Rank::Three, Suit::Clubs)];
+    let hole_22 = [
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Three, Suit::Clubs),
+    ];
     let board_2 = [
         card(Rank::Two, Suit::Spades),
         card(Rank::Seven, Suit::Diamonds),
@@ -221,5 +255,10 @@ fn test_draw_detection_and_equity_buckets() {
     ];
     let bucket_aa = postflop_equity_bucket(&hole_aa, &board_a);
     let bucket_22 = postflop_equity_bucket(&hole_22, &board_2);
-    assert!(bucket_aa > bucket_22, "Pair of Aces ({}) must be in higher bucket than Pair of Twos ({})", bucket_aa, bucket_22);
+    assert!(
+        bucket_aa > bucket_22,
+        "Pair of Aces ({}) must be in higher bucket than Pair of Twos ({})",
+        bucket_aa,
+        bucket_22
+    );
 }

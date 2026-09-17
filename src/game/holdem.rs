@@ -433,10 +433,7 @@ impl DeckRemaining {
         let mut arr = [ALL_52_CARDS[0]; 52];
         let n = cards.len().min(52);
         arr[..n].copy_from_slice(&cards[..n]);
-        DeckRemaining {
-            cards: arr,
-            ptr: 0,
-        }
+        DeckRemaining { cards: arr, ptr: 0 }
     }
 
     #[inline(always)]
@@ -581,19 +578,22 @@ impl TexasHoldemGame {
                 return next;
             }
             CALL_CHECK => {
-                let diff = (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff).min(stack_limit);
             }
             RAISE_MIN => {
-                let diff = (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 let raise_amt = 40;
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
                 next.raises_this_round += 1;
             }
             RAISE_HALF_POT => {
-                let diff = (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 let raise_amt = (pot / 2).max(40);
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
@@ -665,10 +665,9 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     let mut all_cards = [ALL_52_CARDS[0]; 7];
     all_cards[0] = hole[0];
     all_cards[1] = hole[1];
-    let total_cards = 2 + board.len().min(5);
-    for i in 0..board.len().min(5) {
-        all_cards[2 + i] = board[i];
-    }
+    let board_n = board.len().min(5);
+    all_cards[2..(board_n + 2)].copy_from_slice(&board[..board_n]);
+    let total_cards = 2 + board_n;
     let cards = &mut all_cards[..total_cards];
 
     /* Sort by rank descending */
@@ -718,23 +717,17 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
 
     for r in (0..13).rev() {
         match rank_counts[r] {
-            4 => {
-                if quads_len < 1 {
-                    quads[quads_len] = r as u64;
-                    quads_len += 1;
-                }
+            4 if quads_len < 1 => {
+                quads[quads_len] = r as u64;
+                quads_len += 1;
             }
-            3 => {
-                if trips_len < 2 {
-                    trips[trips_len] = r as u64;
-                    trips_len += 1;
-                }
+            3 if trips_len < 2 => {
+                trips[trips_len] = r as u64;
+                trips_len += 1;
             }
-            2 => {
-                if pairs_len < 3 {
-                    pairs[pairs_len] = r as u64;
-                    pairs_len += 1;
-                }
+            2 if pairs_len < 3 => {
+                pairs[pairs_len] = r as u64;
+                pairs_len += 1;
             }
             _ => {}
         }

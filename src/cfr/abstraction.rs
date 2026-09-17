@@ -323,7 +323,7 @@ pub fn detect_draws(hole: &[Card; 2], board: &[Card]) -> (bool, bool) {
     for &b in board {
         suit_counts[b.suit as usize] += 1;
     }
-    let is_flush_draw = suit_counts.iter().any(|&c| c == 4);
+    let is_flush_draw = suit_counts.contains(&4);
 
     let mut ranks = [false; 13];
     ranks[hole[0].rank as usize] = true;
@@ -550,4 +550,3 @@ pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     format_holdem_infoset_key(hole, board, round, history, &mut s);
     s
 }
-

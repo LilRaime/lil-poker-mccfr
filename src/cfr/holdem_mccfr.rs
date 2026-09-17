@@ -165,13 +165,13 @@ impl HoldemMCCFRSolver {
         }
         if prob_sum > 0.0 {
             let inv_sum = 1.0 / prob_sum;
-            for i in 0..n {
-                legal_probs[i] *= inv_sum;
+            for p in legal_probs.iter_mut().take(n) {
+                *p *= inv_sum;
             }
         } else {
             let uniform = 1.0 / n as f64;
-            for i in 0..n {
-                legal_probs[i] = uniform;
+            for p in legal_probs.iter_mut().take(n) {
+                *p = uniform;
             }
         }
 
@@ -235,4 +235,3 @@ fn sample_action_buf(probs: &[f64], rng: &mut SmallRng) -> usize {
     }
     probs.len().saturating_sub(1)
 }
-

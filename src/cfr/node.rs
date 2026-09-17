@@ -17,7 +17,10 @@ pub struct InfosetNode {
 
 impl InfosetNode {
     pub fn new(num_actions: usize) -> Self {
-        assert!(num_actions <= MAX_ACTIONS, "num_actions exceeds MAX_ACTIONS");
+        assert!(
+            num_actions <= MAX_ACTIONS,
+            "num_actions exceeds MAX_ACTIONS"
+        );
         InfosetNode {
             num_actions,
             regret_sum: [
@@ -40,20 +43,20 @@ impl InfosetNode {
     pub fn get_strategy_buf(&self, out: &mut [f64; MAX_ACTIONS]) {
         let n = self.num_actions;
         let mut total = 0.0f64;
-        for i in 0..n {
+        for (i, item) in out.iter_mut().enumerate().take(n) {
             let r = (self.regret_sum[i].load(Ordering::Relaxed) as f64 / SCALE).max(0.0);
-            out[i] = r;
+            *item = r;
             total += r;
         }
         if total > 0.0 {
             let inv_total = 1.0 / total;
-            for i in 0..n {
-                out[i] *= inv_total;
+            for item in out.iter_mut().take(n) {
+                *item *= inv_total;
             }
         } else {
             let uniform = 1.0 / n as f64;
-            for i in 0..n {
-                out[i] = uniform;
+            for item in out.iter_mut().take(n) {
+                *item = uniform;
             }
         }
     }
@@ -70,9 +73,9 @@ impl InfosetNode {
         let n = self.num_actions;
         let mut sums = [0.0; MAX_ACTIONS];
         let mut total = 0.0f64;
-        for i in 0..n {
+        for (i, item) in sums.iter_mut().enumerate().take(n) {
             let s = (self.strategy_sum[i].load(Ordering::Relaxed) as f64 / SCALE).max(0.0);
-            sums[i] = s;
+            *item = s;
             total += s;
         }
         if total > 0.0 {
@@ -116,4 +119,3 @@ impl InfosetNode {
 
 /* InfosetNode is Sync because all interior mutation is atomic. */
 unsafe impl Sync for InfosetNode {}
-
