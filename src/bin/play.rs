@@ -420,13 +420,14 @@ fn run_holdem_episodes_log_mode(
             let term_reward = final_ret / 1000.0;
             cumulative_reward += term_reward;
 
-            let act_name = if step_count == 1 && game.returns[1 - my_player] < 0.0 && game.board.is_empty() {
-                "OPP_FOLD"
-            } else if prev_my_contrib != game.contributions[my_player] {
-                "FOLD"
-            } else {
-                "SHOWDOWN"
-            };
+            let act_name =
+                if step_count == 1 && game.returns[1 - my_player] < 0.0 && game.board.is_empty() {
+                    "OPP_FOLD"
+                } else if prev_my_contrib != game.contributions[my_player] {
+                    "FOLD"
+                } else {
+                    "SHOWDOWN"
+                };
 
             println!(
                 "Step {} | Phase: End | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
@@ -460,7 +461,10 @@ fn run_holdem_episodes_log_mode(
     println!("        ♠️  Texas Hold'em: Bot Simulation Summary  ♥️        ");
     println!("============================================================");
     println!("Total Hands Played  : {}", total_stats.hands);
-    println!("Total Net Profit    : {:+.1} chips", total_stats.total_chips);
+    println!(
+        "Total Net Profit    : {:+.1} chips",
+        total_stats.total_chips
+    );
     println!(
         "Results Breakdown   : Wins: {} ({:.1}%) | Losses: {} ({:.1}%) | Ties: {} ({:.1}%)",
         total_stats.wins,
@@ -501,7 +505,10 @@ fn run_holdem_episodes_log_mode(
             println!("  Win Percentage  : {:.1}%", pos_stats[p].win_pct());
             println!("  Net Profit      : {:+.1} chips", pos_stats[p].total_chips);
             println!("  Avg Profit/Hand : {:+.3} chips (±{:.3})", p_avg, p_se);
-            println!("  Win Rate        : {:+.2} bb/100", (p_avg / bb_val) * 100.0);
+            println!(
+                "  Win Rate        : {:+.2} bb/100",
+                (p_avg / bb_val) * 100.0
+            );
         }
     }
     println!("============================================================\n");
@@ -562,7 +569,12 @@ fn action_name(action: u8) -> &'static str {
 }
 
 /* Mode 3: Leduc RL Episode Step Log Format */
-fn run_episodes_log_mode(strategy: &Strategy, total_episodes: u64, delay_ms: u64, player_arg: &str) {
+fn run_episodes_log_mode(
+    strategy: &Strategy,
+    total_episodes: u64,
+    delay_ms: u64,
+    player_arg: &str,
+) {
     let mut rng = SmallRng::from_entropy();
 
     let mut total_stats = SimStats::default();
@@ -663,7 +675,10 @@ fn run_episodes_log_mode(strategy: &Strategy, total_episodes: u64, delay_ms: u64
 
         println!(
             "Finished Episode {} | Total Steps: {} | Cumulative Reward: {:+.4} | Net Chips: {:+}",
-            ep, step_count, cumulative_reward, (final_ret * 40.0) as i32
+            ep,
+            step_count,
+            cumulative_reward,
+            (final_ret * 40.0) as i32
         );
     }
 
@@ -672,7 +687,10 @@ fn run_episodes_log_mode(strategy: &Strategy, total_episodes: u64, delay_ms: u64
     println!("         ♠️  Leduc Poker: Bot Simulation Summary  ♥️         ");
     println!("============================================================");
     println!("Total Hands Played  : {}", total_stats.hands);
-    println!("Total Net Profit    : {:+.1} chips", total_stats.total_chips);
+    println!(
+        "Total Net Profit    : {:+.1} chips",
+        total_stats.total_chips
+    );
     println!(
         "Results Breakdown   : Wins: {} ({:.1}%) | Losses: {} ({:.1}%) | Ties: {} ({:.1}%)",
         total_stats.wins,
@@ -694,14 +712,22 @@ fn run_episodes_log_mode(strategy: &Strategy, total_episodes: u64, delay_ms: u64
     if pos_stats[0].hands > 0 && pos_stats[1].hands > 0 {
         println!("\n--- Positional Breakdown ---");
         for p in 0..2 {
-            let pos_name = if p == 0 { "Player 0 (OOP)" } else { "Player 1 (IP)" };
+            let pos_name = if p == 0 {
+                "Player 0 (OOP)"
+            } else {
+                "Player 1 (IP)"
+            };
             let p_avg = pos_stats[p].avg_chips();
             let p_se = pos_stats[p].se_chips();
             println!("{}:", pos_name);
             println!("  Hands Played    : {}", pos_stats[p].hands);
             println!("  Win Percentage  : {:.1}%", pos_stats[p].win_pct());
             println!("  Net Profit      : {:+.1} chips", pos_stats[p].total_chips);
-            println!("  Win Rate        : {:+.1} mbb/hand (±{:.1})", p_avg * 1000.0, p_se * 1000.0);
+            println!(
+                "  Win Rate        : {:+.1} mbb/hand (±{:.1})",
+                p_avg * 1000.0,
+                p_se * 1000.0
+            );
         }
     }
     println!("============================================================\n");
