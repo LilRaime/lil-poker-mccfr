@@ -492,18 +492,18 @@ fn run_holdem_episodes_log_mode(
 
     if pos_stats[0].hands > 0 && pos_stats[1].hands > 0 {
         println!("\n--- Positional Breakdown ---");
-        for p in 0..2 {
+        for (p, stat) in pos_stats.iter().enumerate() {
             let pos_name = if p == 0 {
                 "Player 0 (SB / Button)"
             } else {
                 "Player 1 (BB)"
             };
-            let p_avg = pos_stats[p].avg_chips();
-            let p_se = pos_stats[p].se_chips();
+            let p_avg = stat.avg_chips();
+            let p_se = stat.se_chips();
             println!("{}:", pos_name);
-            println!("  Hands Played    : {}", pos_stats[p].hands);
-            println!("  Win Percentage  : {:.1}%", pos_stats[p].win_pct());
-            println!("  Net Profit      : {:+.1} chips", pos_stats[p].total_chips);
+            println!("  Hands Played    : {}", stat.hands);
+            println!("  Win Percentage  : {:.1}%", stat.win_pct());
+            println!("  Net Profit      : {:+.1} chips", stat.total_chips);
             println!("  Avg Profit/Hand : {:+.3} chips (±{:.3})", p_avg, p_se);
             println!(
                 "  Win Rate        : {:+.2} bb/100",
@@ -711,18 +711,18 @@ fn run_episodes_log_mode(
 
     if pos_stats[0].hands > 0 && pos_stats[1].hands > 0 {
         println!("\n--- Positional Breakdown ---");
-        for p in 0..2 {
+        for (p, stat) in pos_stats.iter().enumerate() {
             let pos_name = if p == 0 {
                 "Player 0 (OOP)"
             } else {
                 "Player 1 (IP)"
             };
-            let p_avg = pos_stats[p].avg_chips();
-            let p_se = pos_stats[p].se_chips();
+            let p_avg = stat.avg_chips();
+            let p_se = stat.se_chips();
             println!("{}:", pos_name);
-            println!("  Hands Played    : {}", pos_stats[p].hands);
-            println!("  Win Percentage  : {:.1}%", pos_stats[p].win_pct());
-            println!("  Net Profit      : {:+.1} chips", pos_stats[p].total_chips);
+            println!("  Hands Played    : {}", stat.hands);
+            println!("  Win Percentage  : {:.1}%", stat.win_pct());
+            println!("  Net Profit      : {:+.1} chips", stat.total_chips);
             println!(
                 "  Win Rate        : {:+.1} mbb/hand (±{:.1})",
                 p_avg * 1000.0,
