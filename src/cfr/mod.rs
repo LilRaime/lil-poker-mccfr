@@ -1,4 +1,5 @@
 pub mod abstraction;
+pub mod fallback;
 pub mod holdem_mccfr;
 pub mod mccfr;
 pub mod node;

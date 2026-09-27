@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 /* Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
 const SCALE: f64 = 1_000_000.0;
-pub const MAX_ACTIONS: usize = 4;
+pub const MAX_ACTIONS: usize = 6;
 
 pub struct InfosetNode {
     pub num_actions: usize,
@@ -28,8 +28,12 @@ impl InfosetNode {
                 AtomicI64::new(0),
                 AtomicI64::new(0),
                 AtomicI64::new(0),
+                AtomicI64::new(0),
+                AtomicI64::new(0),
             ],
             strategy_sum: [
+                AtomicI64::new(0),
+                AtomicI64::new(0),
                 AtomicI64::new(0),
                 AtomicI64::new(0),
                 AtomicI64::new(0),

@@ -8,7 +8,7 @@ use clap::Parser;
 use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
 use lil_poker_mccfr::game::card::Card;
 use lil_poker_mccfr::game::holdem::{
-    TexasHoldemGame, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN,
+    TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
 use lil_poker_mccfr::game::leduc::{LeducGame, CALL, FOLD, RAISE};
 use rand::rngs::SmallRng;
@@ -21,8 +21,8 @@ use std::time::Duration;
 
 /* Leduc strategy: 3 actions [fold, call, raise] */
 type LeducStrategy = HashMap<String, [f64; 3]>;
-/* Hold'em strategy: 4 actions [fold, call_check, raise_min, raise_half_pot] */
-type HoldemStrategy = HashMap<String, [f64; 4]>;
+/* Hold'em strategy: 6 actions [fold, call_check, raise_min, raise_third_pot, raise_half_pot, all_in] */
+type HoldemStrategy = HashMap<String, [f64; 6]>;
 
 /* Keep backward-compat alias used in Leduc helpers. */
 type Strategy = LeducStrategy;
@@ -177,7 +177,7 @@ fn main() {
     }
 }
 
-/* Hold'em Strategy Loader */
+/* Hold'em Strategy Loader (supports both legacy 4-action and modern 6-action formats) */
 fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
     let data = std::fs::read_to_string(path).ok()?;
     let json: Value = serde_json::from_str(&data).ok()?;
@@ -186,8 +186,14 @@ fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
         map.iter()
             .filter_map(|(k, v)| {
                 let arr = v.as_array()?;
-                let p = |i: usize| arr.get(i).and_then(|x| x.as_f64()).unwrap_or(0.25);
-                Some((k.clone(), [p(0), p(1), p(2), p(3)]))
+                let p = |i: usize| arr.get(i).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let strat = if arr.len() >= 6 {
+                    [p(0), p(1), p(2), p(3), p(4), p(5)]
+                } else {
+                    /* Map legacy 4-action entries [fold, call, raise_min, raise_half_pot] */
+                    [p(0), p(1), p(2), 0.0, p(3), 0.0]
+                };
+                Some((k.clone(), strat))
             })
             .collect(),
     )
@@ -230,6 +236,70 @@ fn sample_holdem_action(
 
 use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
 use lil_poker_mccfr::cfr::subgame::SubgameSolver;
+use lil_poker_mccfr::game::holdem::Card as HCard;
+
+fn find_strategy_or_fallback(
+    strategy: &HoldemStrategy,
+    hole: &[HCard; 2],
+    board: &[HCard],
+    round: u8,
+    to_call: i32,
+    pot: i32,
+    legal: &[u8],
+) -> Vec<f64> {
+    use lil_poker_mccfr::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+    use lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy;
+
+    let fallback = get_holdem_fallback_strategy(hole, board, round, to_call, pot, legal);
+
+    let prefix = if round == 1 {
+        let (_, name) = preflop_bucket(hole[0], hole[1]);
+        format!("P:{}/", name)
+    } else {
+        let bucket = postflop_equity_bucket(hole, board);
+        let r_code = match round {
+            2 => "F",
+            3 => "T",
+            4 => "R",
+            _ => "X",
+        };
+        format!("{}:B{:02}/", r_code, bucket)
+    };
+
+    let matches: Vec<&[f64; 6]> = strategy
+        .iter()
+        .filter(|(k, _)| k.starts_with(&prefix))
+        .map(|(_, v)| v)
+        .collect();
+
+    if !matches.is_empty() {
+        let n = matches.len() as f64;
+        let mut model_avg = [0.0f64; 6];
+        for s in &matches {
+            for i in 0..6 {
+                model_avg[i] += s[i] / n;
+            }
+        }
+        let mut blended = [0.0f64; 6];
+        let mut sum = 0.0f64;
+        for &a in legal {
+            let idx = a as usize;
+            let val = 0.55 * model_avg[idx] + 0.45 * fallback[idx];
+            blended[idx] = val.max(0.0);
+            sum += blended[idx];
+        }
+        if sum > 1e-9 {
+            for &a in legal {
+                blended[a as usize] /= sum;
+            }
+            blended.to_vec()
+        } else {
+            fallback.to_vec()
+        }
+    } else {
+        fallback.to_vec()
+    }
+}
 
 /* Full 52-Card Texas Hold'em Simulation Mode */
 fn run_holdem_episodes_log_mode(
@@ -254,7 +324,7 @@ fn run_holdem_episodes_log_mode(
 
     let mut rng = SmallRng::from_entropy();
     let mut opp_tracker = OpponentTracker::new();
-    let subgame_solver = SubgameSolver::new(1500);
+    let subgame_solver = SubgameSolver::new(2500);
 
     let mut total_stats = SimStats::default();
     let mut pos_stats = [SimStats::default(), SimStats::default()];
@@ -300,15 +370,22 @@ fn run_holdem_episodes_log_mode(
                 );
 
                 let legal = game.legal_actions();
+                let opp = 1 - my_player;
+                let to_call = (game.contributions[opp] - game.contributions[my_player]).max(0);
+                let pot = game.contributions[0] + game.contributions[1];
 
                 /* 1. Get raw Blueprint/Subgame probabilities */
-                let raw_probs = if enable_subgame_search && game.round >= 3 {
-                    subgame_solver.solve(
+                let raw_probs = if enable_subgame_search
+                    && (game.round >= 3 || (game.round == 2 && pot >= 120))
+                {
+                    subgame_solver.solve_with_state(
                         &game.hole[my_player],
                         &game.board,
                         game.round,
                         &game.history,
                         my_player,
+                        game.contributions,
+                        game.raises_this_round,
                     )
                 } else if let Some(ref strat) = strategy {
                     let key = get_holdem_infoset_key(
@@ -320,45 +397,59 @@ fn run_holdem_episodes_log_mode(
                     if let Some(s) = strat.get(&key) {
                         s.to_vec()
                     } else {
-                        vec![0.25; 4]
+                        find_strategy_or_fallback(
+                            strat,
+                            &game.hole[my_player],
+                            &game.board,
+                            game.round,
+                            to_call,
+                            pot,
+                            &legal,
+                        )
                     }
                 } else {
-                    vec![0.25; 4]
+                    lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
+                        &game.hole[my_player],
+                        &game.board,
+                        game.round,
+                        to_call,
+                        pot,
+                        &legal,
+                    )
+                    .to_vec()
                 };
 
-                /* 2. Adjust using Opponent Tracker */
-                let adjusted_probs = opp_tracker.adjust_strategy(&raw_probs, &legal);
-
-                /* 3. Sample action */
-                let act = {
-                    let legal_probs: Vec<f64> = legal
-                        .iter()
-                        .map(|&a| adjusted_probs[a as usize].max(0.0))
-                        .collect();
-                    let sum: f64 = legal_probs.iter().sum();
-                    if sum > 1e-12 {
-                        let probs: Vec<f64> = legal_probs.iter().map(|p| p / sum).collect();
-                        let r: f64 = rng.gen();
-                        let mut cum = 0.0;
-                        let mut chosen = *legal.last().unwrap();
-                        for (i, &p) in probs.iter().enumerate() {
-                            cum += p;
-                            if r < cum {
-                                chosen = legal[i];
-                                break;
-                            }
-                        }
-                        chosen
-                    } else {
-                        legal[rng.gen_range(0..legal.len())]
-                    }
+                /* 2. Adjust using Opponent Tracker with hand context */
+                let current_bucket = if game.round == 1 {
+                    lil_poker_mccfr::cfr::abstraction::preflop_bucket(
+                        game.hole[my_player][0],
+                        game.hole[my_player][1],
+                    )
+                    .0
+                } else {
+                    lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket(
+                        &game.hole[my_player],
+                        &game.board,
+                    )
                 };
+
+                /* 2. Sample action with Purification, Opponent Exploitation, and All-in Defense */
+                let act = opp_tracker.select_action_purified(
+                    &raw_probs,
+                    &legal,
+                    current_bucket,
+                    game.round == 1,
+                    to_call,
+                    &mut rng,
+                );
 
                 let act_name = match act {
                     H_FOLD => "FOLD",
                     CALL_CHECK => "CALL_CHECK",
                     RAISE_MIN => "RAISE_MIN",
+                    RAISE_THIRD_POT => "RAISE_THIRD_POT",
                     RAISE_HALF_POT => "RAISE_HALF_POT",
+                    ALL_IN => "ALL_IN",
                     _ => "UNKNOWN",
                 };
 

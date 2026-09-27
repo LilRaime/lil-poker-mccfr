@@ -11,7 +11,7 @@ use crate::cfr::abstraction::format_holdem_infoset_key;
 use crate::cfr::node::InfosetNode;
 use crate::game::holdem::TexasHoldemGame;
 
-pub const HOLDEM_NUM_ACTIONS: usize = 4;
+pub const HOLDEM_NUM_ACTIONS: usize = 6;
 
 pub struct HoldemMCCFRSolver {
     pub nodes: Arc<DashMap<String, Arc<InfosetNode>>>,

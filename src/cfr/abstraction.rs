@@ -520,7 +520,9 @@ pub fn format_holdem_infoset_key_slice(
             0 => 'f',
             1 => 'c',
             2 => 'r',
-            3 => 'h',
+            3 => 't',
+            4 => 'h',
+            5 => 'a',
             _ => 'x',
         };
         out.push(ch);

@@ -137,7 +137,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Loading strategy model from {}...", args.strategy);
         let file = File::open(&args.strategy)?;
         let reader = BufReader::new(file);
-        serde_json::from_reader(reader)?
+        let raw: HashMap<String, Vec<f64>> = serde_json::from_reader(reader)?;
+        let mut map = HashMap::new();
+        for (k, v) in raw {
+            if v.len() >= 6 {
+                map.insert(k, v);
+            } else if v.len() == 4 {
+                /* Map legacy 4-action entries [fold, call, raise_min, raise_half_pot] */
+                map.insert(k, vec![v[0], v[1], v[2], 0.0, v[3], 0.0]);
+            } else {
+                map.insert(k, v);
+            }
+        }
+        map
     } else {
         println!(
             "WARNING: Strategy file {} not found! Using random play.",
@@ -394,6 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &board_cards_clone,
                 &legal_actions,
                 to_call,
+                pot,
                 &strat_map,
                 subgame,
                 &tracker_clone,
@@ -477,14 +490,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decide_action(
     hole: &[Card; 2],
     board: &[Card],
     legal: &[String],
     to_call: i32,
+    pot: i32,
     strategy_map: &HashMap<String, Vec<f64>>,
     subgame_search: bool,
-    _tracker: &OpponentTracker,
+    tracker: &OpponentTracker,
 ) -> (String, i32) {
     let round = match board.len() {
         0 => 1,
@@ -494,103 +509,128 @@ fn decide_action(
     };
     let history_dummy: [Vec<u8>; 4] = [vec![], vec![], vec![], vec![]];
 
-    /* 1. Real-time Subgame Search (Turn & River) */
-    if subgame_search && board.len() >= 3 {
-        let solver = SubgameSolver::new(1500);
-        let probs = solver.solve(hole, board, round, &history_dummy, 0);
-        if let Some((max_idx, _)) = probs
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-        {
-            if let Some(res) = map_action_index(max_idx, legal, to_call) {
-                return res;
-            }
+    let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
+    let mut legal_u8: Vec<u8> = Vec::new();
+    if to_call > 0 && has("fold") {
+        legal_u8.push(0);
+    }
+    if has("check") || has("call") {
+        legal_u8.push(1);
+    }
+    if has("raise") || has("bet") {
+        legal_u8.push(2);
+        legal_u8.push(3);
+        legal_u8.push(4);
+    }
+    if has("allin") {
+        legal_u8.push(5);
+    }
+    if legal_u8.is_empty() {
+        if has("check") || has("call") {
+            legal_u8.push(1);
+        } else if has("fold") {
+            legal_u8.push(0);
+        } else if has("allin") {
+            legal_u8.push(5);
         }
     }
 
-    /* 2. Abstract Strategy Model Lookup */
-    let exact_key = get_holdem_infoset_key(hole, board, round, &history_dummy);
-
-    let probs_opt = if let Some(p) = strategy_map.get(&exact_key) {
-        Some(p.clone())
+    let current_bucket = if round == 1 {
+        preflop_bucket(hole[0], hole[1]).0
     } else {
-        let prefix = if round == 1 {
-            let (_, name) = preflop_bucket(hole[0], hole[1]);
-            format!("P:{}/", name)
+        postflop_equity_bucket(hole, board)
+    };
+
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots >= 120) */
+    let raw_probs = if subgame_search && (round >= 3 || (round == 2 && pot >= 120)) {
+        let solver = SubgameSolver::new(2500);
+        let my_contrib = (pot / 2).max(10);
+        let opp_contrib = my_contrib + to_call;
+        solver.solve_with_state(
+            hole,
+            board,
+            round,
+            &history_dummy,
+            0,
+            [my_contrib, opp_contrib],
+            0,
+        )
+    } else {
+        /* 2. Abstract Strategy Model Lookup with Fallback */
+        let exact_key = get_holdem_infoset_key(hole, board, round, &history_dummy);
+        if let Some(p) = strategy_map.get(&exact_key) {
+            p.clone()
         } else {
-            let bucket = postflop_equity_bucket(hole, board);
-            let r_code = match round {
-                2 => "F",
-                3 => "T",
-                4 => "R",
-                _ => "X",
+            let prefix = if round == 1 {
+                let (_, name) = preflop_bucket(hole[0], hole[1]);
+                format!("P:{}/", name)
+            } else {
+                let bucket = postflop_equity_bucket(hole, board);
+                let r_code = match round {
+                    2 => "F",
+                    3 => "T",
+                    4 => "R",
+                    _ => "X",
+                };
+                format!("{}:B{:02}/", r_code, bucket)
             };
-            format!("{}:B{:02}/", r_code, bucket)
-        };
 
-        let matches: Vec<&Vec<f64>> = strategy_map
-            .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| v)
-            .collect();
+            let matches: Vec<&Vec<f64>> = strategy_map
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(_, v)| v)
+                .collect();
 
-        if !matches.is_empty() {
-            let n = matches.len() as f64;
-            let mut avg = vec![0.0f64; 4];
-            for vec in matches {
-                for (i, &val) in vec.iter().enumerate().take(4) {
-                    avg[i] += val / n;
+            let fallback = lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
+                hole, board, round, to_call, pot, &legal_u8,
+            );
+
+            if !matches.is_empty() {
+                let n = matches.len() as f64;
+                let mut avg = [0.0f64; 6];
+                for vec in matches {
+                    for (i, &val) in vec.iter().enumerate().take(6) {
+                        avg[i] += val / n;
+                    }
                 }
+                let mut blended = vec![0.0f64; 6];
+                for &a in &legal_u8 {
+                    let idx = a as usize;
+                    if idx < 6 {
+                        blended[idx] = 0.55 * avg[idx] + 0.45 * fallback[idx];
+                    }
+                }
+                blended
+            } else {
+                fallback.to_vec()
             }
-            Some(avg)
-        } else {
-            None
         }
     };
 
-    if let Some(probs) = probs_opt {
-        if probs.len() >= 4 {
-            let max_idx = probs
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(idx, _)| idx)
-                .unwrap_or(1);
+    /* 3. Action Selection via Purified Strategy Sampling with Opponent Exploitation and All-in Defense */
+    let mut rng = rand::thread_rng();
+    let chosen_idx = tracker.select_action_purified(
+        &raw_probs,
+        &legal_u8,
+        current_bucket,
+        round == 1,
+        to_call,
+        &mut rng,
+    ) as usize;
 
-            if let Some(res) = map_action_index(max_idx, legal, to_call) {
-                return res;
-            }
+    let is_wet = board.len() >= 3 && {
+        let mut suits = [0u8; 4];
+        for c in board {
+            suits[c.suit as usize] += 1;
         }
-    }
+        suits.iter().any(|&s| s >= 2)
+    };
 
-    /* 3. Fallback Heuristics */
-    if board.is_empty() {
-        let (pf_idx, _pf_name) = preflop_bucket(hole[0], hole[1]);
-        if pf_idx < 40 {
-            if let Some(res) = map_action_index(2, legal, to_call) {
-                return res;
-            }
-        } else if pf_idx < 110 {
-            if let Some(res) = map_action_index(1, legal, to_call) {
-                return res;
-            }
-        }
-    } else {
-        let bucket = postflop_equity_bucket(hole, board);
-        if bucket >= 30 {
-            if let Some(res) = map_action_index(2, legal, to_call) {
-                return res;
-            }
-        } else if bucket >= 12 {
-            if let Some(res) = map_action_index(1, legal, to_call) {
-                return res;
-            }
-        }
+    if let Some(res) = map_action_index(chosen_idx, legal, to_call, pot, is_wet) {
+        return res;
     }
 
     /* Safe default: Check -> Call -> Fold */
-    let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
     if to_call == 0 && has("check") {
         ("check".to_string(), 0)
     } else if has("call") {
@@ -602,8 +642,14 @@ fn decide_action(
     }
 }
 
-/* Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: RAISE_MIN, 3: RAISE_HALF_POT) to server legal string */
-fn map_action_index(idx: usize, legal: &[String], to_call: i32) -> Option<(String, i32)> {
+/* Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN) to server legal string */
+fn map_action_index(
+    idx: usize,
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    is_wet: bool,
+) -> Option<(String, i32)> {
     let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
 
     match idx {
@@ -629,14 +675,39 @@ fn map_action_index(idx: usize, legal: &[String], to_call: i32) -> Option<(Strin
                 None
             }
         }
-        2 | 3 => {
-            let amt = if idx == 3 { 80 } else { 40 };
+        2..=4 => {
+            let amt = match idx {
+                3 => (pot / 3).max(30),
+                4 => {
+                    if is_wet {
+                        (pot * 3 / 4).max(50)
+                    } else {
+                        (pot / 2).max(40)
+                    }
+                }
+                _ => 40,
+            };
             if has("raise") {
                 Some(("raise".to_string(), amt))
             } else if has("bet") {
                 Some(("bet".to_string(), amt))
             } else if has("allin") {
                 Some(("allin".to_string(), 0))
+            } else if to_call > 0 && has("call") {
+                Some(("call".to_string(), 0))
+            } else if has("check") {
+                Some(("check".to_string(), 0))
+            } else {
+                None
+            }
+        }
+        5 => {
+            if has("allin") {
+                Some(("allin".to_string(), 0))
+            } else if has("raise") {
+                Some(("raise".to_string(), (pot * 2).max(100)))
+            } else if has("bet") {
+                Some(("bet".to_string(), (pot * 2).max(100)))
             } else if to_call > 0 && has("call") {
                 Some(("call".to_string(), 0))
             } else if has("check") {

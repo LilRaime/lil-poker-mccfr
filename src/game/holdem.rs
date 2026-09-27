@@ -289,7 +289,9 @@ pub const ALL_52_CARDS: [Card; 52] = [
 pub const FOLD: u8 = 0;
 pub const CALL_CHECK: u8 = 1;
 pub const RAISE_MIN: u8 = 2;
-pub const RAISE_HALF_POT: u8 = 3;
+pub const RAISE_THIRD_POT: u8 = 3;
+pub const RAISE_HALF_POT: u8 = 4;
+pub const ALL_IN: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Board {
@@ -520,7 +522,7 @@ impl TexasHoldemGame {
     }
 
     #[inline(always)]
-    pub fn legal_actions_buf(&self, out: &mut [u8; 4]) -> usize {
+    pub fn legal_actions_buf(&self, out: &mut [u8; 6]) -> usize {
         if self.terminal {
             return 0;
         }
@@ -542,18 +544,22 @@ impl TexasHoldemGame {
             out[0] = FOLD;
             out[1] = CALL_CHECK;
             out[2] = RAISE_MIN;
-            out[3] = RAISE_HALF_POT;
-            4
+            out[3] = RAISE_THIRD_POT;
+            out[4] = RAISE_HALF_POT;
+            out[5] = ALL_IN;
+            6
         } else {
             out[0] = CALL_CHECK;
             out[1] = RAISE_MIN;
-            out[2] = RAISE_HALF_POT;
-            3
+            out[2] = RAISE_THIRD_POT;
+            out[3] = RAISE_HALF_POT;
+            out[4] = ALL_IN;
+            5
         }
     }
 
     pub fn legal_actions(&self) -> Vec<u8> {
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 6];
         let n = self.legal_actions_buf(&mut buf);
         buf[..n].to_vec()
     }
@@ -591,12 +597,35 @@ impl TexasHoldemGame {
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
                 next.raises_this_round += 1;
             }
+            RAISE_THIRD_POT => {
+                let diff =
+                    (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let raise_amt = (pot / 3).max(30);
+                next.contributions[next.current_player] =
+                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
+                next.raises_this_round += 1;
+            }
             RAISE_HALF_POT => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let raise_amt = (pot / 2).max(40);
+                let is_wet = next.board.len() >= 3 && {
+                    let mut suits = [0u8; 4];
+                    for &c in next.board.as_slice() {
+                        suits[c.suit as usize] += 1;
+                    }
+                    suits.iter().any(|&s| s >= 2)
+                };
+                let raise_amt = if is_wet {
+                    (pot * 3 / 4).max(50)
+                } else {
+                    (pot / 2).max(40)
+                };
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
+                next.raises_this_round += 1;
+            }
+            ALL_IN => {
+                next.contributions[next.current_player] = stack_limit;
                 next.raises_this_round += 1;
             }
             _ => unreachable!(),
@@ -607,12 +636,19 @@ impl TexasHoldemGame {
         let round_over = n >= 2 && {
             let last = hist[n - 1];
             let prev = hist[n - 2];
-            (last == CALL_CHECK && prev == CALL_CHECK)
-                || (last == CALL_CHECK && (prev == RAISE_MIN || prev == RAISE_HALF_POT))
+            (last == CALL_CHECK && prev == CALL_CHECK) || (last == CALL_CHECK && prev >= RAISE_MIN)
         };
 
         if round_over {
             next.raises_this_round = 0;
+            if next.contributions[0] >= stack_limit && next.contributions[1] >= stack_limit {
+                while next.board.len() < 5 && !next.deck_remaining.is_empty() {
+                    next.board.push(next.deck_remaining.deal_one());
+                }
+                next.round = 4;
+                next.resolve_showdown();
+                return next;
+            }
             if next.round == 1 {
                 /* Deal Flop (3 cards) */
                 next.round = 2;
