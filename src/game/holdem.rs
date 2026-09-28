@@ -751,13 +751,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     }
 
     /* 1. Check Flush & Straight Flush */
-    let mut flush_suit = None;
-    for s in 0..4 {
-        if suit_counts[s] >= 5 {
-            flush_suit = Some(s);
-            break;
-        }
-    }
+    let flush_suit = suit_counts.iter().position(|&cnt| cnt >= 5);
 
     if let Some(s) = flush_suit {
         let smask = suit_masks[s];
@@ -795,11 +789,9 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
                     trips_len += 1;
                 }
             }
-            2 => {
-                if pairs_len < 3 {
-                    pairs[pairs_len] = r as u64;
-                    pairs_len += 1;
-                }
+            2 if pairs_len < 3 => {
+                pairs[pairs_len] = r as u64;
+                pairs_len += 1;
             }
             _ => {}
         }
@@ -836,7 +828,8 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     }
 
     /* 6. Straight */
-    let st_mask = rank_mask & (rank_mask >> 1) & (rank_mask >> 2) & (rank_mask >> 3) & (rank_mask >> 4);
+    let st_mask =
+        rank_mask & (rank_mask >> 1) & (rank_mask >> 2) & (rank_mask >> 3) & (rank_mask >> 4);
     let mut straight_high = None;
     if st_mask != 0 {
         let top_bit = 15 - st_mask.leading_zeros() as u64;

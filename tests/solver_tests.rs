@@ -502,7 +502,10 @@ fn test_player_draw_contribution() {
 
     /* 1. Board has 4 hearts, but player has NO hearts:
      * Player does NOT have a flush draw! */
-    let hole_no_h = [card(Rank::King, Suit::Spades), card(Rank::Nine, Suit::Diamonds)];
+    let hole_no_h = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Nine, Suit::Diamonds),
+    ];
     let board_4h = [
         card(Rank::Ace, Suit::Hearts),
         card(Rank::Seven, Suit::Hearts),
@@ -510,18 +513,27 @@ fn test_player_draw_contribution() {
         card(Rank::Two, Suit::Hearts),
     ];
     let (is_fd, _) = detect_draws(&hole_no_h, &board_4h);
-    assert!(!is_fd, "Player with no hearts must NOT be credited with a flush draw on a 4-heart board");
+    assert!(
+        !is_fd,
+        "Player with no hearts must NOT be credited with a flush draw on a 4-heart board"
+    );
 
     /* 2. Board has 3 hearts, player has 1 heart:
      * Player DOES have a flush draw! */
-    let hole_1h = [card(Rank::King, Suit::Hearts), card(Rank::Nine, Suit::Diamonds)];
+    let hole_1h = [
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Nine, Suit::Diamonds),
+    ];
     let board_3h = [
         card(Rank::Ace, Suit::Hearts),
         card(Rank::Seven, Suit::Hearts),
         card(Rank::Five, Suit::Hearts),
     ];
     let (is_fd2, _) = detect_draws(&hole_1h, &board_3h);
-    assert!(is_fd2, "Player with 1 heart on a 3-heart board must have a flush draw");
+    assert!(
+        is_fd2,
+        "Player with 1 heart on a 3-heart board must have a flush draw"
+    );
 }
 
 #[test]
@@ -531,7 +543,10 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
     let card = |rank, suit| Card { rank, suit };
 
     /* Overpair: Pocket Queens on a Ten-high board */
-    let hole_qq = [card(Rank::Queen, Suit::Spades), card(Rank::Queen, Suit::Hearts)];
+    let hole_qq = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Queen, Suit::Hearts),
+    ];
     let board_t = [
         card(Rank::Ten, Suit::Diamonds),
         card(Rank::Seven, Suit::Clubs),
@@ -541,7 +556,10 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
     assert_eq!(bucket_qq, 28, "Overpair QQ on T-7-2 should be bucket 28");
 
     /* Top Pair Top Kicker: A-K on A-7-2 board */
-    let hole_ak = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole_ak = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_a = [
         card(Rank::Ace, Suit::Diamonds),
         card(Rank::Seven, Suit::Clubs),
@@ -551,14 +569,23 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
     assert_eq!(bucket_ak, 27, "TPTK AK on A-7-2 should be bucket 27");
 
     /* Top Pair Weak Kicker: A-3 on A-7-2 board */
-    let hole_a3 = [card(Rank::Ace, Suit::Spades), card(Rank::Three, Suit::Hearts)];
+    let hole_a3 = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Three, Suit::Hearts),
+    ];
     let bucket_a3 = postflop_equity_bucket(&hole_a3, &board_a);
     assert_eq!(bucket_a3, 25, "Top pair weak kicker should be bucket 25");
-    assert!(bucket_ak > bucket_a3, "TPTK must be strictly higher than weak kicker top pair");
+    assert!(
+        bucket_ak > bucket_a3,
+        "TPTK must be strictly higher than weak kicker top pair"
+    );
 
     /* Board Pair: Board is A-A-K, player has 7-2 offsuit (0 aces, 0 kings).
      * Player should NOT be treated as having Top Pair Aces! */
-    let hole_junk = [card(Rank::Seven, Suit::Spades), card(Rank::Two, Suit::Hearts)];
+    let hole_junk = [
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Two, Suit::Hearts),
+    ];
     let board_aa_k = [
         card(Rank::Ace, Suit::Diamonds),
         card(Rank::Ace, Suit::Clubs),
@@ -577,7 +604,10 @@ fn test_rich_infoset_key_generation() {
     use lil_poker_mccfr::cfr::abstraction::{get_holdem_infoset_key, get_holdem_infoset_key_rich};
 
     let card = |rank, suit| Card { rank, suit };
-    let hole = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board = [
         card(Rank::Ace, Suit::Diamonds),
         card(Rank::Seven, Suit::Clubs),
@@ -600,7 +630,10 @@ fn test_holdem_new_dealt_duplicate() {
 
     let card = |rank, suit| Card { rank, suit };
     let hole0 = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
-    let hole1 = [card(Rank::King, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole1 = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let runout = [
         card(Rank::Queen, Suit::Diamonds),
         card(Rank::Jack, Suit::Clubs),
@@ -630,9 +663,9 @@ fn test_holdem_new_dealt_duplicate() {
     /* Both boards must be identical queen-jack-ten-two-three */
     assert_eq!(g1_end.board.len(), 5);
     assert_eq!(g2_end.board.len(), 5);
-    for i in 0..5 {
-        assert_eq!(g1_end.board[i], runout[i]);
-        assert_eq!(g2_end.board[i], runout[i]);
+    for (i, &card) in runout.iter().enumerate() {
+        assert_eq!(g1_end.board[i], card);
+        assert_eq!(g2_end.board[i], card);
     }
 
     /* In g1, AA (seat 0) beats KK (seat 1) */
@@ -692,9 +725,15 @@ fn test_dcfr_regret_discounting() {
     /* Apply DCFR step with pos_discount = 0.8, neg_discount = 0.5, delta = [0, 0, 0] */
     node.update_regrets_dcfr(&[0.0, 0.0, 0.0], 0.80, 0.50);
     /* Action 0 was +10.0 -> becomes 10.0 * 0.8 = 8.0 */
-    assert!((node.get_regret(0) - 8.0).abs() < 1e-4, "Positive regret discounted by 0.8");
+    assert!(
+        (node.get_regret(0) - 8.0).abs() < 1e-4,
+        "Positive regret discounted by 0.8"
+    );
     /* Action 1 was -10.0 -> becomes -10.0 * 0.5 = -5.0 */
-    assert!((node.get_regret(1) - (-5.0)).abs() < 1e-4, "Negative regret discounted by 0.5");
+    assert!(
+        (node.get_regret(1) - (-5.0)).abs() < 1e-4,
+        "Negative regret discounted by 0.5"
+    );
 }
 
 #[test]
@@ -727,7 +766,10 @@ fn test_board_texture_and_redraw_potential() {
     assert!(tex_pair.is_connected);
 
     /* 3. Redraw potential: Top Pair + Flush Draw vs Dry Top Pair */
-    let hole_tptk_fd = [card(Rank::Ace, Suit::Hearts), card(Rank::King, Suit::Hearts)];
+    let hole_tptk_fd = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_two_tone = [
         card(Rank::Ace, Suit::Diamonds),
         card(Rank::Seven, Suit::Hearts),
@@ -765,7 +807,10 @@ fn test_opponent_style_classification_and_showdown() {
 
     /* Record a showdown where opponent bluffed river with 7-2 air */
     let card = |rank, suit| Card { rank, suit };
-    let opp_trash = [card(Rank::Seven, Suit::Spades), card(Rank::Two, Suit::Clubs)];
+    let opp_trash = [
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
     let board = [
         card(Rank::Ace, Suit::Diamonds),
         card(Rank::King, Suit::Hearts),
@@ -782,9 +827,7 @@ fn test_opponent_style_classification_and_showdown() {
 
 #[test]
 fn test_geometric_street_aware_bet_sizing() {
-    use lil_poker_mccfr::game::holdem::{
-        TexasHoldemGame, CALL_CHECK, RAISE_HALF_POT,
-    };
+    use lil_poker_mccfr::game::holdem::{TexasHoldemGame, CALL_CHECK, RAISE_HALF_POT};
     let mut rng = rand::thread_rng();
     let mut game = TexasHoldemGame::new_random(&mut rng);
 
@@ -813,7 +856,11 @@ fn test_geometric_street_aware_bet_sizing() {
     /* On River: P0 applies RAISE_HALF_POT (full pot bet 100% of pot!) */
     let river_g = game.apply_action(RAISE_HALF_POT);
     let river_bet = river_g.contributions[0] - game.contributions[0];
-    assert_eq!(river_bet, river_pot.max(80), "River RAISE_HALF_POT must be 100% full pot bet");
+    assert_eq!(
+        river_bet,
+        river_pot.max(80),
+        "River RAISE_HALF_POT must be 100% full pot bet"
+    );
 }
 
 #[test]
@@ -821,7 +868,10 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     let card = |rank, suit| Card { rank, suit };
 
     /* 1. Straight: Broadway A-K-Q-J-T vs King-high K-Q-J-T-9 vs Wheel 5-4-3-2-A */
-    let hole_broadway = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole_broadway = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_broadway = [
         card(Rank::Queen, Suit::Diamonds),
         card(Rank::Jack, Suit::Clubs),
@@ -831,7 +881,11 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     ];
     let score_broadway = evaluate_7cards(&hole_broadway, &board_broadway);
     assert_eq!(score_broadway >> 32, 4);
-    assert_eq!(score_broadway & 0xFF, 12, "Broadway high rank must be 12 (Ace)");
+    assert_eq!(
+        score_broadway & 0xFF,
+        12,
+        "Broadway high rank must be 12 (Ace)"
+    );
 
     let hole_wheel = [card(Rank::Ace, Suit::Spades), card(Rank::Two, Suit::Hearts)];
     let board_wheel = [
@@ -847,8 +901,14 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     assert!(score_broadway > score_wheel, "Broadway must beat Wheel");
 
     /* 2. Flush tiebreakers: A♠ K♠ Q♠ J♠ 9♠ vs A♠ K♠ Q♠ J♠ 8♠ */
-    let hole_fl1 = [card(Rank::Ace, Suit::Spades), card(Rank::Nine, Suit::Spades)];
-    let hole_fl2 = [card(Rank::Ace, Suit::Spades), card(Rank::Eight, Suit::Spades)];
+    let hole_fl1 = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Nine, Suit::Spades),
+    ];
+    let hole_fl2 = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Eight, Suit::Spades),
+    ];
     let board_fl = [
         card(Rank::King, Suit::Spades),
         card(Rank::Queen, Suit::Spades),
@@ -863,7 +923,10 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     assert!(score_fl1 > score_fl2, "Higher 5th flush card must win");
 
     /* 3. Full House: KKK22 vs QQQAA (Trips rank decides) */
-    let hole_fh_k = [card(Rank::King, Suit::Spades), card(Rank::King, Suit::Hearts)];
+    let hole_fh_k = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
     let board_fh_k = [
         card(Rank::King, Suit::Diamonds),
         card(Rank::Two, Suit::Clubs),
@@ -871,7 +934,10 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
         card(Rank::Seven, Suit::Hearts),
         card(Rank::Eight, Suit::Clubs),
     ];
-    let hole_fh_q = [card(Rank::Queen, Suit::Spades), card(Rank::Queen, Suit::Hearts)];
+    let hole_fh_q = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Queen, Suit::Hearts),
+    ];
     let board_fh_q = [
         card(Rank::Queen, Suit::Diamonds),
         card(Rank::Ace, Suit::Clubs),
@@ -886,7 +952,10 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     assert!(score_fh_k > score_fh_q, "KKK22 must beat QQQAA");
 
     /* 4. Three pairs on 7 cards (AA KK QQ): best 2 pairs chosen (AA-KK) with Q kicker */
-    let hole_3p1 = [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Spades)];
+    let hole_3p1 = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    ];
     let board_3p = [
         card(Rank::Ace, Suit::Hearts),
         card(Rank::King, Suit::Hearts),

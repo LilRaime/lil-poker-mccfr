@@ -338,11 +338,14 @@ pub fn detect_draws(hole: &[Card; 2], board: &[Card]) -> (bool, bool) {
     let h1 = hole[1].rank as usize;
     let mut is_straight_draw = false;
     for r in 0..10 {
-        if ranks[r] && ranks[r + 1] && ranks[r + 2] && ranks[r + 3] {
-            if (h0 >= r && h0 <= r + 3) || (h1 >= r && h1 <= r + 3) {
-                is_straight_draw = true;
-                break;
-            }
+        if ranks[r]
+            && ranks[r + 1]
+            && ranks[r + 2]
+            && ranks[r + 3]
+            && ((h0 >= r && h0 <= r + 3) || (h1 >= r && h1 <= r + 3))
+        {
+            is_straight_draw = true;
+            break;
         }
     }
     if !is_straight_draw && ranks[12] {
@@ -478,8 +481,10 @@ pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
             let top_pair = ((score >> 16) & 0xF) as usize;
             let bottom_pair = (score & 0xF) as usize;
             let is_pocket_pair = hole[0].rank == hole[1].rank;
-            let hit_top = (hole[0].rank as usize == top_pair) || (hole[1].rank as usize == top_pair);
-            let hit_bottom = (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
+            let hit_top =
+                (hole[0].rank as usize == top_pair) || (hole[1].rank as usize == top_pair);
+            let hit_bottom =
+                (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
 
             if !is_pocket_pair && !hit_top && !hit_bottom {
                 /* Both pairs are entirely on board */
@@ -497,7 +502,8 @@ pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
             /* One Pair (accurately distinguishing overpairs, top pairs, redraws, and board pairs) */
             let pair_rank = ((score >> 16) & 0xF) as usize;
             let is_pocket_pair = hole[0].rank == hole[1].rank;
-            let hole_hit_pair = (hole[0].rank as usize == pair_rank) || (hole[1].rank as usize == pair_rank);
+            let hole_hit_pair =
+                (hole[0].rank as usize == pair_rank) || (hole[1].rank as usize == pair_rank);
 
             if !is_pocket_pair && !hole_hit_pair {
                 /* Pair is on board; player only has kicker */
@@ -508,7 +514,11 @@ pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
                 let (has_fd, has_sd) = detect_draws(hole, board);
                 if is_pocket_pair && pair_rank > max_board_rank {
                     /* Overpair (pocket pair higher than all board cards) */
-                    if has_fd { 29 } else { 28 }
+                    if has_fd {
+                        29
+                    } else {
+                        28
+                    }
                 } else if hole_hit_pair && pair_rank >= max_board_rank {
                     /* Top Pair */
                     let kicker = if hole[0].rank as usize == pair_rank {
@@ -747,4 +757,3 @@ pub fn get_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     format_holdem_infoset_key_rich(hole, board, round, history, &mut s);
     s
 }
-

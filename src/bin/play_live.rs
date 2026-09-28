@@ -367,7 +367,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .or_else(|| p.get("uuid"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let is_sb = p.get("is_small_blind").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_sb = p
+                    .get("is_small_blind")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if p_id.eq_ignore_ascii_case(&player_id) {
                     my_bet = p_bet;
@@ -668,20 +671,15 @@ fn decide_action(
         let solver = SubgameSolver::new(2500);
         let my_contrib = (pot / 2).max(10);
         let opp_contrib = my_contrib + to_call;
-        solver.solve_with_state(
-            hole,
-            board,
-            round,
-            history,
-            0,
-            [my_contrib, opp_contrib],
-            0,
-        )
+        solver.solve_with_state(hole, board, round, history, 0, [my_contrib, opp_contrib], 0)
     } else {
         /* 2. Abstract Strategy Model Lookup with Fallback (rich key first, then exact key) */
         let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
         let exact_key = get_holdem_infoset_key(hole, board, round, history);
-        if let Some(p) = strategy_map.get(&rich_key).or_else(|| strategy_map.get(&exact_key)) {
+        if let Some(p) = strategy_map
+            .get(&rich_key)
+            .or_else(|| strategy_map.get(&exact_key))
+        {
             p.clone()
         } else {
             let prefix = if round == 1 {

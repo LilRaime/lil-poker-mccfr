@@ -40,30 +40,6 @@ Measured on an AMD Ryzen multicore processor (16 parallel threads):
 
 ## Algorithm Architecture
 
-```mermaid
-graph TD
-    A[Root Node: Hole + Public Board] --> B[Card Abstraction]
-    B -->|Preflop| C[169 Canonical Buckets]
-    B -->|Flop/Turn/River| D[50 Texture- & Potential-Aware Buckets]
-    
-    C --> E[Offline Blueprint: Parallel MCCFR with DCFR]
-    D --> E
-    
-    E --> F[models/holdem_abstract_strategy.json]
-    
-    F --> G[Live Decision Engine: play / play_live]
-    G --> H{Street?}
-    H -->|Preflop / Small Flop| I[Blueprint + Opponent Tracker Adjustment]
-    H -->|Turn / River / Big Pot| J[Real-Time Subgame Solver]
-    
-    J --> K[Adaptive Iteration Budgeting]
-    K --> L[Local Depth-Limited CFR+]
-    L --> M[Safe Resolving: 85% Subgame + 15% GTO Fallback]
-    M --> N[Purified Action Defense]
-    I --> N
-    N --> O[Final Bet / Raise / Call / Fold]
-```
-
 ### 1. Counterfactual Regret Minimization (CFR) & DCFR
 CFR iteratively minimizes regret for not having played alternative actions. The average strategy across iterations converges to an $\varepsilon$-Nash equilibrium.
 * **DCFR (Brown & Sandholm 2019):** Uses polynomial weighting:

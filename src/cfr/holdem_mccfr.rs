@@ -235,7 +235,14 @@ impl HoldemMCCFRSolver {
                 }
 
                 let child = game.apply_action(act);
-                let u = self.traverse(&child, updating_player, weight, pos_discount, neg_discount, rng);
+                let u = self.traverse(
+                    &child,
+                    updating_player,
+                    weight,
+                    pos_discount,
+                    neg_discount,
+                    rng,
+                );
                 action_utils[i] = u;
                 node_util += legal_probs[i] * u;
             }
@@ -269,7 +276,14 @@ impl HoldemMCCFRSolver {
             }
 
             let child = game.apply_action(chosen_act);
-            self.traverse(&child, updating_player, weight, pos_discount, neg_discount, rng)
+            self.traverse(
+                &child,
+                updating_player,
+                weight,
+                pos_discount,
+                neg_discount,
+                rng,
+            )
         }
     }
 

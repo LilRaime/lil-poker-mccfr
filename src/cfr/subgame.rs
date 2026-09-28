@@ -216,7 +216,9 @@ impl SubgameSolver {
             let game = TexasHoldemGame {
                 hole: [p0_hole, p1_hole],
                 board: crate::game::holdem::Board::from_slice(board),
-                deck_remaining: crate::game::holdem::DeckRemaining::from_slice(&deck_rem_cards[..rem_count]),
+                deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
+                    &deck_rem_cards[..rem_count],
+                ),
                 history: [
                     crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
                     crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),

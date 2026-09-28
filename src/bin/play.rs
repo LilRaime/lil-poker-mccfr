@@ -8,7 +8,8 @@ use clap::Parser;
 use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
 use lil_poker_mccfr::game::card::Card;
 use lil_poker_mccfr::game::holdem::{
-    TexasHoldemGame, ALL_IN, ALL_52_CARDS, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    TexasHoldemGame, ALL_52_CARDS, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN,
+    RAISE_THIRD_POT,
 };
 use lil_poker_mccfr::game::leduc::{LeducGame, CALL, FOLD, RAISE};
 use rand::rngs::SmallRng;
@@ -336,10 +337,18 @@ fn sample_opponent_action(
             if game.round == 1 {
                 let (idx, _) = lil_poker_mccfr::cfr::abstraction::preflop_bucket(hole[0], hole[1]);
                 if idx <= 20 {
-                    pick_preferred_action(&legal, &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK], rng)
+                    pick_preferred_action(
+                        &legal,
+                        &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                        rng,
+                    )
                 } else if idx <= 55 {
                     if opp_to_call == 0 {
-                        pick_preferred_action(&legal, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK], rng)
+                        pick_preferred_action(
+                            &legal,
+                            &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                            rng,
+                        )
                     } else if opp_to_call <= 40 {
                         pick_preferred_action(&legal, &[CALL_CHECK, RAISE_MIN], rng)
                     } else {
@@ -365,14 +374,22 @@ fn sample_opponent_action(
                 let (has_fd, has_sd) = lil_poker_mccfr::cfr::abstraction::detect_draws(hole, board);
                 if bucket >= 25 {
                     if rng.gen_bool(0.75) {
-                        pick_preferred_action(&legal, &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK], rng)
+                        pick_preferred_action(
+                            &legal,
+                            &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                            rng,
+                        )
                     } else {
                         CALL_CHECK
                     }
                 } else if bucket >= 20 || has_fd || has_sd {
                     if opp_to_call == 0 {
                         if (has_fd || has_sd) && rng.gen_bool(0.25) {
-                            pick_preferred_action(&legal, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK], rng)
+                            pick_preferred_action(
+                                &legal,
+                                &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                                rng,
+                            )
                         } else {
                             CALL_CHECK
                         }
@@ -411,9 +428,9 @@ fn sample_opponent_action(
                 } else {
                     lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket(hole, board)
                 };
-                if opp_to_call > 100 && bucket < 16 && rng.gen_bool(0.35) {
-                    H_FOLD
-                } else if opp_to_call > 250 && bucket < 22 && rng.gen_bool(0.60) {
+                if (opp_to_call > 100 && bucket < 16 && rng.gen_bool(0.35))
+                    || (opp_to_call > 250 && bucket < 22 && rng.gen_bool(0.60))
+                {
                     H_FOLD
                 } else {
                     CALL_CHECK
@@ -462,7 +479,11 @@ fn sample_opponent_action(
             } else {
                 let bucket = lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket(hole, board);
                 if bucket >= 26 {
-                    pick_preferred_action(&legal, &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK], rng)
+                    pick_preferred_action(
+                        &legal,
+                        &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
+                        rng,
+                    )
                 } else if bucket >= 23 && opp_to_call <= 40 {
                     CALL_CHECK
                 } else {
@@ -476,22 +497,34 @@ fn sample_opponent_action(
         }
         "self" | "model" => {
             if let Some(strat) = opp_strategy {
-                let probs = find_strategy_or_fallback(strat, hole, board, game.round, opp_to_call, pot, &legal);
+                let probs = find_strategy_or_fallback(
+                    strat,
+                    hole,
+                    board,
+                    game.round,
+                    opp_to_call,
+                    pot,
+                    &legal,
+                );
                 sample_from_probs(&probs, &legal, rng)
             } else {
                 let probs = lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
-                    hole, board, game.round, opp_to_call, pot, &legal,
+                    hole,
+                    board,
+                    game.round,
+                    opp_to_call,
+                    pot,
+                    &legal,
                 );
                 sample_from_probs(&probs, &legal, rng)
             }
         }
-        _ => {
-            legal[rng.gen_range(0..legal.len())]
-        }
+        _ => legal[rng.gen_range(0..legal.len())],
     }
 }
 
 /* Simulate a single hand to completion */
+#[allow(clippy::too_many_arguments)]
 fn simulate_holdem_hand(
     mut game: TexasHoldemGame,
     my_player: usize,
@@ -546,30 +579,39 @@ fn simulate_holdem_hand(
             let pot = game.contributions[0] + game.contributions[1];
 
             /* 1. Get raw Blueprint/Subgame probabilities */
-            let raw_probs = if enable_subgame_search
-                && (game.round >= 3 || (game.round == 2 && pot >= 120))
-            {
-                subgame_solver.solve_with_state(
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    &game.history,
-                    my_player,
-                    game.contributions,
-                    game.raises_this_round,
-                )
-            } else if let Some(ref strat) = strategy {
-                let key = get_holdem_infoset_key(
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    &game.history,
-                );
-                if let Some(s) = strat.get(&key) {
-                    s.to_vec()
+            let raw_probs =
+                if enable_subgame_search && (game.round >= 3 || (game.round == 2 && pot >= 120)) {
+                    subgame_solver.solve_with_state(
+                        &game.hole[my_player],
+                        &game.board,
+                        game.round,
+                        &game.history,
+                        my_player,
+                        game.contributions,
+                        game.raises_this_round,
+                    )
+                } else if let Some(ref strat) = strategy {
+                    let key = get_holdem_infoset_key(
+                        &game.hole[my_player],
+                        &game.board,
+                        game.round,
+                        &game.history,
+                    );
+                    if let Some(s) = strat.get(&key) {
+                        s.to_vec()
+                    } else {
+                        find_strategy_or_fallback(
+                            strat,
+                            &game.hole[my_player],
+                            &game.board,
+                            game.round,
+                            to_call,
+                            pot,
+                            &legal,
+                        )
+                    }
                 } else {
-                    find_strategy_or_fallback(
-                        strat,
+                    lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
                         &game.hole[my_player],
                         &game.board,
                         game.round,
@@ -577,18 +619,8 @@ fn simulate_holdem_hand(
                         pot,
                         &legal,
                     )
-                }
-            } else {
-                lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    to_call,
-                    pot,
-                    &legal,
-                )
-                .to_vec()
-            };
+                    .to_vec()
+                };
 
             /* 2. Adjust using Opponent Tracker with hand context */
             let current_bucket = if game.round == 1 {
@@ -657,13 +689,7 @@ fn simulate_holdem_hand(
                 break;
             }
             let facing_cbet = game.round == 2 && game.raises_this_round > 0;
-            let act = sample_opponent_action(
-                opp_archetype,
-                opp_strategy,
-                &game,
-                cp,
-                rng,
-            );
+            let act = sample_opponent_action(opp_archetype, opp_strategy, &game, cp, rng);
             /* Record opponent action for opponent modeling tracker */
             opp_tracker.record_action_street(act, game.round, facing_cbet);
             game = game.apply_action(act);
@@ -720,6 +746,7 @@ fn simulate_holdem_hand(
 }
 
 /* Full 52-Card Texas Hold'em Simulation Mode */
+#[allow(clippy::too_many_arguments)]
 fn run_holdem_episodes_log_mode(
     strategy_path: &str,
     total_episodes: u64,
@@ -749,7 +776,10 @@ fn run_holdem_episodes_log_mode(
         None
     };
 
-    println!("[holdem] Opponent archetype: '{}'", opp_archetype.to_uppercase());
+    println!(
+        "[holdem] Opponent archetype: '{}'",
+        opp_archetype.to_uppercase()
+    );
     if duplicate_mode {
         println!("[duplicate] DUPLICATE POKER ACTIVE: Each deal played in reverse seats to eliminate card luck!");
     }
@@ -918,7 +948,10 @@ fn run_holdem_episodes_log_mode(
         println!("Opponent Archetype    : {}", opp_archetype.to_uppercase());
         println!("Total Duplicate Deals : {}", duplicate_stats.hands);
         println!("Total Matches Played  : {}", total_stats.hands);
-        println!("Bot Net Duplicate Edge: {:+.1} chips", duplicate_stats.total_chips);
+        println!(
+            "Bot Net Duplicate Edge: {:+.1} chips",
+            duplicate_stats.total_chips
+        );
         println!(
             "Duplicate Deal Wins   : Wins: {} ({:.1}%) | Losses: {} ({:.1}%) | Ties: {} ({:.1}%)",
             duplicate_stats.wins,
@@ -932,7 +965,10 @@ fn run_holdem_episodes_log_mode(
         /* In Duplicate Poker, 1 deal = 2 hands played. Skill edge per hand is avg / 2. */
         let edge_per_hand = duplicate_stats.avg_chips() / 2.0;
         let se_per_hand = duplicate_stats.se_chips() / 2.0;
-        println!("Skill Edge per Hand   : {:+.3} chips (±{:.3})", edge_per_hand, se_per_hand);
+        println!(
+            "Skill Edge per Hand   : {:+.3} chips (±{:.3})",
+            edge_per_hand, se_per_hand
+        );
         println!(
             "Duplicate Win Rate    : {:+.2} bb/100 (±{:.2})",
             (edge_per_hand / bb_val) * 100.0,

@@ -251,9 +251,9 @@ impl OpponentTracker {
             (OpponentStyle::Maniac, conf)
         } else if vpip < 0.22 && fold > 0.45 {
             (OpponentStyle::Rock, conf)
-        } else if vpip >= 0.18 && vpip <= 0.35 && pfr >= 0.14 {
+        } else if (0.18..=0.35).contains(&vpip) && pfr >= 0.14 {
             (OpponentStyle::Tag, conf)
-        } else if vpip > 0.35 && vpip <= 0.65 {
+        } else if (0.35..=0.65).contains(&vpip) {
             (OpponentStyle::Lag, conf)
         } else {
             (OpponentStyle::CallingStation, conf * 0.7)

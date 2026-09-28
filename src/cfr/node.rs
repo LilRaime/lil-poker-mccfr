@@ -137,7 +137,9 @@ impl InfosetNode {
                 } else {
                     0.0
                 };
-                let new = (discounted as i64).saturating_add(delta).max(-10_000_000_000);
+                let new = (discounted as i64)
+                    .saturating_add(delta)
+                    .max(-10_000_000_000);
                 match self.regret_sum[i].compare_exchange_weak(
                     old,
                     new,
