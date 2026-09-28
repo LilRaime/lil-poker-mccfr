@@ -19,18 +19,33 @@ struct Args {
     /* Output file path for strategy JSON */
     #[arg(short, long, default_value = "models/holdem_abstract_strategy.json")]
     save_path: String,
+
+    /* Retain previous-round betting context (distinguish 3-bet from limp pots) */
+    #[arg(long, default_value_t = false)]
+    rich_history: bool,
+
+    /* Regret-based pruning (speeds up training 2-3x by skipping sub-optimal branches) */
+    #[arg(long, default_value_t = true)]
+    pruning: bool,
+
+    /* Discounted CFR (DCFR, Brown & Sandholm 2019, used in Pluribus) */
+    #[arg(long, default_value_t = true)]
+    dcfr: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    println!("=== lil-poker-mccfr: Parallel Card-Abstracted Hold'em MCCFR (CFR+) ===");
-    println!("Game:       52-Card Texas Hold'em");
-    println!("Iterations: {}", args.iterations);
-    println!("Threads:    {}", args.threads);
-    println!("Save path:  {}", args.save_path);
+    println!("=== lil-poker-mccfr: Parallel Card-Abstracted Hold'em MCCFR ===");
+    println!("Game:         52-Card Texas Hold'em");
+    println!("Iterations:   {}", args.iterations);
+    println!("Threads:      {}", args.threads);
+    println!("Rich history: {}", args.rich_history);
+    println!("Pruning:      {}", args.pruning);
+    println!("DCFR:         {}", args.dcfr);
+    println!("Save path:    {}", args.save_path);
 
-    let solver = HoldemMCCFRSolver::new();
+    let solver = HoldemMCCFRSolver::with_config(args.rich_history, args.pruning, args.dcfr);
     let start = std::time::Instant::now();
 
     solver.train(args.iterations, args.threads, args.log_every);

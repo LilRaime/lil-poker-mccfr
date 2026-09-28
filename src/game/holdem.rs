@@ -506,6 +506,21 @@ impl TexasHoldemGame {
         }
     }
 
+    pub fn new_dealt(hole0: [Card; 2], hole1: [Card; 2], runout: &[Card]) -> Self {
+        TexasHoldemGame {
+            hole: [hole0, hole1],
+            board: Board::new(),
+            deck_remaining: DeckRemaining::from_slice(runout),
+            current_player: 0,
+            round: 1,
+            raises_this_round: 0,
+            contributions: [10, 20],
+            history: [RoundHistory::new(); 4],
+            terminal: false,
+            returns: [0.0, 0.0],
+        }
+    }
+
     #[inline(always)]
     pub fn is_terminal(&self) -> bool {
         self.terminal
@@ -615,10 +630,19 @@ impl TexasHoldemGame {
                     }
                     suits.iter().any(|&s| s >= 2)
                 };
-                let raise_amt = if is_wet {
-                    (pot * 3 / 4).max(50)
+                let pot_with_call = pot + diff;
+                let raise_amt = if next.round == 4 {
+                    /* River: Full pot bet (100% pot) for polarized value and bluffing */
+                    pot_with_call.max(80)
+                } else if next.round == 3 {
+                    /* Turn: 75% pot bet for geometric pot growth */
+                    (pot_with_call * 3 / 4).max(60)
+                } else if is_wet {
+                    /* Flop (wet): 75% pot bet */
+                    (pot_with_call * 3 / 4).max(50)
                 } else {
-                    (pot / 2).max(40)
+                    /* Flop (dry) or Preflop: 50% pot bet */
+                    (pot_with_call / 2).max(40)
                 };
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
@@ -695,111 +719,55 @@ impl TexasHoldemGame {
     }
 }
 
-/* Fast 7-Card Poker Hand Evaluator (Bitwise score calculation, 100% stack-allocated) */
+/* Fast O(1) Bitwise 7-Card Poker Hand Evaluator (Zero-allocation, no sorting, pure bitmasks) */
 #[inline]
 pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
-    let mut all_cards = [ALL_52_CARDS[0]; 7];
-    all_cards[0] = hole[0];
-    all_cards[1] = hole[1];
     let board_n = board.len().min(5);
-    all_cards[2..(board_n + 2)].copy_from_slice(&board[..board_n]);
     let total_cards = 2 + board_n;
-    let cards = &mut all_cards[..total_cards];
-
-    /* Sort by rank descending */
-    cards.sort_by_key(|b| std::cmp::Reverse(b.rank));
 
     let mut rank_counts = [0u8; 13];
     let mut suit_counts = [0u8; 4];
-    for c in cards.iter() {
-        rank_counts[c.rank as usize] += 1;
-        suit_counts[c.suit as usize] += 1;
+    let mut rank_mask = 0u16;
+    let mut suit_masks = [0u16; 4];
+
+    /* Ingest hole cards */
+    for c in hole.iter() {
+        let r = c.rank as usize;
+        let s = c.suit as usize;
+        rank_counts[r] += 1;
+        suit_counts[s] += 1;
+        rank_mask |= 1 << r;
+        suit_masks[s] |= 1 << r;
     }
 
-    /* Check Flush */
-    let flush_suit = suit_counts.iter().position(|&cnt| cnt >= 5);
-
-    /* Check Straight */
-    let mut straight_high = None;
-    let mut consecutive = 0;
-    for r in (0..13).rev() {
-        if rank_counts[r] > 0 {
-            consecutive += 1;
-            if consecutive >= 5 {
-                straight_high = Some(r as u64 + 4);
-                break;
-            }
-        } else {
-            consecutive = 0;
-        }
-    }
-    /* Ace-low straight A-2-3-4-5 */
-    if straight_high.is_none()
-        && rank_counts[12] > 0
-        && rank_counts[0] > 0
-        && rank_counts[1] > 0
-        && rank_counts[2] > 0
-        && rank_counts[3] > 0
-    {
-        straight_high = Some(3);
+    /* Ingest board cards */
+    for c in &board[..board_n] {
+        let r = c.rank as usize;
+        let s = c.suit as usize;
+        rank_counts[r] += 1;
+        suit_counts[s] += 1;
+        rank_mask |= 1 << r;
+        suit_masks[s] |= 1 << r;
     }
 
-    let mut quads = [0u64; 1];
-    let mut quads_len = 0;
-    let mut trips = [0u64; 2];
-    let mut trips_len = 0;
-    let mut pairs = [0u64; 3];
-    let mut pairs_len = 0;
-
-    for r in (0..13).rev() {
-        match rank_counts[r] {
-            4 if quads_len < 1 => {
-                quads[quads_len] = r as u64;
-                quads_len += 1;
-            }
-            3 if trips_len < 2 => {
-                trips[trips_len] = r as u64;
-                trips_len += 1;
-            }
-            2 if pairs_len < 3 => {
-                pairs[pairs_len] = r as u64;
-                pairs_len += 1;
-            }
-            _ => {}
+    /* 1. Check Flush & Straight Flush */
+    let mut flush_suit = None;
+    for s in 0..4 {
+        if suit_counts[s] >= 5 {
+            flush_suit = Some(s);
+            break;
         }
     }
 
-    /* Check Straight Flush */
-    if let Some(f_suit) = flush_suit {
-        let mut flush_ranks = [0u8; 7];
-        let mut f_count = 0;
-        for c in cards.iter() {
-            if c.suit as usize == f_suit {
-                flush_ranks[f_count] = c.rank as u8;
-                f_count += 1;
-            }
-        }
-
+    if let Some(s) = flush_suit {
+        let smask = suit_masks[s];
+        let st_mask = smask & (smask >> 1) & (smask >> 2) & (smask >> 3) & (smask >> 4);
         let mut sf_high = None;
-        let mut f_consec = 1;
-        for i in 0..f_count.saturating_sub(1) {
-            if flush_ranks[i] == flush_ranks[i + 1] + 1 {
-                f_consec += 1;
-                if f_consec >= 5 && sf_high.is_none() {
-                    sf_high = Some(flush_ranks[i + 1] as u64 + 4);
-                }
-            } else if flush_ranks[i] != flush_ranks[i + 1] {
-                f_consec = 1;
-            }
-        }
-        if sf_high.is_none()
-            && flush_ranks[..f_count].contains(&12)
-            && flush_ranks[..f_count].contains(&0)
-            && flush_ranks[..f_count].contains(&1)
-            && flush_ranks[..f_count].contains(&2)
-            && flush_ranks[..f_count].contains(&3)
-        {
-            sf_high = Some(3);
+        if st_mask != 0 {
+            let top_bit = 15 - st_mask.leading_zeros() as u64;
+            sf_high = Some(top_bit + 4);
+        } else if (smask & 0x100F) == 0x100F {
+            sf_high = Some(3); /* A-2-3-4-5 wheel straight flush */
         }
 
         if let Some(st_h) = sf_high {
@@ -807,92 +775,142 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
         }
     }
 
-    if quads_len > 0 {
-        let q = quads[0];
-        let kicker = (0..13)
-            .rev()
-            .find(|&r| r as u64 != q && rank_counts[r] > 0)
-            .unwrap_or(0) as u64;
+    /* 2. Collect Quads, Trips, and Pairs */
+    let mut quads = None;
+    let mut trips = [0u64; 2];
+    let mut trips_len = 0;
+    let mut pairs = [0u64; 3];
+    let mut pairs_len = 0;
+
+    for r in (0..13).rev() {
+        match rank_counts[r] {
+            4 => {
+                if quads.is_none() {
+                    quads = Some(r as u64);
+                }
+            }
+            3 => {
+                if trips_len < 2 {
+                    trips[trips_len] = r as u64;
+                    trips_len += 1;
+                }
+            }
+            2 => {
+                if pairs_len < 3 {
+                    pairs[pairs_len] = r as u64;
+                    pairs_len += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /* 3. Four of a Kind */
+    if let Some(q) = quads {
+        let rem_mask = rank_mask & !(1 << q);
+        let kicker = if rem_mask != 0 {
+            15 - rem_mask.leading_zeros() as u64
+        } else {
+            0
+        };
         return (7 << 32) | (q << 16) | kicker;
     }
 
+    /* 4. Full House */
     if trips_len > 0 && (pairs_len > 0 || trips_len > 1) {
         let t = trips[0];
         let p = if trips_len > 1 { trips[1] } else { pairs[0] };
         return (6 << 32) | (t << 16) | p;
     }
 
-    if let Some(f_suit) = flush_suit {
+    /* 5. Flush */
+    if let Some(s) = flush_suit {
         let mut score = 5u64 << 32;
-        let mut count = 0;
-        for c in cards.iter() {
-            if c.suit as usize == f_suit {
-                score |= (c.rank as u64) << (16 - count * 4);
-                count += 1;
-                if count == 5 {
-                    break;
-                }
-            }
+        let mut m = suit_masks[s];
+        for i in 0..5 {
+            let r = 15 - m.leading_zeros() as u64;
+            score |= r << (16 - i * 4);
+            m &= !(1 << r);
         }
         return score;
+    }
+
+    /* 6. Straight */
+    let st_mask = rank_mask & (rank_mask >> 1) & (rank_mask >> 2) & (rank_mask >> 3) & (rank_mask >> 4);
+    let mut straight_high = None;
+    if st_mask != 0 {
+        let top_bit = 15 - st_mask.leading_zeros() as u64;
+        straight_high = Some(top_bit + 4);
+    } else if (rank_mask & 0x100F) == 0x100F {
+        straight_high = Some(3); /* A-2-3-4-5 wheel straight */
     }
 
     if let Some(st_h) = straight_high {
         return (4 << 32) | st_h;
     }
 
+    /* 7. Three of a Kind */
     if trips_len > 0 {
         let t = trips[0];
-        let mut kickers = [0u64; 2];
-        let mut k_count = 0;
-        for r in (0..13).rev() {
-            if r as u64 != t && rank_counts[r] > 0 {
-                kickers[k_count] = r as u64;
-                k_count += 1;
-                if k_count == 2 {
-                    break;
-                }
-            }
-        }
-        return (3 << 32) | (t << 16) | (kickers[0] << 8) | kickers[1];
+        let mut rem_mask = rank_mask & !(1 << t);
+        let k0 = if rem_mask != 0 {
+            let r = 15 - rem_mask.leading_zeros() as u64;
+            rem_mask &= !(1 << r);
+            r
+        } else {
+            0
+        };
+        let k1 = if rem_mask != 0 {
+            15 - rem_mask.leading_zeros() as u64
+        } else {
+            0
+        };
+        return (3 << 32) | (t << 16) | (k0 << 8) | k1;
     }
 
+    /* 8. Two Pair */
     if pairs_len >= 2 {
         let p1 = pairs[0];
         let p2 = pairs[1];
-        let kicker = (0..13)
-            .rev()
-            .find(|&r| r as u64 != p1 && r as u64 != p2 && rank_counts[r] > 0)
-            .unwrap_or(0) as u64;
+        let rem_mask = rank_mask & !((1 << p1) | (1 << p2));
+        let kicker = if rem_mask != 0 {
+            15 - rem_mask.leading_zeros() as u64
+        } else {
+            0
+        };
         return (2 << 32) | (p1 << 16) | (p2 << 8) | kicker;
     }
 
+    /* 9. One Pair */
     if pairs_len >= 1 {
         let p = pairs[0];
-        let mut kickers = [0u64; 3];
-        let mut k_count = 0;
-        for r in (0..13).rev() {
-            if r as u64 != p && rank_counts[r] > 0 {
-                kickers[k_count] = r as u64;
-                k_count += 1;
-                if k_count == 3 {
-                    break;
-                }
-            }
-        }
-        return (1 << 32) | (p << 16) | (kickers[0] << 8) | kickers[1];
+        let mut rem_mask = rank_mask & !(1 << p);
+        let k0 = if rem_mask != 0 {
+            let r = 15 - rem_mask.leading_zeros() as u64;
+            rem_mask &= !(1 << r);
+            r
+        } else {
+            0
+        };
+        let k1 = if rem_mask != 0 {
+            15 - rem_mask.leading_zeros() as u64
+        } else {
+            0
+        };
+        return (1 << 32) | (p << 16) | (k0 << 8) | k1;
     }
 
+    /* 10. High Card */
     let mut score = 0u64;
-    let mut count = 0;
-    for r in (0..13).rev() {
-        if rank_counts[r] > 0 {
-            score |= (r as u64) << (16 - count * 4);
-            count += 1;
-            if count == 5 {
-                break;
-            }
+    let mut rem_mask = rank_mask;
+    let count = total_cards.min(5);
+    for i in 0..count {
+        if rem_mask == 0 {
+            break;
         }
+        let r = 15 - rem_mask.leading_zeros() as u64;
+        score |= r << (16 - i * 4);
+        rem_mask &= !(1 << r);
     }
     score
 }

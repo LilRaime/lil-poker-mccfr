@@ -15,6 +15,9 @@ pub const HOLDEM_NUM_ACTIONS: usize = 6;
 
 pub struct HoldemMCCFRSolver {
     pub nodes: Arc<DashMap<String, Arc<InfosetNode>>>,
+    pub rich_history: bool,
+    pub pruning: bool,
+    pub dcfr: bool,
 }
 
 impl Default for HoldemMCCFRSolver {
@@ -25,8 +28,15 @@ impl Default for HoldemMCCFRSolver {
 
 impl HoldemMCCFRSolver {
     pub fn new() -> Self {
+        Self::with_config(false, false, false)
+    }
+
+    pub fn with_config(rich_history: bool, pruning: bool, dcfr: bool) -> Self {
         HoldemMCCFRSolver {
             nodes: Arc::new(DashMap::with_capacity_and_shard_amount(500_000, 1024)),
+            rich_history,
+            pruning,
+            dcfr,
         }
     }
 
@@ -51,6 +61,9 @@ impl HoldemMCCFRSolver {
             .unwrap_or(());
 
         let nodes = Arc::clone(&self.nodes);
+        let rich_hist = self.rich_history;
+        let prune = self.pruning;
+        let is_dcfr = self.dcfr;
         let chunk_size = if log_every > 0 { log_every } else { iterations };
         let width = iterations.to_string().len();
         let mut done = 0u64;
@@ -81,13 +94,27 @@ impl HoldemMCCFRSolver {
                 let game = TexasHoldemGame::new_random(&mut rng);
                 let solver_ref = HoldemMCCFRSolver {
                     nodes: Arc::clone(&nodes_ref),
+                    rich_history: rich_hist,
+                    pruning: prune,
+                    dcfr: is_dcfr,
                 };
-                let linear_weight = if iter_idx < warmup {
-                    0.0
+                let (pos_disc, neg_disc, weight) = if is_dcfr {
+                    let t = (iter_idx + 1) as f64;
+                    let t_alpha = t.powf(1.5);
+                    let p_disc = t_alpha / (t_alpha + 1.0);
+                    let t_beta = t.powf(0.5);
+                    let n_disc = t_beta / (t_beta + 1.0);
+                    let w = (t / (t + 1.0)).powf(2.0);
+                    (p_disc, n_disc, w)
                 } else {
-                    (iter_idx - warmup + 1) as f64 / train_iters_after_warmup
+                    let linear_weight = if iter_idx < warmup {
+                        0.0
+                    } else {
+                        (iter_idx - warmup + 1) as f64 / train_iters_after_warmup
+                    };
+                    (1.0, 0.0, linear_weight)
                 };
-                solver_ref.traverse(&game, updating_player, linear_weight, &mut rng);
+                solver_ref.traverse(&game, updating_player, weight, pos_disc, neg_disc, &mut rng);
             });
 
             done = batch_end;
@@ -131,6 +158,8 @@ impl HoldemMCCFRSolver {
         game: &TexasHoldemGame,
         updating_player: usize,
         weight: f64,
+        pos_discount: f64,
+        neg_discount: f64,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
@@ -144,14 +173,24 @@ impl HoldemMCCFRSolver {
             return 0.0;
         }
 
-        let mut key_buf = String::with_capacity(16);
-        format_holdem_infoset_key(
-            &game.hole[curr_player],
-            &game.board,
-            game.round,
-            &game.history,
-            &mut key_buf,
-        );
+        let mut key_buf = String::with_capacity(24);
+        if self.rich_history {
+            crate::cfr::abstraction::format_holdem_infoset_key_rich(
+                &game.hole[curr_player],
+                &game.board,
+                game.round,
+                &game.history,
+                &mut key_buf,
+            );
+        } else {
+            format_holdem_infoset_key(
+                &game.hole[curr_player],
+                &game.board,
+                game.round,
+                &game.history,
+                &mut key_buf,
+            );
+        }
         let node = self.get_node(&key_buf);
         let mut strategy = [0.0f64; HOLDEM_NUM_ACTIONS];
         node.get_strategy_buf(&mut strategy);
@@ -178,21 +217,44 @@ impl HoldemMCCFRSolver {
         if curr_player == updating_player {
             let mut action_utils = [0.0f64; HOLDEM_NUM_ACTIONS];
             let mut node_util = 0.0f64;
+            let mut explored = [true; HOLDEM_NUM_ACTIONS];
+
+            let r_thresh = -300.0;
+            let p_prune = 0.95;
 
             for i in 0..n {
                 let act = actions[i];
+                let act_idx = act as usize;
+
+                if self.pruning && weight > 0.0 {
+                    let r = node.get_regret(act_idx);
+                    if r < r_thresh && rng.gen::<f64>() < p_prune {
+                        explored[i] = false;
+                        continue;
+                    }
+                }
+
                 let child = game.apply_action(act);
-                let u = self.traverse(&child, updating_player, weight, rng);
+                let u = self.traverse(&child, updating_player, weight, pos_discount, neg_discount, rng);
                 action_utils[i] = u;
                 node_util += legal_probs[i] * u;
             }
 
             let mut regrets = [0.0f64; HOLDEM_NUM_ACTIONS];
             for i in 0..n {
-                regrets[actions[i] as usize] = action_utils[i] - node_util;
+                let act_idx = actions[i] as usize;
+                if explored[i] {
+                    regrets[act_idx] = action_utils[i] - node_util;
+                } else {
+                    regrets[act_idx] = 0.0;
+                }
             }
 
-            node.update_regrets_cfr_plus(&regrets);
+            if self.dcfr {
+                node.update_regrets_dcfr(&regrets, pos_discount, neg_discount);
+            } else {
+                node.update_regrets_cfr_plus(&regrets);
+            }
             node_util
         } else {
             let chosen_idx = sample_action_buf(&legal_probs[..n], rng);
@@ -207,7 +269,7 @@ impl HoldemMCCFRSolver {
             }
 
             let child = game.apply_action(chosen_act);
-            self.traverse(&child, updating_player, weight, rng)
+            self.traverse(&child, updating_player, weight, pos_discount, neg_discount, rng)
         }
     }
 

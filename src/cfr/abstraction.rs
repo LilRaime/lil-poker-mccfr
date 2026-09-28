@@ -317,39 +317,112 @@ pub fn detect_draws(hole: &[Card; 2], board: &[Card]) -> (bool, bool) {
         return (false, false);
     }
 
-    let mut suit_counts = [0u8; 4];
-    suit_counts[hole[0].suit as usize] += 1;
-    suit_counts[hole[1].suit as usize] += 1;
+    let mut board_suit_counts = [0u8; 4];
     for &b in board {
-        suit_counts[b.suit as usize] += 1;
+        board_suit_counts[b.suit as usize] += 1;
     }
-    let is_flush_draw = suit_counts.contains(&4);
+    let is_flush_draw = (0..4).any(|s| {
+        let hole_has = (hole[0].suit as usize == s) as u8 + (hole[1].suit as usize == s) as u8;
+        hole_has >= 1 && (board_suit_counts[s] + hole_has == 4)
+    });
 
-    let mut ranks = [false; 13];
+    let mut board_ranks = [false; 13];
+    for &b in board {
+        board_ranks[b.rank as usize] = true;
+    }
+    let mut ranks = board_ranks;
     ranks[hole[0].rank as usize] = true;
     ranks[hole[1].rank as usize] = true;
-    for &b in board {
-        ranks[b.rank as usize] = true;
-    }
 
+    let h0 = hole[0].rank as usize;
+    let h1 = hole[1].rank as usize;
     let mut is_straight_draw = false;
     for r in 0..10 {
         if ranks[r] && ranks[r + 1] && ranks[r + 2] && ranks[r + 3] {
-            is_straight_draw = true;
-            break;
+            if (h0 >= r && h0 <= r + 3) || (h1 >= r && h1 <= r + 3) {
+                is_straight_draw = true;
+                break;
+            }
         }
     }
     if !is_straight_draw && ranks[12] {
         let low_count = (ranks[0] as u8) + (ranks[1] as u8) + (ranks[2] as u8) + (ranks[3] as u8);
         if low_count >= 3 {
-            is_straight_draw = true;
+            let h0_contrib = h0 == 12 || h0 <= 3;
+            let h1_contrib = h1 == 12 || h1 <= 3;
+            if h0_contrib || h1_contrib {
+                is_straight_draw = true;
+            }
         }
     }
 
     (is_flush_draw, is_straight_draw)
 }
 
-/* Fast draw-aware postflop equity bucketing for Texas Hold'em (0..49). */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardFlushTexture {
+    Rainbow,
+    TwoTone,
+    Monotone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoardTextureInfo {
+    pub flush_texture: BoardFlushTexture,
+    pub is_paired: bool,
+    pub is_connected: bool,
+}
+
+pub fn detect_board_texture(board: &[Card]) -> BoardTextureInfo {
+    if board.is_empty() {
+        return BoardTextureInfo {
+            flush_texture: BoardFlushTexture::Rainbow,
+            is_paired: false,
+            is_connected: false,
+        };
+    }
+    let mut suit_counts = [0u8; 4];
+    let mut rank_counts = [0u8; 13];
+    for &c in board {
+        suit_counts[c.suit as usize] += 1;
+        rank_counts[c.rank as usize] += 1;
+    }
+    let max_suit = *suit_counts.iter().max().unwrap_or(&0);
+    let flush_texture = if max_suit >= 3 {
+        BoardFlushTexture::Monotone
+    } else if max_suit == 2 {
+        BoardFlushTexture::TwoTone
+    } else {
+        BoardFlushTexture::Rainbow
+    };
+
+    let is_paired = rank_counts.iter().any(|&cnt| cnt >= 2);
+
+    let mut is_connected = false;
+    let mut consecutive = 0;
+    for &cnt in &rank_counts {
+        if cnt > 0 {
+            consecutive += 1;
+            if consecutive >= 2 {
+                is_connected = true;
+                break;
+            }
+        } else {
+            consecutive = 0;
+        }
+    }
+    if !is_connected && rank_counts[12] > 0 && (rank_counts[0] > 0 || rank_counts[11] > 0) {
+        is_connected = true;
+    }
+
+    BoardTextureInfo {
+        flush_texture,
+        is_paired,
+        is_connected,
+    }
+}
+
+/* Fast draw-aware and texture-aware postflop equity bucketing for Texas Hold'em (0..49). */
 pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
     let score = evaluate_7cards(hole, board);
     let category = score >> 32;
@@ -403,17 +476,76 @@ pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
         2 => {
             /* Two Pair */
             let top_pair = ((score >> 16) & 0xF) as usize;
-            match top_pair {
-                11..=12 => 32, /* Top Two (AA, KK) */
-                9..=10 => 31,  /* High Two (QQ, JJ) */
-                6..=8 => 30,   /* Mid Two (TT, 99, 88) */
-                _ => 29,       /* Low Two */
+            let bottom_pair = (score & 0xF) as usize;
+            let is_pocket_pair = hole[0].rank == hole[1].rank;
+            let hit_top = (hole[0].rank as usize == top_pair) || (hole[1].rank as usize == top_pair);
+            let hit_bottom = (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
+
+            if !is_pocket_pair && !hit_top && !hit_bottom {
+                /* Both pairs are entirely on board */
+                29
+            } else {
+                match top_pair {
+                    11..=12 => 32, /* Top Two (AA, KK) */
+                    9..=10 => 31,  /* High Two (QQ, JJ) */
+                    6..=8 => 30,   /* Mid Two (TT, 99, 88) */
+                    _ => 29,       /* Low Two */
+                }
             }
         }
         1 => {
-            /* One Pair (12 distinct buckets 17..28: Twos to Aces!) */
+            /* One Pair (accurately distinguishing overpairs, top pairs, redraws, and board pairs) */
             let pair_rank = ((score >> 16) & 0xF) as usize;
-            17 + pair_rank.min(11)
+            let is_pocket_pair = hole[0].rank == hole[1].rank;
+            let hole_hit_pair = (hole[0].rank as usize == pair_rank) || (hole[1].rank as usize == pair_rank);
+
+            if !is_pocket_pair && !hole_hit_pair {
+                /* Pair is on board; player only has kicker */
+                let high_kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
+                17 + (high_kicker / 2).min(5)
+            } else {
+                let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
+                let (has_fd, has_sd) = detect_draws(hole, board);
+                if is_pocket_pair && pair_rank > max_board_rank {
+                    /* Overpair (pocket pair higher than all board cards) */
+                    if has_fd { 29 } else { 28 }
+                } else if hole_hit_pair && pair_rank >= max_board_rank {
+                    /* Top Pair */
+                    let kicker = if hole[0].rank as usize == pair_rank {
+                        hole[1].rank as usize
+                    } else {
+                        hole[0].rank as usize
+                    };
+                    let base = if kicker >= 10 {
+                        27 /* Top pair top kicker (A, K, Q) */
+                    } else if kicker >= 7 {
+                        26 /* Top pair good kicker (J, T, 9) */
+                    } else {
+                        25 /* Top pair weak kicker */
+                    };
+                    if has_fd {
+                        (base + 1).min(28)
+                    } else {
+                        base
+                    }
+                } else if pair_rank > 6 {
+                    /* Mid pair */
+                    let base = 21 + (pair_rank.saturating_sub(7)).min(3);
+                    if has_fd || has_sd {
+                        base + 1
+                    } else {
+                        base
+                    }
+                } else {
+                    /* Low pair */
+                    let base = 17 + pair_rank.min(3);
+                    if has_fd || has_sd {
+                        base + 1
+                    } else {
+                        base
+                    }
+                }
+            }
         }
         _ => {
             /* High Card or Strong Draw on Flop/Turn */
@@ -484,6 +616,19 @@ impl HistoryActions for [Vec<u8>; 4] {
     }
 }
 
+#[inline(always)]
+pub fn action_to_char(a: u8) -> char {
+    match a {
+        0 => 'f',
+        1 => 'c',
+        2 => 'r',
+        3 => 't',
+        4 => 'h',
+        5 => 'a',
+        _ => 'x',
+    }
+}
+
 /* Fast zero-allocation infoset key formatting into a reusable String buffer */
 #[inline]
 pub fn format_holdem_infoset_key_slice(
@@ -516,16 +661,7 @@ pub fn format_holdem_infoset_key_slice(
         out.push('/');
     }
     for &a in round_history {
-        let ch = match a {
-            0 => 'f',
-            1 => 'c',
-            2 => 'r',
-            3 => 't',
-            4 => 'h',
-            5 => 'a',
-            _ => 'x',
-        };
-        out.push(ch);
+        out.push(action_to_char(a));
     }
 }
 
@@ -552,3 +688,63 @@ pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     format_holdem_infoset_key(hole, board, round, history, &mut s);
     s
 }
+
+/* Rich Information Set key formatting that retains previous-street action context (e.g. preflop 3-bet vs limp) */
+#[inline]
+pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &H,
+    out: &mut String,
+) {
+    out.clear();
+    if round == 1 {
+        let (_, name) = preflop_bucket(hole[0], hole[1]);
+        out.push_str("P:");
+        out.push_str(name);
+        out.push('/');
+        for &a in history.actions_in_round(0) {
+            out.push(action_to_char(a));
+        }
+    } else {
+        let pf_actions = history.actions_in_round(0);
+        if !pf_actions.is_empty() {
+            out.push_str("P:");
+            for &a in pf_actions {
+                out.push(action_to_char(a));
+            }
+            out.push('|');
+        }
+        let bucket = postflop_equity_bucket(hole, board);
+        let round_code = match round {
+            2 => "F:B",
+            3 => "T:B",
+            4 => "R:B",
+            _ => "X:B",
+        };
+        out.push_str(round_code);
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+        let r_idx = (round.saturating_sub(1)) as usize;
+        for &a in history.actions_in_round(r_idx) {
+            out.push(action_to_char(a));
+        }
+    }
+}
+
+pub fn get_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &H,
+) -> String {
+    let mut s = String::with_capacity(24);
+    format_holdem_infoset_key_rich(hole, board, round, history, &mut s);
+    s
+}
+

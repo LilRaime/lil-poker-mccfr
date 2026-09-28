@@ -72,6 +72,16 @@ impl InfosetNode {
         buf[..self.num_actions].to_vec()
     }
 
+    /* Cumulative regret for a specific action */
+    #[inline(always)]
+    pub fn get_regret(&self, action: usize) -> f64 {
+        if action < self.num_actions {
+            self.regret_sum[action].load(Ordering::Relaxed) as f64 / SCALE
+        } else {
+            0.0
+        }
+    }
+
     /* Average strategy (used as final policy after training). */
     pub fn get_average_strategy(&self) -> Vec<f64> {
         let n = self.num_actions;
@@ -97,6 +107,37 @@ impl InfosetNode {
             let mut old = self.regret_sum[i].load(Ordering::Relaxed);
             loop {
                 let new = (old + delta).max(0);
+                match self.regret_sum[i].compare_exchange_weak(
+                    old,
+                    new,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => old = actual,
+                }
+            }
+        }
+    }
+
+    /* Discounted CFR (DCFR, Brown & Sandholm 2019):
+     * Discounts positive regrets by pos_discount = t^alpha / (t^alpha + 1),
+     * and negative regrets by neg_discount = t^beta / (t^beta + 1). */
+    #[inline(always)]
+    pub fn update_regrets_dcfr(&self, regrets: &[f64], pos_discount: f64, neg_discount: f64) {
+        for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
+            let delta = (r * SCALE) as i64;
+            let mut old = self.regret_sum[i].load(Ordering::Relaxed);
+            loop {
+                let current_r = old as f64;
+                let discounted = if current_r > 0.0 {
+                    current_r * pos_discount
+                } else if current_r < 0.0 {
+                    current_r * neg_discount
+                } else {
+                    0.0
+                };
+                let new = (discounted as i64).saturating_add(delta).max(-10_000_000_000);
                 match self.regret_sum[i].compare_exchange_weak(
                     old,
                     new,
