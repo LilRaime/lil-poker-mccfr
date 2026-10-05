@@ -7,14 +7,19 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
-use crate::cfr::abstraction::format_holdem_infoset_key;
 use crate::cfr::node::InfosetNode;
 use crate::game::holdem::TexasHoldemGame;
 
 pub const HOLDEM_NUM_ACTIONS: usize = 6;
 
+#[derive(Clone)]
+pub struct InfosetEntry {
+    pub key: String,
+    pub node: Arc<InfosetNode>,
+}
+
 pub struct HoldemMCCFRSolver {
-    pub nodes: Arc<DashMap<String, Arc<InfosetNode>>>,
+    pub nodes: Arc<DashMap<u64, InfosetEntry>>,
     pub rich_history: bool,
     pub pruning: bool,
     pub dcfr: bool,
@@ -28,7 +33,7 @@ impl Default for HoldemMCCFRSolver {
 
 impl HoldemMCCFRSolver {
     pub fn new() -> Self {
-        Self::with_config(false, false, false)
+        Self::with_config(false, true, true)
     }
 
     pub fn with_config(rich_history: bool, pruning: bool, dcfr: bool) -> Self {
@@ -40,15 +45,22 @@ impl HoldemMCCFRSolver {
         }
     }
 
-    /* Fast get or create node for abstracted infoset key */
+    /* Fast get or create node by u64 hash; key string generated lazily only on insertion */
     #[inline(always)]
-    fn get_node(&self, key: &str) -> Arc<InfosetNode> {
-        if let Some(node) = self.nodes.get(key) {
-            return Arc::clone(&node);
+    fn get_node<F>(&self, hash: u64, make_key: F) -> Arc<InfosetNode>
+    where
+        F: FnOnce() -> String,
+    {
+        if let Some(entry) = self.nodes.get(&hash) {
+            return Arc::clone(&entry.node);
         }
         self.nodes
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)))
+            .entry(hash)
+            .or_insert_with(|| InfosetEntry {
+                key: make_key(),
+                node: Arc::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)),
+            })
+            .node
             .clone()
     }
 
@@ -68,7 +80,7 @@ impl HoldemMCCFRSolver {
         let width = iterations.to_string().len();
         let mut done = 0u64;
         let train_start = std::time::Instant::now();
-        let warmup = iterations / 10;
+        let warmup = (iterations / 10).min(500_000);
         let train_iters_after_warmup = (iterations.saturating_sub(warmup).max(1)) as f64;
 
         let entropy_base = Arc::new(AtomicU64::new(
@@ -108,7 +120,8 @@ impl HoldemMCCFRSolver {
                     (p_disc, n_disc, w)
                 } else {
                     let linear_weight = if iter_idx < warmup {
-                        0.0
+                        /* During warmup: accumulate with tiny linear ramp to start building strategy without bias */
+                        (iter_idx + 1) as f64 / (warmup as f64 * 100.0)
                     } else {
                         (iter_idx - warmup + 1) as f64 / train_iters_after_warmup
                     };
@@ -173,25 +186,37 @@ impl HoldemMCCFRSolver {
             return 0.0;
         }
 
-        let mut key_buf = String::with_capacity(24);
-        if self.rich_history {
-            crate::cfr::abstraction::format_holdem_infoset_key_rich(
+        let node = if self.rich_history {
+            let hash = crate::cfr::abstraction::hash_holdem_infoset_key_rich(
                 &game.hole[curr_player],
                 &game.board,
                 game.round,
                 &game.history,
-                &mut key_buf,
             );
+            self.get_node(hash, || {
+                crate::cfr::abstraction::get_holdem_infoset_key_rich(
+                    &game.hole[curr_player],
+                    &game.board,
+                    game.round,
+                    &game.history,
+                )
+            })
         } else {
-            format_holdem_infoset_key(
+            let hash = crate::cfr::abstraction::hash_holdem_infoset_key(
                 &game.hole[curr_player],
                 &game.board,
                 game.round,
                 &game.history,
-                &mut key_buf,
             );
-        }
-        let node = self.get_node(&key_buf);
+            self.get_node(hash, || {
+                crate::cfr::abstraction::get_holdem_infoset_key(
+                    &game.hole[curr_player],
+                    &game.board,
+                    game.round,
+                    &game.history,
+                )
+            })
+        };
         let mut strategy = [0.0f64; HOLDEM_NUM_ACTIONS];
         node.get_strategy_buf(&mut strategy);
 
@@ -226,7 +251,7 @@ impl HoldemMCCFRSolver {
                 let act = actions[i];
                 let act_idx = act as usize;
 
-                if self.pruning && weight > 0.0 {
+                if self.pruning {
                     let r = node.get_regret(act_idx);
                     if r < r_thresh && rng.gen::<f64>() < p_prune {
                         explored[i] = false;
@@ -291,8 +316,8 @@ impl HoldemMCCFRSolver {
         self.nodes
             .iter()
             .map(|entry| {
-                let key = entry.key().clone();
-                let avg = entry.value().get_average_strategy();
+                let key = entry.value().key.clone();
+                let avg = entry.value().node.get_average_strategy();
                 (key, avg)
             })
             .collect()

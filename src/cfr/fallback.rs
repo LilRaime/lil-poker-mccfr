@@ -5,6 +5,7 @@
  */
 
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+use crate::game::config::*;
 use crate::game::holdem::{
     Card, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -67,7 +68,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; 6] {
             s[RAISE_THIRD_POT as usize] = 0.35;
             s[RAISE_HALF_POT as usize] = 0.40;
             s[ALL_IN as usize] = 0.05;
-        } else if to_call <= 80 {
+        } else if to_call <= PF_TIER1_CALL_MAX {
             s[CALL_CHECK as usize] = 0.30;
             s[RAISE_MIN as usize] = 0.15;
             s[RAISE_THIRD_POT as usize] = 0.20;
@@ -85,7 +86,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; 6] {
             s[RAISE_MIN as usize] = 0.25;
             s[RAISE_THIRD_POT as usize] = 0.35;
             s[RAISE_HALF_POT as usize] = 0.20;
-        } else if to_call <= 40 {
+        } else if to_call <= PF_TIER2_CALL_MAX {
             s[CALL_CHECK as usize] = 0.65;
             s[RAISE_MIN as usize] = 0.15;
             s[RAISE_THIRD_POT as usize] = 0.15;
@@ -102,11 +103,11 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; 6] {
             s[CALL_CHECK as usize] = 0.75;
             s[RAISE_THIRD_POT as usize] = 0.15;
             s[RAISE_MIN as usize] = 0.10;
-        } else if to_call <= 20 {
+        } else if to_call <= PF_TIER3_CHEAP_CALL_MAX {
             s[CALL_CHECK as usize] = 0.80;
             s[RAISE_THIRD_POT as usize] = 0.10;
             s[FOLD as usize] = 0.10;
-        } else if to_call <= 60 {
+        } else if to_call <= PF_TIER3_FOLD_BOUNDARY {
             s[CALL_CHECK as usize] = 0.45;
             s[FOLD as usize] = 0.55;
         } else {
@@ -118,7 +119,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; 6] {
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.95;
             s[RAISE_MIN as usize] = 0.05;
-        } else if to_call <= 20 {
+        } else if to_call <= PF_TIER4_CALL_MAX {
             s[CALL_CHECK as usize] = 0.35;
             s[FOLD as usize] = 0.65;
         } else {
@@ -138,13 +139,13 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; 6] {
     s
 }
 
-/* Postflop heuristic based on 50 equity buckets, board round, pot odds, and aggression */
+/* Postflop heuristic based on 77 equity buckets, board round, pot odds, and aggression */
 fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 6] {
     let mut s = [0.0f64; 6];
     let total_pot = (pot + to_call).max(1);
     let pot_odds = to_call as f64 / total_pot as f64;
 
-    if bucket >= 40 {
+    if bucket >= 62 {
         /* Monsters / Nuts (Straight, Flush, Full House, Quads, Straight Flush) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.10; /* Trap / Slowplay */
@@ -156,7 +157,7 @@ fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 
             s[RAISE_HALF_POT as usize] = 0.35;
             s[ALL_IN as usize] = 0.40;
         }
-    } else if bucket >= 33 {
+    } else if bucket >= 51 {
         /* Very Strong (Trips / Sets, High Two Pair) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.15;
@@ -168,7 +169,7 @@ fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 
             s[RAISE_HALF_POT as usize] = 0.30;
             s[ALL_IN as usize] = 0.25;
         }
-    } else if bucket >= 27 {
+    } else if bucket >= 36 {
         /* Strong (Two Pair, Top Pair with Top Kicker) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.35;
@@ -185,7 +186,7 @@ fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 
             s[FOLD as usize] = 0.30;
             s[RAISE_HALF_POT as usize] = 0.15;
         }
-    } else if bucket >= 17 {
+    } else if bucket >= 28 {
         /* Marginal / Bluff Catcher (One Pair: middle pair, bottom pair, weak kicker) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.80;
@@ -202,7 +203,7 @@ fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 
             s[CALL_CHECK as usize] = 0.20;
             s[FOLD as usize] = 0.80;
         }
-    } else if round < 4 && bucket >= 13 {
+    } else if round < 4 && bucket >= 15 {
         /* Strong Draws on Flop & Turn (Flush draw, Open-ended straight draw, combo draw) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.40;
@@ -217,6 +218,18 @@ fn postflop_fallback(bucket: usize, round: u8, to_call: i32, pot: i32) -> [f64; 
             s[CALL_CHECK as usize] = 0.50;
             s[FOLD as usize] = 0.45;
             s[RAISE_THIRD_POT as usize] = 0.05;
+        }
+    } else if round < 4 && bucket >= 11 {
+        /* Weak Draws on Flop & Turn (Gutshots) */
+        if to_call == 0 {
+            s[CALL_CHECK as usize] = 0.80;
+            s[RAISE_THIRD_POT as usize] = 0.20;
+        } else if pot_odds <= 0.18 {
+            s[CALL_CHECK as usize] = 0.65;
+            s[FOLD as usize] = 0.35;
+        } else {
+            s[FOLD as usize] = 0.85;
+            s[CALL_CHECK as usize] = 0.15;
         }
     } else {
         /* Weak / Air / Missed draw */

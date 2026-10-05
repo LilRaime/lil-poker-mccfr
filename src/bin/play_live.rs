@@ -22,6 +22,7 @@ use lil_poker_mccfr::cfr::abstraction::{
 };
 use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
 use lil_poker_mccfr::cfr::subgame::SubgameSolver;
+use lil_poker_mccfr::game::config::*;
 use lil_poker_mccfr::game::holdem::{Card, Rank, RoundHistory, Suit};
 
 #[derive(Parser, Debug)]
@@ -444,15 +445,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if round_idx == 0 {
                     /* Preflop: SB acts first. If bot is BB, opponent acted first! */
                     if !my_is_sb {
-                        if to_call == 0 || opp_bet <= 20 {
+                        if to_call == 0 || opp_bet <= LIMP_THRESHOLD {
                             hist.push(1); // CALL_CHECK (limp)
                             tracker.record_action(1, true);
                         } else {
-                            let raise_act = if opp_bet >= 800 {
+                            let raise_act = if opp_bet >= ALLIN_BET_THRESHOLD {
                                 5 // ALL_IN
-                            } else if opp_bet >= 60 {
+                            } else if opp_bet >= HALF_POT_RAISE_THRESHOLD {
                                 4 // RAISE_HALF_POT
-                            } else if opp_bet >= 40 {
+                            } else if opp_bet >= THIRD_POT_RAISE_THRESHOLD {
                                 3 // RAISE_THIRD_POT
                             } else {
                                 2 // RAISE_MIN
@@ -468,7 +469,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             hist.push(1); // Opponent check
                             tracker.record_action(1, false);
                         } else {
-                            let bet_act = if opp_bet >= 800 {
+                            let bet_act = if opp_bet >= ALLIN_BET_THRESHOLD {
                                 5 // ALL_IN
                             } else if opp_bet >= (pot / 2) {
                                 4 // RAISE_HALF_POT
@@ -483,7 +484,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if to_call > 0 {
                 /* Facing a re-raise after bot already acted this round */
                 let opp_diff = (opp_bet - last_opp_bet).max(to_call);
-                let raise_act = if opp_bet >= 800 {
+                let raise_act = if opp_bet >= ALLIN_BET_THRESHOLD {
                     5 // ALL_IN
                 } else if opp_diff >= pot / 2 {
                     4 // RAISE_HALF_POT
@@ -524,7 +525,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "fold" => 0,
             "check" | "call" => 1,
             "raise" | "bet" => {
-                if amount >= 800 {
+                if amount >= ALLIN_BET_THRESHOLD {
                     5
                 } else if amount >= pot / 2 {
                     4
@@ -666,67 +667,68 @@ fn decide_action(
         postflop_equity_bucket(hole, board)
     };
 
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots >= 120) */
-    let raw_probs = if subgame_search && (round >= 3 || (round == 2 && pot >= 120)) {
-        let solver = SubgameSolver::new(2500);
-        let my_contrib = (pot / 2).max(10);
-        let opp_contrib = my_contrib + to_call;
-        solver.solve_with_state(hole, board, round, history, 0, [my_contrib, opp_contrib], 0)
-    } else {
-        /* 2. Abstract Strategy Model Lookup with Fallback (rich key first, then exact key) */
-        let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
-        let exact_key = get_holdem_infoset_key(hole, board, round, history);
-        if let Some(p) = strategy_map
-            .get(&rich_key)
-            .or_else(|| strategy_map.get(&exact_key))
-        {
-            p.clone()
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots) */
+    let raw_probs =
+        if subgame_search && (round >= 3 || (round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT)) {
+            let solver = SubgameSolver::new(2500);
+            let my_contrib = (pot / 2).max(10);
+            let opp_contrib = my_contrib + to_call;
+            solver.solve_with_state(hole, board, round, history, 0, [my_contrib, opp_contrib], 0)
         } else {
-            let prefix = if round == 1 {
-                let (_, name) = preflop_bucket(hole[0], hole[1]);
-                format!("P:{}/", name)
+            /* 2. Abstract Strategy Model Lookup with Fallback (rich key first, then exact key) */
+            let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
+            let exact_key = get_holdem_infoset_key(hole, board, round, history);
+            if let Some(p) = strategy_map
+                .get(&rich_key)
+                .or_else(|| strategy_map.get(&exact_key))
+            {
+                p.clone()
             } else {
-                let bucket = postflop_equity_bucket(hole, board);
-                let r_code = match round {
-                    2 => "F",
-                    3 => "T",
-                    4 => "R",
-                    _ => "X",
+                let prefix = if round == 1 {
+                    let (_, name) = preflop_bucket(hole[0], hole[1]);
+                    format!("P:{}/", name)
+                } else {
+                    let bucket = postflop_equity_bucket(hole, board);
+                    let r_code = match round {
+                        2 => "F",
+                        3 => "T",
+                        4 => "R",
+                        _ => "X",
+                    };
+                    format!("{}:B{:02}/", r_code, bucket)
                 };
-                format!("{}:B{:02}/", r_code, bucket)
-            };
 
-            let matches: Vec<&Vec<f64>> = strategy_map
-                .iter()
-                .filter(|(k, _)| k.starts_with(&prefix))
-                .map(|(_, v)| v)
-                .collect();
+                let matches: Vec<&Vec<f64>> = strategy_map
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(&prefix))
+                    .map(|(_, v)| v)
+                    .collect();
 
-            let fallback = lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
-                hole, board, round, to_call, pot, &legal_u8,
-            );
+                let fallback = lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy(
+                    hole, board, round, to_call, pot, &legal_u8,
+                );
 
-            if !matches.is_empty() {
-                let n = matches.len() as f64;
-                let mut avg = [0.0f64; 6];
-                for vec in matches {
-                    for (i, &val) in vec.iter().enumerate().take(6) {
-                        avg[i] += val / n;
+                if !matches.is_empty() {
+                    let n = matches.len() as f64;
+                    let mut avg = [0.0f64; 6];
+                    for vec in matches {
+                        for (i, &val) in vec.iter().enumerate().take(6) {
+                            avg[i] += val / n;
+                        }
                     }
-                }
-                let mut blended = vec![0.0f64; 6];
-                for &a in &legal_u8 {
-                    let idx = a as usize;
-                    if idx < 6 {
-                        blended[idx] = 0.55 * avg[idx] + 0.45 * fallback[idx];
+                    let mut blended = vec![0.0f64; 6];
+                    for &a in &legal_u8 {
+                        let idx = a as usize;
+                        if idx < 6 {
+                            blended[idx] = 0.55 * avg[idx] + 0.45 * fallback[idx];
+                        }
                     }
+                    blended
+                } else {
+                    fallback.to_vec()
                 }
-                blended
-            } else {
-                fallback.to_vec()
             }
-        }
-    };
+        };
 
     /* 3. Action Selection via Purified Strategy Sampling with Opponent Exploitation and All-in Defense */
     let mut rng = rand::thread_rng();
@@ -798,15 +800,15 @@ fn map_action_index(
         }
         2..=4 => {
             let amt = match idx {
-                3 => (pot / 3).max(30),
+                3 => (pot / 3).max(RAISE_THIRD_POT_FLOOR),
                 4 => {
                     if is_wet {
-                        (pot * 3 / 4).max(50)
+                        (pot * 3 / 4).max(RAISE_HALF_POT_FLOOR_WET)
                     } else {
-                        (pot / 2).max(40)
+                        (pot / 2).max(RAISE_HALF_POT_FLOOR_DRY)
                     }
                 }
-                _ => 40,
+                _ => RAISE_MIN_AMT,
             };
             if has("raise") {
                 Some(("raise".to_string(), amt))
@@ -826,9 +828,9 @@ fn map_action_index(
             if has("allin") {
                 Some(("allin".to_string(), 0))
             } else if has("raise") {
-                Some(("raise".to_string(), (pot * 2).max(100)))
+                Some(("raise".to_string(), (pot * 2).max(RAISE_MIN_AMT * 2)))
             } else if has("bet") {
-                Some(("bet".to_string(), (pot * 2).max(100)))
+                Some(("bet".to_string(), (pot * 2).max(RAISE_MIN_AMT * 2)))
             } else if to_call > 0 && has("call") {
                 Some(("call".to_string(), 0))
             } else if has("check") {

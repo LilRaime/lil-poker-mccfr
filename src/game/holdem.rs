@@ -1,5 +1,4 @@
-/* 52-Card Texas Hold'em Game Engine with 7-card hand evaluation and Card Abstraction. */
-
+use crate::game::config::*;
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -499,7 +498,7 @@ impl TexasHoldemGame {
             current_player: 0,
             round: 1,
             raises_this_round: 0,
-            contributions: [10, 20],
+            contributions: [SMALL_BLIND, BIG_BLIND],
             history: [RoundHistory::new(); 4],
             terminal: false,
             returns: [0.0, 0.0],
@@ -514,7 +513,7 @@ impl TexasHoldemGame {
             current_player: 0,
             round: 1,
             raises_this_round: 0,
-            contributions: [10, 20],
+            contributions: [SMALL_BLIND, BIG_BLIND],
             history: [RoundHistory::new(); 4],
             terminal: false,
             returns: [0.0, 0.0],
@@ -544,9 +543,9 @@ impl TexasHoldemGame {
         let opp = 1 - self.current_player;
         let diff = self.contributions[opp] - self.contributions[self.current_player];
         let my_contrib = self.contributions[self.current_player];
-        let raise_capped = self.raises_this_round >= 3;
+        let raise_capped = self.raises_this_round >= MAX_RAISES_PER_ROUND;
 
-        if my_contrib >= 1000 || self.contributions[opp] >= 1000 || raise_capped {
+        if my_contrib >= STACK_SIZE || self.contributions[opp] >= STACK_SIZE || raise_capped {
             if diff > 0 {
                 out[0] = FOLD;
                 out[1] = CALL_CHECK;
@@ -587,7 +586,6 @@ impl TexasHoldemGame {
 
         let opp = 1 - next.current_player;
         let pot = next.contributions[0] + next.contributions[1];
-        let stack_limit = 1000i32;
 
         match action {
             FOLD => {
@@ -602,22 +600,22 @@ impl TexasHoldemGame {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff).min(stack_limit);
+                    (next.contributions[next.current_player] + diff).min(STACK_SIZE);
             }
             RAISE_MIN => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let raise_amt = 40;
+                let raise_amt = RAISE_MIN_AMT;
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
                 next.raises_this_round += 1;
             }
             RAISE_THIRD_POT => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let raise_amt = (pot / 3).max(30);
+                let raise_amt = (pot / 3).max(RAISE_THIRD_POT_FLOOR);
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
                 next.raises_this_round += 1;
             }
             RAISE_HALF_POT => {
@@ -633,23 +631,23 @@ impl TexasHoldemGame {
                 let pot_with_call = pot + diff;
                 let raise_amt = if next.round == 4 {
                     /* River: Full pot bet (100% pot) for polarized value and bluffing */
-                    pot_with_call.max(80)
+                    pot_with_call.max(RAISE_HALF_POT_FLOOR_RIVER)
                 } else if next.round == 3 {
                     /* Turn: 75% pot bet for geometric pot growth */
-                    (pot_with_call * 3 / 4).max(60)
+                    (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)
                 } else if is_wet {
                     /* Flop (wet): 75% pot bet */
-                    (pot_with_call * 3 / 4).max(50)
+                    (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_WET)
                 } else {
                     /* Flop (dry) or Preflop: 50% pot bet */
-                    (pot_with_call / 2).max(40)
+                    (pot_with_call / 2).max(RAISE_HALF_POT_FLOOR_DRY)
                 };
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_limit);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
                 next.raises_this_round += 1;
             }
             ALL_IN => {
-                next.contributions[next.current_player] = stack_limit;
+                next.contributions[next.current_player] = STACK_SIZE;
                 next.raises_this_round += 1;
             }
             _ => unreachable!(),
@@ -665,7 +663,7 @@ impl TexasHoldemGame {
 
         if round_over {
             next.raises_this_round = 0;
-            if next.contributions[0] >= stack_limit && next.contributions[1] >= stack_limit {
+            if next.contributions[0] >= STACK_SIZE && next.contributions[1] >= STACK_SIZE {
                 while next.board.len() < 5 && !next.deck_remaining.is_empty() {
                     next.board.push(next.deck_remaining.deal_one());
                 }

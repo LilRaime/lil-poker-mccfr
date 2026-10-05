@@ -5,6 +5,7 @@
 
 use crate::cfr::abstraction::get_holdem_infoset_key;
 use crate::cfr::node::InfosetNode;
+use crate::game::config::*;
 use crate::game::holdem::{Card, TexasHoldemGame, ALL_52_CARDS};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -42,13 +43,13 @@ impl SubgameSolver {
         let mut mult = 1.0f64;
 
         /* Pot scaling: big pots require higher precision to avoid costly mistakes */
-        if pot >= 800 {
+        if pot >= SUBGAME_POT_LG {
             mult *= 2.2;
-        } else if pot >= 400 {
+        } else if pot >= SUBGAME_POT_MD {
             mult *= 1.6;
-        } else if pot >= 200 {
+        } else if pot >= SUBGAME_POT_SM {
             mult *= 1.25;
-        } else if pot <= 60 {
+        } else if pot <= SUBGAME_POT_XS {
             mult *= 0.55;
         }
 
@@ -60,7 +61,7 @@ impl SubgameSolver {
         }
 
         /* Bet pressure scaling: facing large bets or all-in requires deeper branch exploration */
-        if to_call >= 100 {
+        if to_call >= SUBGAME_BET_PRESSURE {
             mult *= 1.25;
         }
 

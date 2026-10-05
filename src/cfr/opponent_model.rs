@@ -1,4 +1,5 @@
 /* Opponent Action Tracking and Exploitative Policy Generator. */
+use crate::game::config::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpponentStyle {
@@ -290,12 +291,12 @@ impl OpponentTracker {
         let is_strong = if is_preflop {
             bucket <= 35
         } else {
-            bucket >= 26
+            bucket >= 36
         };
         let is_weak = if is_preflop {
             bucket >= 95
         } else {
-            bucket <= 16
+            bucket <= 14
         };
 
         /* Showdown bluff inference: adjust call-down frequency on bluff-catchers */
@@ -450,7 +451,7 @@ impl OpponentTracker {
          * never call off stack with trash/weak hands due to mixed-strategy noise!
          * Conversely, monster hands (bucket <= 12 preflop) must never fold to shoves!
          */
-        if to_call >= 350 {
+        if to_call >= ALLIN_GUARD_THRESHOLD {
             if is_preflop && bucket <= 12 {
                 /* Premium pocket pairs never fold preflop to a shove */
                 if let Some(f_i) = legal_actions.iter().position(|&a| a == 0) {
@@ -460,14 +461,14 @@ impl OpponentTracker {
 
             let is_trash = if is_preflop {
                 if bucket <= 12 {
-                    false // Pocket pairs (AA - 22)
+                    false /* Pocket pairs (AA - 22) */
                 } else if bucket <= 90 {
-                    bucket > 75 // Weakest suited hands
+                    bucket > 75 /* Weakest suited hands */
                 } else {
-                    bucket > 120 // Weakest offsuited hands (72o, 83o, etc.)
+                    bucket > 120 /* Weakest offsuited hands (72o, 83o, etc.) */
                 }
             } else {
-                bucket < 17 // Worse than One Pair (complete air / missed draws)
+                bucket < 24 /* Worse than One Pair or combo draw (complete air / missed draws) */
             };
 
             if is_trash {
@@ -488,7 +489,7 @@ impl OpponentTracker {
          * In Heads-Up, Button opens 80-85% of hands profitably.
          * For playable hands (bucket <= 120), shift fold probabilities into raises to steal blinds.
          */
-        if is_preflop && to_call <= 10 && bucket <= 120 {
+        if is_preflop && to_call <= PREFLOP_STEAL_MAX_TO_CALL && bucket <= 120 {
             let fold_idx = legal_actions.iter().position(|&a| a == 0);
             let raise_idx = legal_actions.iter().position(|&a| a == 2 || a == 3);
             if let (Some(f_i), Some(r_i)) = (fold_idx, raise_idx) {
