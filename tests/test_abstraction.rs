@@ -53,3 +53,41 @@ fn test_rich_infoset_key_generation() {
     assert_ne!(rich_hash, 0);
     assert_ne!(base_hash, rich_hash);
 }
+
+#[test]
+fn test_board_texture_codes() {
+    use lil_poker_mccfr::cfr::abstraction::board_texture_code;
+    let card = |rank, suit| Card { rank, suit };
+
+    /* Rainbow Unpaired: A-7-2 rainbow */
+    let board_rainbow = [
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    assert_eq!(board_texture_code(&board_rainbow), "R");
+
+    /* Two-Tone Unpaired: A-7-2 two-tone (Diamonds, Diamonds, Hearts) */
+    let board_twotone = [
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    assert_eq!(board_texture_code(&board_twotone), "T");
+
+    /* Monotone: A-7-2 all Hearts */
+    let board_monotone = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::Seven, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    assert_eq!(board_texture_code(&board_monotone), "M");
+
+    /* Paired: 7-7-2 rainbow */
+    let board_paired = [
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    assert_eq!(board_texture_code(&board_paired), "RP");
+}
