@@ -73,31 +73,61 @@ $$\text{Budget} = \text{Base} \times M_{\text{pot}} \times M_{\text{street}} \ti
 ```
 src/
 ├── lib.rs
-├── main.rs                  # CLI: Leduc Hold'em MCCFR training
+├── main.rs                      # CLI: Leduc Hold'em MCCFR training
 ├── game/
-│   ├── card.rs              # 6-card Leduc & 52-card Hold'em deck definitions
-│   ├── leduc.rs             # Leduc Hold'em rules & state transitions
-│   └── holdem.rs            # Texas Hold'em game engine & O(1) bitwise evaluator
+│   ├── mod.rs
+│   ├── card.rs                  # 6-card Leduc & deck representations
+│   ├── config.rs                # Stack, blind structure, and bet sizing configuration
+│   ├── leduc.rs                 # Leduc Hold'em rules & state transitions
+│   └── holdem/                  # 52-card Texas Hold'em game engine
+│       ├── types.rs             # Card, Rank, Suit, Board, RoundHistory, DeckRemaining
+│       ├── actions.rs           # Action constants (FOLD, CALL, RAISE, ALL_IN)
+│       ├── eval.rs              # O(1) bitwise 7-card evaluator with LZCNT kickers
+│       └── state.rs             # Game state transitions, contributions, and showdown
 ├── cfr/
 │   ├── mod.rs
-│   ├── node.rs              # Lock-free InfosetNode (AtomicI64, CFR+ & DCFR)
-│   ├── holdem_mccfr.rs      # Multi-threaded Hold'em MCCFR solver with DCFR & RBP
-│   ├── mccfr.rs             # Leduc MCCFR solver
-│   ├── vanilla.rs           # Exact full-tree Vanilla CFR+ solver (Leduc)
-│   ├── abstraction.rs       # Card abstraction (texture detection, draws, equity buckets)
-│   ├── fallback.rs          # Robust GTO fallback bounds for safe resolving
-│   ├── subgame.rs           # Real-Time Subgame Solver (adaptive budgeting & safe resolving)
-│   └── opponent_model.rs    # Opponent tracker, style classifier, and purified defense
+│   ├── node.rs                  # Lock-free InfosetNode (AtomicI64, CFR+ & DCFR)
+│   ├── holdem_mccfr.rs          # Multi-threaded Hold'em MCCFR solver with DCFR & RBP
+│   ├── mccfr.rs                 # Leduc MCCFR solver
+│   ├── vanilla.rs               # Exact full-tree Vanilla CFR+ solver (Leduc)
+│   ├── fallback.rs              # Robust GTO fallback bounds for safe resolving
+│   ├── subgame.rs               # Real-Time Subgame Solver (adaptive budgeting & safe resolving)
+│   ├── abstraction/             # State & card abstraction pipeline
+│   │   ├── preflop.rs           # 169 canonical preflop hand buckets
+│   │   ├── draws.rs             # Flush/straight combo draw detection
+│   │   ├── texture.rs           # Board texture classification (Rainbow, Two-Tone, Monotone, Paired)
+│   │   ├── postflop.rs          # 77 postflop equity buckets & EHS equity computation
+│   │   └── keys.rs              # Zero-allocation 64-bit FNV-1a hashing & infoset keys
+│   └── opponent_model/          # Opponent tracking & dynamic exploitation
+│       ├── classifier.rs        # Archetypes (CallingStation, Maniac, Rock, TAG, LAG)
+│       ├── tracker.rs           # Street action counters, VPIP/PFR/WTSD, and showdown inference
+│       └── policy.rs            # Bayesian adjustment, button steal, and purified all-in defense
+├── sim/                         # Offline simulation & benchmarking engine
+│   ├── stats.rs                 # Match statistics, win/loss/tie ratios, standard error (SE)
+│   ├── opponents.rs             # Opponent archetype heuristics (TAG, Fish, Maniac, Rock, Self)
+│   ├── holdem.rs                # Texas Hold'em episode runner & Duplicate Poker benchmark
+│   └── leduc.rs                 # Leduc simulation, spectator watch mode, and interactive CLI
+├── live/                        # Native real-time client for lil-poker web server
+│   ├── protocol.rs              # REST/WebSocket schemas, card string parsing, and action mapping
+│   ├── decision.rs              # Real-time action decision engine with subgame resolving
+│   └── client.rs                # Async WebSocket event loop, auto-retry, and state tracking
 └── bin/
-    ├── play_live.rs         # Live WebSocket/REST bot client for lil-poker server
-    ├── train_holdem.rs      # CLI: Train Texas Hold'em MCCFR/DCFR model
-    ├── train_vanilla.rs     # CLI: Train exact full-tree Leduc solver
-    ├── evaluate.rs          # CLI: Evaluate strategies (win rate, exploitability)
-    └── play.rs              # CLI: Play / simulate games offline with rich analytics
+    ├── play_live.rs             # CLI: Live bot client for lil-poker server
+    ├── play.rs                  # CLI: Offline interactive & benchmark game simulator
+    ├── train_holdem.rs          # CLI: Train Texas Hold'em MCCFR/DCFR model
+    ├── train_vanilla.rs         # CLI: Train exact full-tree Leduc solver
+    └── evaluate.rs              # CLI: Evaluate strategies (win rate, exploitability)
 tests/
-└── solver_tests.rs          # 21 comprehensive unit tests (GTO, DCFR, evaluator, subgame)
+├── test_abstraction.rs          # Board texture, draw detection, and infoset key tests
+├── test_cfr.rs                  # CFR+ regret clamping and DCFR discounting tests
+├── test_eval.rs                 # Bitwise evaluator 7-card tiebreakers & categories
+├── test_fallback.rs             # Preflop and postflop GTO fallback strategy bounds
+├── test_game.rs                 # Hold'em game transitions, bet sizing, and duplicate dealing
+├── test_live.rs                 # Live client card parser, JSON handling, and action mapping
+├── test_opponent.rs             # Opponent tracking metrics, showdown learning, and defense
+└── test_subgame.rs              # Subgame solver state exploration and adaptive budgeting
 models/
-├── leduc_strategy.json      # Pre-trained Leduc strategy
+├── leduc_strategy.json          # Pre-trained Leduc strategy
 └── holdem_abstract_strategy.json  # Pre-trained Hold'em blueprint model
 ```
 
@@ -116,7 +146,7 @@ cargo build --release
 ```bash
 cargo test
 ```
-*(All 21 unit tests covering DCFR, bitwise evaluator tiebreakers, subgame solving, draw detection, and opponent modeling pass in < 0.05s).*
+*(All 25 unit tests covering DCFR, bitwise evaluator tiebreakers, subgame solving, draw detection, live client protocols, and opponent modeling pass in < 0.05s).*
 
 ---
 
