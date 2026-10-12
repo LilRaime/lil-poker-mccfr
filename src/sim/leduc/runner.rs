@@ -8,9 +8,9 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde_json::Value;
 
-use super::stats::SimStats;
 use crate::game::card::Card;
 use crate::game::leduc::{LeducGame, CALL, FOLD, RAISE};
+use crate::sim::stats::SimStats;
 
 /* Leduc strategy: 3 actions [fold, call, raise] */
 pub type LeducStrategy = HashMap<String, [f64; 3]>;

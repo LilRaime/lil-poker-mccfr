@@ -5,36 +5,36 @@
 use crate::game::config::*;
 use rand::Rng;
 
-use super::actions::*;
 use super::eval::evaluate_7cards;
 use super::types::{Board, Card, DeckRemaining, RoundHistory, ALL_52_CARDS};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexasHoldemGame {
-    pub hole: [[Card; 2]; 2],
+    pub hole: [[Card; NUM_HOLE_CARDS]; NUM_PLAYERS],
     pub board: Board,
     pub deck_remaining: DeckRemaining,
     pub current_player: usize,
     pub round: u8,
     pub raises_this_round: u8,
-    pub contributions: [i32; 2],
-    pub history: [RoundHistory; 4],
+    pub contributions: [i32; NUM_PLAYERS],
+    pub history: [RoundHistory; NUM_ROUNDS],
     pub terminal: bool,
-    pub returns: [f64; 2],
+    pub returns: [f64; NUM_PLAYERS],
 }
 
 impl TexasHoldemGame {
     pub fn new_random<R: Rng>(rng: &mut R) -> Self {
         let mut deck = ALL_52_CARDS;
-        /* Partial Fisher-Yates shuffle: only 9 cards needed per episode */
-        for i in 0..9 {
-            let j = rng.gen_range(i..52);
+        const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
+        /* Partial Fisher-Yates shuffle: only CARDS_NEEDED (9 cards) needed per episode */
+        for i in 0..CARDS_NEEDED {
+            let j = rng.gen_range(i..NUM_CARDS_DECK);
             deck.swap(i, j);
         }
 
         let hole0 = [deck[0], deck[1]];
         let hole1 = [deck[2], deck[3]];
-        let deck_rem = DeckRemaining::from_slice(&deck[4..9]);
+        let deck_rem = DeckRemaining::from_slice(&deck[4..CARDS_NEEDED]);
 
         TexasHoldemGame {
             hole: [hole0, hole1],
@@ -44,13 +44,17 @@ impl TexasHoldemGame {
             round: 1,
             raises_this_round: 0,
             contributions: [SMALL_BLIND, BIG_BLIND],
-            history: [RoundHistory::new(); 4],
+            history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
             returns: [0.0, 0.0],
         }
     }
 
-    pub fn new_dealt(hole0: [Card; 2], hole1: [Card; 2], runout: &[Card]) -> Self {
+    pub fn new_dealt(
+        hole0: [Card; NUM_HOLE_CARDS],
+        hole1: [Card; NUM_HOLE_CARDS],
+        runout: &[Card],
+    ) -> Self {
         TexasHoldemGame {
             hole: [hole0, hole1],
             board: Board::new(),
@@ -59,7 +63,7 @@ impl TexasHoldemGame {
             round: 1,
             raises_this_round: 0,
             contributions: [SMALL_BLIND, BIG_BLIND],
-            history: [RoundHistory::new(); 4],
+            history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
             returns: [0.0, 0.0],
         }
@@ -81,7 +85,7 @@ impl TexasHoldemGame {
     }
 
     #[inline(always)]
-    pub fn legal_actions_buf(&self, out: &mut [u8; 6]) -> usize {
+    pub fn legal_actions_buf(&self, out: &mut [u8; HOLDEM_NUM_ACTIONS]) -> usize {
         if self.terminal {
             return 0;
         }
@@ -106,7 +110,7 @@ impl TexasHoldemGame {
             out[3] = RAISE_THIRD_POT;
             out[4] = RAISE_HALF_POT;
             out[5] = ALL_IN;
-            6
+            HOLDEM_NUM_ACTIONS
         } else {
             out[0] = CALL_CHECK;
             out[1] = RAISE_MIN;
@@ -118,7 +122,7 @@ impl TexasHoldemGame {
     }
 
     pub fn legal_actions(&self) -> Vec<u8> {
-        let mut buf = [0u8; 6];
+        let mut buf = [0u8; HOLDEM_NUM_ACTIONS];
         let n = self.legal_actions_buf(&mut buf);
         buf[..n].to_vec()
     }
@@ -209,10 +213,10 @@ impl TexasHoldemGame {
         if round_over {
             next.raises_this_round = 0;
             if next.contributions[0] >= STACK_SIZE && next.contributions[1] >= STACK_SIZE {
-                while next.board.len() < 5 && !next.deck_remaining.is_empty() {
+                while next.board.len() < NUM_COMMUNITY_CARDS && !next.deck_remaining.is_empty() {
                     next.board.push(next.deck_remaining.deal_one());
                 }
-                next.round = 4;
+                next.round = NUM_ROUNDS as u8;
                 next.resolve_showdown();
                 return next;
             }

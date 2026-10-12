@@ -12,9 +12,35 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy)]
 pub struct SubgameSolver {
     pub num_iterations: usize,
     pub adaptive: bool,
+}
+
+/* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
+#[derive(Default)]
+pub struct SubgameContext {
+    pub nodes: HashMap<String, InfosetNode>,
+}
+
+impl SubgameContext {
+    pub fn new() -> Self {
+        SubgameContext {
+            nodes: HashMap::with_capacity(512),
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+    }
+}
+
+impl Default for SubgameSolver {
+    fn default() -> Self {
+        Self::new(DEFAULT_SUBGAME_ITERATIONS)
+    }
 }
 
 impl SubgameSolver {
@@ -95,8 +121,35 @@ impl SubgameSolver {
         contributions: [i32; 2],
         raises_this_round: u8,
     ) -> Vec<f64> {
-        use crate::cfr::abstraction::preflop_bucket;
+        let mut ctx = SubgameContext::new();
+        self.solve_with_context(
+            hole,
+            board,
+            round,
+            history,
+            my_player,
+            contributions,
+            raises_this_round,
+            &mut ctx,
+        )
+    }
+
+    /* Solves subgame reusing pre-allocated node buffer from SubgameContext. */
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_with_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        &self,
+        hole: &[Card; 2],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        my_player: usize,
+        contributions: [i32; 2],
+        raises_this_round: u8,
+        ctx: &mut SubgameContext,
+    ) -> Vec<f64> {
         use rand::Rng;
+
+        ctx.clear();
 
         /* High-entropy board- and chip-sensitive PRNG seed */
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
@@ -123,75 +176,21 @@ impl SubgameSolver {
 
         let rem_len = remaining_deck.len();
         if rem_len < 2 {
-            return vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+            let mut uniform = vec![0.0; HOLDEM_NUM_ACTIONS];
+            uniform[CALL_CHECK as usize] = 1.0;
+            return uniform;
         }
 
-        /* Check preflop aggression in history to condition opponent reach range */
-        let pf_actions = history.actions_in_round(0);
-        let opp_raised_pf = pf_actions.iter().any(|&a| a >= 2);
-
-        /* Pre-allocate node map for subgame search tree */
-        let mut nodes: HashMap<String, InfosetNode> = HashMap::with_capacity(256);
+        let nodes = &mut ctx.nodes;
 
         let effective_iterations = self.compute_budget(round, contributions, my_player);
 
-        /* Run local CFR+ iterations */
+        /* Construct explicit Bayesian reach range distribution across all remaining combos */
+        let reach_dist = OpponentReachDistribution::build(&remaining_deck, board, round, history);
+
+        /* Run local CFR+ iterations with O(log K) Bayesian reach sampling */
         for iter_idx in 0..effective_iterations {
-            /* Condition opponent reach range via Bayesian acceptance sampling */
-            let mut opp_hole = [remaining_deck[0], remaining_deck[1]];
-            for _ in 0..8 {
-                let idx0 = rng.gen_range(0..rem_len);
-                let mut idx1 = rng.gen_range(0..rem_len - 1);
-                if idx1 >= idx0 {
-                    idx1 += 1;
-                }
-                let cand = [remaining_deck[idx0], remaining_deck[idx1]];
-
-                let (pf_idx, _) = preflop_bucket(cand[0], cand[1]);
-                let pf_weight = if opp_raised_pf {
-                    if pf_idx <= 45 {
-                        1.0
-                    } else if pf_idx <= 90 {
-                        0.75
-                    } else if pf_idx <= 125 {
-                        0.25
-                    } else {
-                        0.04
-                    }
-                } else if pf_idx <= 12 {
-                    0.35 /* Monster pair slow-play */
-                } else if pf_idx <= 90 {
-                    0.95
-                } else if pf_idx <= 125 {
-                    0.55
-                } else {
-                    0.15
-                };
-
-                let flop_weight = if round >= 3 && board.len() >= 3 {
-                    let f_score = crate::game::holdem::evaluate_7cards(&cand, &board[..3]);
-                    let f_cat = f_score >> 32;
-                    if f_cat >= 1 {
-                        1.0
-                    } else {
-                        let (fd, sd) = crate::cfr::abstraction::detect_draws(&cand, &board[..3]);
-                        if fd || sd {
-                            0.85
-                        } else {
-                            0.12
-                        }
-                    }
-                } else {
-                    1.0
-                };
-
-                let total_weight = pf_weight * flop_weight;
-                if rng.gen::<f64>() <= total_weight {
-                    opp_hole = cand;
-                    break;
-                }
-                opp_hole = cand;
-            }
+            let opp_hole = reach_dist.sample(&mut rng);
 
             let (p0_hole, p1_hole) = if my_player == 0 {
                 (*hole, opp_hole)
@@ -200,7 +199,7 @@ impl SubgameSolver {
             };
 
             /* Fast partial Fisher-Yates shuffle only for missing board cards */
-            let mut deck_rem_cards = [ALL_52_CARDS[0]; 52];
+            let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
             let mut rem_count = 0;
             for &c in &remaining_deck {
                 if c != opp_hole[0] && c != opp_hole[1] {
@@ -208,7 +207,7 @@ impl SubgameSolver {
                     rem_count += 1;
                 }
             }
-            let num_board_missing = 5usize.saturating_sub(board.len());
+            let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
             for i in 0..num_board_missing.min(rem_count) {
                 let j = rng.gen_range(i..rem_count);
                 deck_rem_cards.swap(i, j);
@@ -235,13 +234,7 @@ impl SubgameSolver {
             };
 
             let updating_player = iter_idx % 2;
-            self.cfr(
-                &game,
-                updating_player,
-                iter_idx as f64,
-                &mut nodes,
-                &mut rng,
-            );
+            self.cfr(&game, updating_player, iter_idx as f64, nodes, &mut rng);
         }
 
         /* Extract average strategy for root infoset */
@@ -250,9 +243,22 @@ impl SubgameSolver {
         let to_call = (contributions[opp] - contributions[my_player]).max(0);
         let pot = contributions[0] + contributions[1];
         let legal = if to_call > 0 {
-            vec![0, 1, 2, 3, 4, 5]
+            vec![
+                FOLD,
+                CALL_CHECK,
+                RAISE_MIN,
+                RAISE_THIRD_POT,
+                RAISE_HALF_POT,
+                ALL_IN,
+            ]
         } else {
-            vec![1, 2, 3, 4, 5]
+            vec![
+                CALL_CHECK,
+                RAISE_MIN,
+                RAISE_THIRD_POT,
+                RAISE_HALF_POT,
+                ALL_IN,
+            ]
         };
         let fallback = crate::cfr::fallback::get_holdem_fallback_strategy(
             hole, board, round, to_call, pot, &legal,
@@ -263,7 +269,7 @@ impl SubgameSolver {
             /* Safe Resolving (Burch et al. 2014):
              * Blend real-time solved subgame policy with robust GTO fallback bounds (85% solved / 15% fallback)
              * to guarantee gift-proofing and prevent opponent out-of-distribution exploitation. */
-            let mut resolved = vec![0.0f64; 6];
+            let mut resolved = vec![0.0f64; HOLDEM_NUM_ACTIONS];
             let mut sum = 0.0f64;
             for &a in &legal {
                 let idx = a as usize;
@@ -306,12 +312,12 @@ impl SubgameSolver {
         let strategy = {
             let node = nodes
                 .entry(key.clone())
-                .or_insert_with(|| InfosetNode::new(6));
+                .or_insert_with(|| InfosetNode::new(HOLDEM_NUM_ACTIONS));
             node.get_strategy()
         };
 
         if cur_p == updating_player {
-            let mut util = [0.0f64; 6];
+            let mut util = [0.0f64; HOLDEM_NUM_ACTIONS];
             let mut node_util = 0.0f64;
 
             for &a in &legal {
@@ -321,7 +327,7 @@ impl SubgameSolver {
                 node_util += strategy[a as usize] * action_util;
             }
 
-            let mut regrets = vec![0.0f64; 6];
+            let mut regrets = vec![0.0f64; HOLDEM_NUM_ACTIONS];
             for &a in &legal {
                 regrets[a as usize] = util[a as usize] - node_util;
             }
@@ -360,4 +366,264 @@ fn sample_action(strategy: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 {
     }
 
     *legal.last().unwrap()
+}
+
+/* Explicit Bayesian reach distribution for opponent's private hole cards. */
+#[derive(Debug, Clone)]
+pub struct OpponentReachDistribution {
+    pub combos: Vec<[Card; 2]>,
+    pub weights: Vec<f64>,
+    pub cdf: Vec<f64>,
+    pub total_weight: f64,
+}
+
+impl OpponentReachDistribution {
+    pub fn build<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        remaining_deck: &[Card],
+        board: &[Card],
+        round: u8,
+        history: &H,
+    ) -> Self {
+        use crate::cfr::abstraction::detect_draws;
+        use crate::cfr::abstraction::preflop_bucket;
+        use crate::game::holdem::evaluate_7cards;
+
+        let rem_len = remaining_deck.len();
+        if rem_len < 2 {
+            let dummy = if rem_len == 1 {
+                [remaining_deck[0], remaining_deck[0]]
+            } else {
+                [
+                    Card {
+                        rank: crate::game::holdem::Rank::Ace,
+                        suit: crate::game::holdem::Suit::Spades,
+                    },
+                    Card {
+                        rank: crate::game::holdem::Rank::King,
+                        suit: crate::game::holdem::Suit::Spades,
+                    },
+                ]
+            };
+            return Self {
+                combos: vec![dummy],
+                weights: vec![1.0],
+                cdf: vec![1.0],
+                total_weight: 1.0,
+            };
+        }
+
+        let num_combos = rem_len * (rem_len - 1) / 2;
+        let mut combos = Vec::with_capacity(num_combos);
+        let mut weights = Vec::with_capacity(num_combos);
+
+        let pf_actions = history.actions_in_round(0);
+        let opp_raised_pf = pf_actions.iter().any(|&a| a >= 2);
+        let opp_called_pf = pf_actions.contains(&1);
+
+        let flop_actions = history.actions_in_round(1);
+        let opp_raised_flop = flop_actions.iter().any(|&a| a >= 2);
+        let opp_called_flop = flop_actions.contains(&1);
+
+        let turn_actions = history.actions_in_round(2);
+        let opp_raised_turn = turn_actions.iter().any(|&a| a >= 2);
+        let opp_called_turn = turn_actions.contains(&1);
+
+        let mut sum_w = 0.0f64;
+
+        for i in 0..rem_len {
+            for j in (i + 1)..rem_len {
+                let cand = [remaining_deck[i], remaining_deck[j]];
+                let (pf_idx, _) = preflop_bucket(cand[0], cand[1]);
+
+                /* 1. Preflop Bayesian Prior */
+                let pf_weight: f64 = if opp_raised_pf {
+                    if pf_idx <= 45 {
+                        1.0
+                    } else if pf_idx <= 90 {
+                        0.75
+                    } else if pf_idx <= 125 {
+                        0.25
+                    } else {
+                        0.04
+                    }
+                } else if opp_called_pf {
+                    if pf_idx <= 12 {
+                        0.35 /* Monster pair slow-play trap */
+                    } else if pf_idx <= 90 {
+                        0.95
+                    } else if pf_idx <= 125 {
+                        0.65
+                    } else {
+                        0.18
+                    }
+                } else {
+                    /* Checked through preflop (e.g. BB check option) */
+                    if pf_idx <= 12 {
+                        0.25
+                    } else if pf_idx <= 90 {
+                        0.85
+                    } else {
+                        0.60
+                    }
+                };
+
+                /* 2. Flop Bayesian Likelihood Update */
+                let flop_weight: f64 = if round >= 3 && board.len() >= 3 {
+                    let f_score = evaluate_7cards(&cand, &board[..3]);
+                    let f_cat = f_score >> 32;
+                    let (fd, sd) = detect_draws(&cand, &board[..3]);
+
+                    if opp_raised_flop {
+                        /* Opponent bet or raised on flop: polarized to made hands or combo draws */
+                        if f_cat >= 2 {
+                            1.0 /* Two pair+ */
+                        } else if f_cat == 1 {
+                            0.85 /* One pair */
+                        } else if fd && sd {
+                            0.95 /* Combo draw */
+                        } else if fd || sd {
+                            0.75 /* Single draw */
+                        } else {
+                            0.08 /* Pure air bluff */
+                        }
+                    } else if opp_called_flop {
+                        /* Opponent check-called on flop: mostly draws, middle pairs, floaters */
+                        if f_cat >= 3 {
+                            0.45 /* Sets/Straights/Flushes slowplaying */
+                        } else if f_cat >= 1 {
+                            0.95 /* One pair */
+                        } else if fd || sd {
+                            0.85 /* Flush/straight draws calling */
+                        } else {
+                            0.15 /* Floater air */
+                        }
+                    } else {
+                        /* Flop checked through */
+                        if f_cat >= 2 {
+                            0.30 /* Less likely to check monster */
+                        } else if f_cat == 1 {
+                            0.80 /* Marginal made hand */
+                        } else {
+                            0.70 /* Air checking */
+                        }
+                    }
+                } else {
+                    1.0
+                };
+
+                /* 3. Turn Bayesian Likelihood Update */
+                let turn_weight: f64 = if round >= 4 && board.len() >= 4 {
+                    let t_score = evaluate_7cards(&cand, &board[..4]);
+                    let t_cat = t_score >> 32;
+                    let (fd, sd) = detect_draws(&cand, &board[..4]);
+
+                    if opp_raised_turn {
+                        /* Double-barrel turn */
+                        if t_cat >= 2 {
+                            1.0
+                        } else if t_cat == 1 {
+                            0.70
+                        } else if fd || sd {
+                            0.65
+                        } else {
+                            0.05
+                        }
+                    } else if opp_called_turn {
+                        if t_cat >= 2 {
+                            0.60
+                        } else if t_cat == 1 {
+                            0.95
+                        } else if fd || sd {
+                            0.75
+                        } else {
+                            0.08
+                        }
+                    } else {
+                        if t_cat >= 2 {
+                            0.25
+                        } else {
+                            0.75
+                        }
+                    }
+                } else {
+                    1.0
+                };
+
+                let w: f64 = (pf_weight * flop_weight * turn_weight).max(1e-5f64);
+                combos.push(cand);
+                weights.push(w);
+                sum_w += w;
+            }
+        }
+
+        let mut cdf = Vec::with_capacity(weights.len());
+        let mut running = 0.0f64;
+        let inv_sum = if sum_w > 1e-12 {
+            1.0 / sum_w
+        } else {
+            1.0 / weights.len() as f64
+        };
+        for &w in &weights {
+            running += w * inv_sum;
+            cdf.push(running.min(1.0));
+        }
+        if let Some(last) = cdf.last_mut() {
+            *last = 1.0;
+        }
+
+        Self {
+            combos,
+            weights,
+            cdf,
+            total_weight: sum_w,
+        }
+    }
+
+    #[inline(always)]
+    pub fn sample<R: rand::Rng>(&self, rng: &mut R) -> [Card; 2] {
+        if self.combos.is_empty() {
+            return [
+                Card {
+                    rank: crate::game::holdem::Rank::Ace,
+                    suit: crate::game::holdem::Suit::Spades,
+                },
+                Card {
+                    rank: crate::game::holdem::Rank::King,
+                    suit: crate::game::holdem::Suit::Spades,
+                },
+            ];
+        }
+        if self.combos.len() == 1 {
+            return self.combos[0];
+        }
+        let r: f64 = rng.gen();
+        let idx = self
+            .cdf
+            .partition_point(|&w| w < r)
+            .min(self.combos.len() - 1);
+        self.combos[idx]
+    }
+
+    pub fn top_combos(&self, n: usize) -> Vec<([Card; 2], f64)> {
+        let mut indexed: Vec<(usize, f64)> = self.weights.iter().copied().enumerate().collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed
+            .into_iter()
+            .take(n)
+            .map(|(i, w)| {
+                (
+                    self.combos[i],
+                    if self.total_weight > 0.0 {
+                        w / self.total_weight
+                    } else {
+                        0.0
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn effective_combos(&self) -> usize {
+        self.combos.len()
+    }
 }

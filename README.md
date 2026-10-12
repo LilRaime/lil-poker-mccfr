@@ -10,15 +10,16 @@ Powered by an ultra-fast **$O(1)$ bitwise 7-card hand evaluator** capable of sus
 
 - **Blazing Fast Performance ($> 1.3\text{M}$ iter/s)** — Pure $O(1)$ bitwise 7-card evaluator (zero-alloc, zero-sort, bitmask straights/flushes, x86 hardware `LZCNT` kickers) + lock-free Rayon & 1024-shard DashMap parallelism.
 - **Discounted CFR (DCFR, Pluribus algorithm)** — Analytical regret & strategy discount schedules ($\alpha=1.5, \beta=0.5, \gamma=2.0$) that clear early-iteration noise and converge dramatically faster than vanilla CFR+.
-- **Real-Time Subgame Search with Adaptive Budgeting** — Depth-limited Turn & River subgame resolver that dynamically scales iteration depth based on pot size, street, and bet pressure (from 500 up to 6,000+ iterations).
+- **Real-Time Subgame Search with Explicit Reach Ranges** — Depth-limited Turn & River subgame resolver with $O(\log K)$ Bayesian reach range sampling across all candidate combos (`OpponentReachDistribution`), dynamically scaling iteration budget based on pot size and bet pressure (from 500 up to 6,000+ iterations).
 - **Safe Resolving (Burch et al. 2014)** — Blends real-time subgame policies with robust GTO fallback bounds (85% solved / 15% fallback) to prevent gift-giving and opponent out-of-distribution exploitation.
-- **Texture-Aware & Potential Abstraction** — 169 canonical preflop hand groups + 50 postflop equity buckets conditioned on board texture (Monotone, TwoTone, Rainbow, paired/connected boards) and combo draw potential (NFD, OESD + overcards).
+- **Pseudo-Harmonic Action Translation (Ganzfried & Sandholm 2013)** — Probabilistically maps continuous, off-tree opponent bet amounts to nearest discrete actions preserving exact pot odds and expectation value.
+- **Texture-Aware & Potential Abstraction** — 169 canonical preflop hand groups + 77 postflop equity buckets conditioned on board texture (Monotone, TwoTone, Rainbow, paired/connected boards) and combo draw potential (NFD, OESD + overcards).
 - **Regret-Based Pruning (RBP)** — Skips 95% of deeply negative regret branches (`regret < -300`), accelerating MCCFR traversals by 2–3x without equilibrium distortion.
-- **Exploitative Opponent Modeling & Style Classifier** — Tracks VPIP, PFR, 3-bet frequency, aggression frequency, and classifies opponents into archetypes (`CallingStation`, `Maniac`, `Rock`, `TAG`, `LAG`).
-- **Showdown Learning** — Detects opponent bluffing and trapping habits from revealed hole cards at showdown, dynamically tuning bluff-catching frequencies.
-- **Geometric Street-Aware Bet Sizing** — Dynamic pot-scaled sizing: 50% pot on dry flop, 75% pot on wet flop/turn, 100% full pot on river.
+- **Exploitative Opponent Modeling & Style Classifier** — Tracks VPIP, PFR, 3-bet frequency, aggression frequency, and classifies opponents into archetypes (`CallingStation`, `Maniac`, `Rock`, `TAG`, `LAG`) with Wilson score confidence intervals.
+- **Showdown Learning & Sizing Tells** — Detects opponent bluffing, trapping habits, and bet-sizing tells (small vs large bet hand strengths) from revealed showdown hole cards, dynamically tuning bluff-catching and barrel frequencies.
+- **Geometric Street-Aware Bet Sizing & Overbets** — Dynamic pot-scaled sizing: 50% pot on dry flop, 75% pot on wet flop/turn, 100% full pot on river, with geometric stack commitment utility.
 - **Purified Action Defense** — Clamps Monte Carlo noise and prevents accidental folds of premium pocket pairs (AA/KK/QQ) when facing all-in shoves.
-- **Live Server Bot Client (`play_live`)** — Native async WebSocket & REST client connecting directly to [lil-poker](https://github.com/LilRaime/lil-poker) web rooms.
+- **Live Server Bot Client (`play_live`)** — Native async WebSocket & REST client connecting directly to [lil-poker](https://github.com/LilRaime/lil-poker) web rooms with live showdown tracking.
 - **Exact Full-Tree Vanilla CFR+ (Leduc)** — Full game tree traversal solver for Leduc Hold'em with exact Best Response / NashConv computation.
 
 ---
@@ -77,7 +78,7 @@ src/
 ├── game/
 │   ├── mod.rs
 │   ├── card.rs                  # 6-card Leduc & deck representations
-│   ├── config.rs                # Stack, blind structure, and bet sizing configuration
+│   ├── config.rs                # Centralized game dimensions, action codes, stack/blind floors, and solver constants
 │   ├── leduc.rs                 # Leduc Hold'em rules & state transitions
 │   └── holdem/                  # 52-card Texas Hold'em game engine
 │       ├── types.rs             # Card, Rank, Suit, Board, RoundHistory, DeckRemaining
@@ -90,7 +91,7 @@ src/
 │   ├── holdem_mccfr.rs          # Multi-threaded Hold'em MCCFR solver with DCFR & RBP
 │   ├── mccfr.rs                 # Leduc MCCFR solver
 │   ├── vanilla.rs               # Exact full-tree Vanilla CFR+ solver (Leduc)
-│   ├── fallback.rs              # Robust GTO fallback bounds for safe resolving
+│   ├── fallback.rs              # Robust GTO fallback bounds & StrategyLookupIndex
 │   ├── subgame.rs               # Real-Time Subgame Solver (adaptive budgeting & safe resolving)
 │   ├── abstraction/             # State & card abstraction pipeline
 │   │   ├── preflop.rs           # 169 canonical preflop hand buckets
@@ -105,12 +106,20 @@ src/
 ├── sim/                         # Offline simulation & benchmarking engine
 │   ├── stats.rs                 # Match statistics, win/loss/tie ratios, standard error (SE)
 │   ├── opponents.rs             # Opponent archetype heuristics (TAG, Fish, Maniac, Rock, Self)
-│   ├── holdem.rs                # Texas Hold'em episode runner & Duplicate Poker benchmark
-│   └── leduc.rs                 # Leduc simulation, spectator watch mode, and interactive CLI
+│   ├── holdem/                  # Texas Hold'em simulation & benchmark module
+│   │   ├── mod.rs               # Unified re-exports for benchmark, engine, and strategy
+│   │   ├── strategy.rs          # Strategy model loading, infoset lookup, and blended fallbacks
+│   │   ├── engine.rs            # Single-hand simulation engine with subgame resolving
+│   │   └── benchmark.rs         # Duplicate Poker runner, 95% CI, and positional win rates
+│   └── leduc/                   # Leduc simulation & analytical evaluation
+│       ├── mod.rs               # Unified re-exports for evaluation and runner
+│       ├── runner.rs            # Match simulator, spectator watch mode, and interactive CLI
+│       └── eval.rs              # Best response (NashConv), exploitability & random benchmarks
 ├── live/                        # Native real-time client for lil-poker web server
 │   ├── protocol.rs              # REST/WebSocket schemas, card string parsing, and action mapping
 │   ├── decision.rs              # Real-time action decision engine with subgame resolving
-│   └── client.rs                # Async WebSocket event loop, auto-retry, and state tracking
+│   ├── state.rs                 # Live table snapshots, showdown processing, and round tracking
+│   └── client.rs                # Async WebSocket event loop, auto-retry, and room lifecycle
 └── bin/
     ├── play_live.rs             # CLI: Live bot client for lil-poker server
     ├── play.rs                  # CLI: Offline interactive & benchmark game simulator
@@ -123,7 +132,7 @@ tests/
 ├── test_eval.rs                 # Bitwise evaluator 7-card tiebreakers & categories
 ├── test_fallback.rs             # Preflop and postflop GTO fallback strategy bounds
 ├── test_game.rs                 # Hold'em game transitions, bet sizing, and duplicate dealing
-├── test_live.rs                 # Live client card parser, JSON handling, and action mapping
+├── test_live.rs                 # Live client card parser, JSON handling, round tracker, and action mapping
 ├── test_opponent.rs             # Opponent tracking metrics, showdown learning, and defense
 └── test_subgame.rs              # Subgame solver state exploration and adaptive budgeting
 models/
@@ -146,7 +155,7 @@ cargo build --release
 ```bash
 cargo test
 ```
-*(All 25 unit tests covering DCFR, bitwise evaluator tiebreakers, subgame solving, draw detection, live client protocols, and opponent modeling pass in < 0.05s).*
+*(All 36 unit tests covering DCFR, bitwise evaluator tiebreakers, explicit reach range subgame solving, pseudo-harmonic translation, live round tracking, draw detection, live client protocols, Wilson intervals, and opponent modeling pass in < 0.05s).*
 
 ---
 
@@ -248,6 +257,36 @@ docker run --rm lil-poker-mccfr \
 
 ---
 
+## Strategy Evaluation & Benchmarking
+
+The unified `evaluate` CLI benchmarks trained models for both Texas Hold'em and Leduc Hold'em:
+
+```bash
+# 1. Evaluate Texas Hold'em Blueprint (Duplicate Poker benchmark against TAG opponent with real-time subgame solving)
+cargo run --release --bin evaluate -- \
+  --game holdem \
+  --hands 5000 \
+  --opponent tag \
+  --duplicate \
+  --subgame
+
+# 2. A/B Head-to-Head Testing Between Two Hold'em Strategy Profiles
+cargo run --release --bin evaluate -- \
+  --game holdem \
+  --strategy models/holdem_abstract_strategy.json \
+  --opp-strategy models/holdem_abstract_strategy.json \
+  --hands 5000 \
+  --duplicate
+
+# 3. Exact Exploitability / NashConv & Best Response Analysis (Leduc Hold'em)
+cargo run --release --bin evaluate -- \
+  --game leduc \
+  --strategy models/leduc_strategy.json \
+  --hands 500000
+```
+
+---
+
 ## Training Leduc Hold'em Toy Game
 
 Leduc Hold'em serves as an analytical testbed with exact Best Response and exploitability validation:
@@ -258,9 +297,6 @@ cargo run --release -- --iterations 200000 --threads 8 --save-path models/leduc_
 
 # Exact Vanilla CFR+ (exact Nash equilibrium)
 cargo run --release --bin train_vanilla -- --iterations 5000 --save-path models/leduc_vanilla.json
-
-# Evaluate Exploitability / NashConv
-cargo run --release --bin evaluate -- --strategy models/leduc_strategy.json --hands 500000
 ```
 
 ---

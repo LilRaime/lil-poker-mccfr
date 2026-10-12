@@ -2,6 +2,7 @@
  * Fast O(1) draw detection for Flop & Turn (Flush draws, Nut Flush draws, Straight draws, Gutshots).
  */
 
+use crate::game::config::{NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_RANKS, NUM_SUITS};
 use crate::game::holdem::{Card, Rank};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,8 +14,8 @@ pub struct DrawInfo {
 }
 
 #[inline(always)]
-pub fn detect_draws_detailed(hole: &[Card; 2], board: &[Card]) -> DrawInfo {
-    if board.len() >= 5 {
+pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> DrawInfo {
+    if board.len() >= NUM_COMMUNITY_CARDS {
         return DrawInfo {
             is_flush_draw: false,
             is_nut_flush_draw: false,
@@ -23,7 +24,7 @@ pub fn detect_draws_detailed(hole: &[Card; 2], board: &[Card]) -> DrawInfo {
         };
     }
 
-    let mut board_suit_counts = [0u8; 4];
+    let mut board_suit_counts = [0u8; NUM_SUITS];
     for &b in board {
         board_suit_counts[b.suit as usize] += 1;
     }
@@ -43,7 +44,7 @@ pub fn detect_draws_detailed(hole: &[Card; 2], board: &[Card]) -> DrawInfo {
         }
     }
 
-    let mut ranks = [false; 13];
+    let mut ranks = [false; NUM_RANKS];
     for &b in board {
         ranks[b.rank as usize] = true;
     }
@@ -103,7 +104,7 @@ pub fn detect_draws_detailed(hole: &[Card; 2], board: &[Card]) -> DrawInfo {
 
 /* Backward-compatible draw detection returning (is_flush_draw, is_straight_draw) */
 #[inline(always)]
-pub fn detect_draws(hole: &[Card; 2], board: &[Card]) -> (bool, bool) {
+pub fn detect_draws(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, bool) {
     let d = detect_draws_detailed(hole, board);
     (d.is_flush_draw, d.is_straight_draw)
 }

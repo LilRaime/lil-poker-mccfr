@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::cfr::node::InfosetNode;
 use crate::game::holdem::TexasHoldemGame;
 
-pub const HOLDEM_NUM_ACTIONS: usize = 6;
+pub use crate::game::config::HOLDEM_NUM_ACTIONS;
 
 #[derive(Clone)]
 pub struct InfosetEntry {

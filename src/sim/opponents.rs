@@ -1,6 +1,9 @@
 /* Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::{find_strategy_or_fallback, HoldemStrategy};
-use crate::cfr::abstraction::{detect_draws, postflop_equity_bucket, preflop_bucket};
+use crate::cfr::abstraction::{
+    detect_draws, get_holdem_infoset_key, get_holdem_infoset_key_rich, postflop_equity_bucket,
+    preflop_bucket,
+};
 use crate::cfr::fallback::get_holdem_fallback_strategy;
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
@@ -222,15 +225,22 @@ pub fn sample_opponent_action(
         }
         "self" | "model" => {
             if let Some(strat) = opp_strategy {
-                let probs = find_strategy_or_fallback(
-                    strat,
-                    hole,
-                    board,
-                    game.round,
-                    opp_to_call,
-                    pot,
-                    &legal,
-                );
+                let rich_key = get_holdem_infoset_key_rich(hole, board, game.round, &game.history);
+                let exact_key = get_holdem_infoset_key(hole, board, game.round, &game.history);
+                let probs = if let Some(s) = strat.get(&rich_key).or_else(|| strat.get(&exact_key))
+                {
+                    s.to_vec()
+                } else {
+                    find_strategy_or_fallback(
+                        strat,
+                        hole,
+                        board,
+                        game.round,
+                        opp_to_call,
+                        pot,
+                        &legal,
+                    )
+                };
                 sample_from_probs(&probs, &legal, rng)
             } else {
                 let probs =

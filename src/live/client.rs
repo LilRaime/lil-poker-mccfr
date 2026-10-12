@@ -12,10 +12,11 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::decision::decide_action;
-use super::protocol::{parse_card_str, parse_json_i32, ActPayload, GuestResponse, JoinRoomPayload};
+use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
+use super::state::{parse_live_state, process_showdown, LiveRoundTracker};
+use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
-use crate::game::config::*;
-use crate::game::holdem::{Card, RoundHistory};
+use crate::cfr::subgame::{SubgameContext, SubgameSolver};
 
 pub fn load_live_strategy(path: &str) -> HashMap<String, Vec<f64>> {
     if std::path::Path::new(path).exists() {
@@ -136,12 +137,11 @@ pub async fn run_live_bot(
     let (_, mut read) = ws_stream.split();
     let mut tracker = OpponentTracker::new();
     let mut last_action_key = String::new();
+    let strategy_index = Arc::new(StrategyLookupIndex::build_from_slice_map(&strategy_map));
+    let subgame_solver = Arc::new(SubgameSolver::default());
     let strategy_map = Arc::new(strategy_map);
 
-    let mut current_hand_id = 0u64;
-    let mut live_history: [RoundHistory; 4] = [RoundHistory::new(); 4];
-    let mut current_round_idx = 0usize;
-    let mut last_opp_bet = 0i32;
+    let mut round_tracker = LiveRoundTracker::new();
 
     /* 5. Main Game Loop */
     while let Some(msg) = read.next().await {
@@ -165,10 +165,17 @@ pub async fn run_live_bot(
 
         let phase = state.get("phase").and_then(|v| v.as_str()).unwrap_or("");
         if phase.eq_ignore_ascii_case("Showdown") || phase.eq_ignore_ascii_case("Waiting") {
+            if phase.eq_ignore_ascii_case("Showdown") {
+                process_showdown(
+                    &state,
+                    &player_id,
+                    &mut tracker,
+                    &round_tracker.live_history[3],
+                    round_tracker.last_opp_bet,
+                );
+            }
             tracker.end_hand();
-            live_history = [RoundHistory::new(); 4];
-            current_round_idx = 0;
-            last_opp_bet = 0;
+            round_tracker.reset_hand(0);
             last_action_key.clear();
 
             if phase.eq_ignore_ascii_case("Waiting") {
@@ -183,222 +190,42 @@ pub async fn run_live_bot(
             continue;
         }
 
-        let active_id = state
-            .get("active_player_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !active_id.eq_ignore_ascii_case(&player_id) {
-            continue;
-        }
-
-        /* Extract player hole cards */
-        let mut hole_cards: Vec<Card> = Vec::new();
-        if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-            for p in players {
-                let p_id = p
-                    .get("id")
-                    .or_else(|| p.get("uuid"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if p_id.eq_ignore_ascii_case(&player_id) {
-                    if let Some(cards) = p.get("hole").and_then(|v| v.as_array()) {
-                        for c in cards {
-                            if let Some(cs) = c.as_str() {
-                                if let Some(parsed) = parse_card_str(cs) {
-                                    hole_cards.push(parsed);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if hole_cards.len() < 2 {
-            continue;
-        }
-
-        let hole: [Card; 2] = [hole_cards[0], hole_cards[1]];
-
-        /* Extract board cards */
-        let mut board_cards: Vec<Card> = Vec::new();
-        if let Some(board) = state.get("board").and_then(|v| v.as_array()) {
-            for c in board {
-                if let Some(cs) = c.as_str() {
-                    if let Some(parsed) = parse_card_str(cs) {
-                        board_cards.push(parsed);
-                    }
-                }
-            }
-        }
-
-        /* Extract legal actions */
-        let legal_actions: Vec<String> = state
-            .get("legal_actions")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                    .collect()
-            })
-            .unwrap_or_else(|| vec!["check".to_string(), "fold".to_string()]);
-
-        let mut max_bet_on_table = 0i32;
-        let mut my_bet = 0i32;
-        let mut opp_bet = 0i32;
-        let mut my_is_sb = false;
-        let mut opp_is_sb = false;
-
-        if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-            for p in players {
-                let p_bet = parse_json_i32(p.get("bet").or_else(|| p.get("current_bet")));
-                if p_bet > max_bet_on_table {
-                    max_bet_on_table = p_bet;
-                }
-
-                let p_id = p
-                    .get("id")
-                    .or_else(|| p.get("uuid"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let is_sb = p
-                    .get("is_small_blind")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                if p_id.eq_ignore_ascii_case(&player_id) {
-                    my_bet = p_bet;
-                    my_is_sb = is_sb;
-                } else {
-                    opp_bet = p_bet;
-                    opp_is_sb = is_sb;
-                }
-            }
-        }
-
-        let state_bet = parse_json_i32(
-            state
-                .get("current_bet")
-                .or_else(|| state.get("currentBet"))
-                .or_else(|| state.get("call_amount")),
-        );
-        let current_bet = max_bet_on_table.max(state_bet);
-        let to_call = (current_bet - my_bet).max(0);
-        let pot = parse_json_i32(state.get("pot"));
-        let hist_len = state
-            .get("history")
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
+        let snapshot = match parse_live_state(&state, &player_id) {
+            Some(s) => s,
+            None => continue,
+        };
 
         /* Prevent duplicate action execution on identical state updates */
-        let hand_id = state
-            .get("hand_number")
-            .or_else(|| state.get("hand_id"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let action_seq_key = format!(
-            "{}:{}:{}:{}:{}:{}:{}",
-            hand_id,
-            phase,
-            board_cards.len(),
-            current_bet,
-            my_bet,
-            pot,
-            hist_len
-        );
-        if action_seq_key == last_action_key {
+        if snapshot.action_seq_key == last_action_key {
             continue;
         }
 
         /* Detect hand or street transitions for round history */
-        if hand_id != current_hand_id {
-            current_hand_id = hand_id;
-            live_history = [RoundHistory::new(); 4];
-            current_round_idx = 0;
-            last_opp_bet = 0;
+        if snapshot.hand_id != round_tracker.current_hand_id {
+            round_tracker.reset_hand(snapshot.hand_id);
         }
 
-        let round_idx = match board_cards.len() {
-            0 => 0,
-            3 => 1,
-            4 => 2,
-            _ => 3,
-        };
+        round_tracker.update_street(snapshot.board.len());
+        round_tracker.infer_and_record_opponent_action(&snapshot, &mut tracker);
 
-        if round_idx != current_round_idx {
-            current_round_idx = round_idx;
-            last_opp_bet = 0;
-        }
-
-        /* Dynamically infer and track opponent prior actions on current street */
-        {
-            let hist = &mut live_history[round_idx];
-            if hist.is_empty() {
-                if round_idx == 0 {
-                    /* Preflop: SB acts first. If bot is BB, opponent acted first! */
-                    if !my_is_sb {
-                        if to_call == 0 || opp_bet <= LIMP_THRESHOLD {
-                            hist.push(1); // CALL_CHECK (limp)
-                            tracker.record_action(1, true);
-                        } else {
-                            let raise_act = if opp_bet >= ALLIN_BET_THRESHOLD {
-                                5 // ALL_IN
-                            } else if opp_bet >= HALF_POT_RAISE_THRESHOLD {
-                                4 // RAISE_HALF_POT
-                            } else if opp_bet >= THIRD_POT_RAISE_THRESHOLD {
-                                3 // RAISE_THIRD_POT
-                            } else {
-                                2 // RAISE_MIN
-                            };
-                            hist.push(raise_act);
-                            tracker.record_action(raise_act, true);
-                        }
-                    }
-                } else {
-                    /* Postflop: BB acts first. If opponent is BB (OOP), opponent acted first! */
-                    if my_is_sb && !opp_is_sb {
-                        if to_call == 0 {
-                            hist.push(1); // Opponent check
-                            tracker.record_action(1, false);
-                        } else {
-                            let bet_act = if opp_bet >= ALLIN_BET_THRESHOLD {
-                                5 // ALL_IN
-                            } else if opp_bet >= (pot / 2) {
-                                4 // RAISE_HALF_POT
-                            } else {
-                                3 // RAISE_THIRD_POT
-                            };
-                            hist.push(bet_act);
-                            tracker.record_action(bet_act, false);
-                        }
-                    }
-                }
-            } else if to_call > 0 {
-                /* Facing a re-raise after bot already acted this round */
-                let opp_diff = (opp_bet - last_opp_bet).max(to_call);
-                let raise_act = if opp_bet >= ALLIN_BET_THRESHOLD {
-                    5 // ALL_IN
-                } else if opp_diff >= pot / 2 {
-                    4 // RAISE_HALF_POT
-                } else if opp_diff >= pot / 3 {
-                    3 // RAISE_THIRD_POT
-                } else {
-                    2 // RAISE_MIN
-                };
-                hist.push(raise_act);
-                tracker.record_action(raise_act, round_idx == 0);
-            }
-        }
-        last_opp_bet = opp_bet;
+        let (engine_contributions, raises_this_round) =
+            round_tracker.compute_engine_contributions(&snapshot);
 
         let strat_map = Arc::clone(&strategy_map);
+        let strat_idx = Arc::clone(&strategy_index);
+        let solver_arc = Arc::clone(&subgame_solver);
         let subgame = subgame_search;
         let tracker_clone = tracker.clone();
-        let board_cards_clone = board_cards.clone();
-        let history_clone = live_history;
+        let board_cards_clone = snapshot.board.clone();
+        let history_clone = round_tracker.live_history;
+        let hole = snapshot.hole;
+        let legal_actions = snapshot.legal_actions.clone();
+        let to_call = snapshot.to_call;
+        let pot = snapshot.pot;
+        let my_player = snapshot.my_player;
 
         let (chosen_action, amount) = tokio::task::spawn_blocking(move || {
+            let mut ctx = SubgameContext::new();
             decide_action(
                 &hole,
                 &board_cards_clone,
@@ -409,39 +236,29 @@ pub async fn run_live_bot(
                 subgame,
                 &tracker_clone,
                 &history_clone,
+                my_player,
+                engine_contributions,
+                raises_this_round,
+                Some(&strat_idx),
+                Some(&solver_arc),
+                Some(&mut ctx),
             )
         })
         .await?;
 
         /* Record bot's own action into live history */
-        let bot_act = match chosen_action.as_str() {
-            "fold" => 0,
-            "check" | "call" => 1,
-            "raise" | "bet" => {
-                if amount >= ALLIN_BET_THRESHOLD {
-                    5
-                } else if amount >= pot / 2 {
-                    4
-                } else if amount >= pot / 3 {
-                    3
-                } else {
-                    2
-                }
-            }
-            "allin" | "all_in" => 5,
-            _ => 1,
-        };
-        live_history[round_idx].push(bot_act);
+        round_tracker.record_bot_action(&chosen_action, amount, snapshot.pot);
 
         let hole_str = format!(
             "[{} {}]",
             hole[0].to_string().trim_matches('\''),
             hole[1].to_string().trim_matches('\'')
         );
-        let board_str = if board_cards.is_empty() {
+        let board_str = if snapshot.board.is_empty() {
             "[]".to_string()
         } else {
-            let cards: Vec<String> = board_cards
+            let cards: Vec<String> = snapshot
+                .board
                 .iter()
                 .map(|c| c.to_string().trim_matches('\'').to_string())
                 .collect();
@@ -454,10 +271,10 @@ pub async fn run_live_bot(
             amount,
             hole_str,
             board_str,
-            phase
+            snapshot.phase
         );
 
-        last_action_key = action_seq_key;
+        last_action_key = snapshot.action_seq_key;
 
         let act_url = format!("{}/api/game/act?room={}", url.trim_end_matches('/'), room);
         let resp = client
@@ -497,7 +314,7 @@ pub async fn run_live_bot(
                 }
             }
         } else if let Err(e) = resp {
-            eprintln!("⚠️ Act HTTP network error: {}", e);
+            eprintln!("Act HTTP network error: {}", e);
             last_action_key.clear();
         }
     }

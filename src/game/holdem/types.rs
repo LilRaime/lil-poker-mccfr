@@ -75,7 +75,9 @@ impl std::fmt::Display for Card {
     }
 }
 
-pub const ALL_52_CARDS: [Card; 52] = [
+use crate::game::config::{MAX_ROUND_ACTIONS, NUM_CARDS_DECK, NUM_COMMUNITY_CARDS};
+
+pub const ALL_52_CARDS: [Card; NUM_CARDS_DECK] = [
     Card {
         rank: Rank::Two,
         suit: Suit::Clubs,
@@ -288,7 +290,7 @@ pub const ALL_52_CARDS: [Card; 52] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Board {
-    cards: [Card; 5],
+    cards: [Card; NUM_COMMUNITY_CARDS],
     len: u8,
 }
 
@@ -296,7 +298,7 @@ impl Board {
     #[inline(always)]
     pub fn new() -> Self {
         Board {
-            cards: [ALL_52_CARDS[0]; 5],
+            cards: [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS],
             len: 0,
         }
     }
@@ -304,7 +306,7 @@ impl Board {
     #[inline(always)]
     pub fn from_slice(cards: &[Card]) -> Self {
         let mut b = Self::new();
-        for &c in cards.iter().take(5) {
+        for &c in cards.iter().take(NUM_COMMUNITY_CARDS) {
             b.push(c);
         }
         b
@@ -312,7 +314,7 @@ impl Board {
 
     #[inline(always)]
     pub fn push(&mut self, card: Card) {
-        if (self.len as usize) < 5 {
+        if (self.len as usize) < NUM_COMMUNITY_CARDS {
             self.cards[self.len as usize] = card;
             self.len += 1;
         }
@@ -353,7 +355,7 @@ impl<'a> IntoIterator for &'a Board {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RoundHistory {
-    actions: [u8; 32],
+    actions: [u8; MAX_ROUND_ACTIONS],
     len: u8,
 }
 
@@ -361,7 +363,7 @@ impl RoundHistory {
     #[inline(always)]
     pub fn new() -> Self {
         RoundHistory {
-            actions: [0u8; 32],
+            actions: [0u8; MAX_ROUND_ACTIONS],
             len: 0,
         }
     }
@@ -369,7 +371,7 @@ impl RoundHistory {
     #[inline(always)]
     pub fn from_slice(actions: &[u8]) -> Self {
         let mut rh = Self::new();
-        for &a in actions.iter().take(32) {
+        for &a in actions.iter().take(MAX_ROUND_ACTIONS) {
             rh.push(a);
         }
         rh
@@ -377,7 +379,7 @@ impl RoundHistory {
 
     #[inline(always)]
     pub fn push(&mut self, action: u8) {
-        if (self.len as usize) < 32 {
+        if (self.len as usize) < MAX_ROUND_ACTIONS {
             self.actions[self.len as usize] = action;
             self.len += 1;
         }
@@ -418,15 +420,15 @@ impl<'a> IntoIterator for &'a RoundHistory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeckRemaining {
-    cards: [Card; 52],
+    cards: [Card; NUM_CARDS_DECK],
     ptr: u8,
 }
 
 impl DeckRemaining {
     #[inline(always)]
     pub fn from_slice(cards: &[Card]) -> Self {
-        let mut arr = [ALL_52_CARDS[0]; 52];
-        let n = cards.len().min(52);
+        let mut arr = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
+        let n = cards.len().min(NUM_CARDS_DECK);
         arr[..n].copy_from_slice(&cards[..n]);
         DeckRemaining { cards: arr, ptr: 0 }
     }
@@ -440,12 +442,12 @@ impl DeckRemaining {
 
     #[inline(always)]
     pub fn len(&self) -> usize {
-        (52 - self.ptr) as usize
+        NUM_CARDS_DECK - self.ptr as usize
     }
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.ptr >= 52
+        self.ptr as usize >= NUM_CARDS_DECK
     }
 }
 

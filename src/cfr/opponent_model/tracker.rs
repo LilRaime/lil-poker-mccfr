@@ -1,6 +1,7 @@
 /* Opponent Action Tracking and Statistical Metrics */
 use super::classifier::OpponentStyle;
 use crate::cfr::abstraction::preflop_bucket;
+use crate::game::config::*;
 use crate::game::holdem::{evaluate_7cards, Card};
 
 #[derive(Debug, Clone)]
@@ -21,14 +22,29 @@ pub struct OpponentTracker {
     /* Advanced situational metrics */
     pub flop_cbet_faced: u64,
     pub flop_fold_to_cbet: u64,
+    pub turn_cbet_faced: u64,
+    pub turn_fold_to_cbet: u64,
+    pub river_bet_faced: u64,
+    pub river_fold_to_bet: u64,
     pub went_to_showdown: u64,
     pub saw_flop: u64,
+
+    /* Sizing tells metrics */
+    pub sizing_small_bets: u64,
+    pub sizing_mid_bets: u64,
+    pub sizing_large_bets: u64,
+    pub showdown_small_bluff_count: u64,
+    pub showdown_large_monster_count: u64,
 
     /* Showdown observation analytics */
     pub showdown_hands: u64,
     pub showdown_bluff_count: u64,
     pub showdown_trap_count: u64,
     pub showdown_loose_count: u64,
+
+    /* Exploitation guardrails & configuration */
+    pub exploit_enabled: bool,
+    pub exploit_factor: f64,
 }
 
 impl Default for OpponentTracker {
@@ -52,13 +68,32 @@ impl OpponentTracker {
             river_actions: [0; 3],
             flop_cbet_faced: 0,
             flop_fold_to_cbet: 0,
+            turn_cbet_faced: 0,
+            turn_fold_to_cbet: 0,
+            river_bet_faced: 0,
+            river_fold_to_bet: 0,
             went_to_showdown: 0,
             saw_flop: 0,
+            sizing_small_bets: 0,
+            sizing_mid_bets: 0,
+            sizing_large_bets: 0,
+            showdown_small_bluff_count: 0,
+            showdown_large_monster_count: 0,
             showdown_hands: 0,
             showdown_bluff_count: 0,
             showdown_trap_count: 0,
             showdown_loose_count: 0,
+            exploit_enabled: true,
+            exploit_factor: 0.70,
         }
+    }
+
+    pub fn set_exploit_enabled(&mut self, enabled: bool) {
+        self.exploit_enabled = enabled;
+    }
+
+    pub fn set_exploit_factor(&mut self, factor: f64) {
+        self.exploit_factor = factor.clamp(0.0, 1.0);
     }
 
     pub fn record_action(&mut self, action: u8, is_preflop: bool) {
@@ -67,19 +102,30 @@ impl OpponentTracker {
     }
 
     pub fn record_action_street(&mut self, action: u8, round: u8, facing_cbet: bool) {
+        self.record_action_street_detailed(action, round, facing_cbet, 0, 0);
+    }
+
+    pub fn record_action_street_detailed(
+        &mut self,
+        action: u8,
+        round: u8,
+        facing_bet: bool,
+        bet_amt: i32,
+        pot: i32,
+    ) {
         let act_cat = match action {
-            0 => 0,     /* Fold */
-            1 => 1,     /* Call / Check */
-            2..=5 => 2, /* Raise / Bet */
+            FOLD => 0,               /* Fold */
+            CALL_CHECK => 1,         /* Call / Check */
+            RAISE_MIN..=ALL_IN => 2, /* Raise / Bet */
             _ => 1,
         };
 
         match round {
             1 => {
                 self.preflop_actions[act_cat] += 1;
-                if action == 1 {
+                if action == CALL_CHECK {
                     self.vpip_hands += 1;
-                } else if action >= 2 {
+                } else if action >= RAISE_MIN {
                     self.vpip_hands += 1;
                     self.pfr_hands += 1;
                 }
@@ -87,22 +133,49 @@ impl OpponentTracker {
             2 => {
                 self.saw_flop += 1;
                 self.flop_actions[act_cat] += 1;
-                if facing_cbet {
+                if facing_bet {
                     self.flop_cbet_faced += 1;
-                    if action == 0 {
+                    if action == FOLD {
                         self.flop_fold_to_cbet += 1;
                     }
                 }
             }
-            3 => self.turn_actions[act_cat] += 1,
-            4 => self.river_actions[act_cat] += 1,
+            3 => {
+                self.turn_actions[act_cat] += 1;
+                if facing_bet {
+                    self.turn_cbet_faced += 1;
+                    if action == FOLD {
+                        self.turn_fold_to_cbet += 1;
+                    }
+                }
+            }
+            4 => {
+                self.river_actions[act_cat] += 1;
+                if facing_bet {
+                    self.river_bet_faced += 1;
+                    if action == FOLD {
+                        self.river_fold_to_bet += 1;
+                    }
+                }
+            }
             _ => {}
         }
 
+        if action >= RAISE_MIN && pot > 0 && bet_amt > 0 {
+            let pct = (bet_amt as i64 * 100 / pot.max(1) as i64) as i32;
+            if pct <= 35 {
+                self.sizing_small_bets += 1;
+            } else if pct <= 75 {
+                self.sizing_mid_bets += 1;
+            } else {
+                self.sizing_large_bets += 1;
+            }
+        }
+
         match action {
-            0 => self.fold_count += 1,
-            1 => self.call_count += 1,
-            2..=5 => self.raise_count += 1,
+            FOLD => self.fold_count += 1,
+            CALL_CHECK => self.call_count += 1,
+            RAISE_MIN..=ALL_IN => self.raise_count += 1,
             _ => {}
         }
     }
@@ -170,6 +243,22 @@ impl OpponentTracker {
         }
     }
 
+    pub fn turn_fold_to_cbet_ratio(&self) -> f64 {
+        if self.turn_cbet_faced == 0 {
+            0.40
+        } else {
+            self.turn_fold_to_cbet as f64 / self.turn_cbet_faced as f64
+        }
+    }
+
+    pub fn river_fold_to_bet_ratio(&self) -> f64 {
+        if self.river_bet_faced == 0 {
+            0.35
+        } else {
+            self.river_fold_to_bet as f64 / self.river_bet_faced as f64
+        }
+    }
+
     pub fn wtsd_ratio(&self) -> f64 {
         if self.saw_flop == 0 {
             0.30
@@ -184,6 +273,17 @@ impl OpponentTracker {
         opp_hole: [Card; 2],
         board: &[Card],
         opp_raised_river: bool,
+    ) {
+        self.record_showdown_hand_detailed(opp_hole, board, opp_raised_river, 0, 0);
+    }
+
+    pub fn record_showdown_hand_detailed(
+        &mut self,
+        opp_hole: [Card; 2],
+        board: &[Card],
+        opp_raised_river: bool,
+        last_bet_amt: i32,
+        pot: i32,
     ) {
         self.showdown_hands += 1;
         self.went_to_showdown += 1;
@@ -203,6 +303,15 @@ impl OpponentTracker {
         if pf_idx > 90 {
             self.showdown_loose_count += 1;
         }
+        /* 4. Sizing tells inference */
+        if pot > 0 && last_bet_amt > 0 {
+            let pct = (last_bet_amt as i64 * 100 / pot.max(1) as i64) as i32;
+            if pct >= 75 && cat >= 2 {
+                self.showdown_large_monster_count += 1;
+            } else if pct <= 35 && cat <= 1 {
+                self.showdown_small_bluff_count += 1;
+            }
+        }
     }
 
     pub fn showdown_bluff_rate(&self) -> f64 {
@@ -211,6 +320,24 @@ impl OpponentTracker {
         } else {
             self.showdown_bluff_count as f64 / self.showdown_hands as f64
         }
+    }
+
+    /* Wilson score interval for statistical significance of frequency bounds.
+     * Returns (lower_bound, upper_bound) at confidence level z (e.g. z=1.96 for 95%). */
+    pub fn wilson_confidence(successes: u64, total: u64, z: f64) -> (f64, f64) {
+        if total == 0 {
+            return (0.0, 1.0);
+        }
+        let n = total as f64;
+        let p_hat = successes as f64 / n;
+        let z2 = z * z;
+        let denom = 1.0 + z2 / n;
+        let center = (p_hat + z2 / (2.0 * n)) / denom;
+        let margin = (z / denom)
+            * ((p_hat * (1.0 - p_hat) / n) + (z2 / (4.0 * n * n)))
+                .max(0.0)
+                .sqrt();
+        ((center - margin).max(0.0), (center + margin).min(1.0))
     }
 
     /* Classifies opponent playstyle into a discrete archetype with confidence */

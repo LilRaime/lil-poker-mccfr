@@ -90,3 +90,54 @@ fn test_fallback_strategy_preflop_and_postflop() {
         "Checking should be dominant when check is free with air"
     );
 }
+
+#[test]
+fn test_strategy_lookup_index() {
+    use lil_poker_mccfr::cfr::fallback::StrategyLookupIndex;
+    use std::collections::HashMap;
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole_aa = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
+
+    let mut map = HashMap::new();
+    map.insert("P:AA/c".to_string(), vec![0.0, 0.2, 0.4, 0.2, 0.2, 0.0]);
+    map.insert("P:AA/r".to_string(), vec![0.0, 0.0, 0.2, 0.4, 0.3, 0.1]);
+    map.insert("F:B10/c".to_string(), vec![0.1, 0.5, 0.2, 0.1, 0.1, 0.0]);
+    map.insert(
+        "P:c|F:B10/r".to_string(),
+        vec![0.1, 0.3, 0.2, 0.3, 0.1, 0.0],
+    );
+
+    let index = StrategyLookupIndex::build_from_map(&map);
+
+    // 1. Preflop lookup
+    let pf_avg = index
+        .query_bucket_avg(1, &hole_aa, &[])
+        .expect("preflop bucket avg");
+    // Average of [0.0, 0.2, 0.4, 0.2, 0.2, 0.0] and [0.0, 0.0, 0.2, 0.4, 0.3, 0.1]
+    assert!((pf_avg[0] - 0.0).abs() < 1e-6);
+    assert!((pf_avg[1] - 0.1).abs() < 1e-6);
+    assert!((pf_avg[2] - 0.3).abs() < 1e-6);
+    assert!((pf_avg[3] - 0.3).abs() < 1e-6);
+
+    // 2. Blended fallback
+    let legal = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let blended = index.get_blended_fallback(&hole_aa, &[], 1, 20, 50, &legal);
+    assert_eq!(
+        blended.len(),
+        lil_poker_mccfr::game::holdem::HOLDEM_NUM_ACTIONS
+    );
+    let sum: f64 = blended.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "Sum of probabilities must equal 1.0"
+    );
+    assert_eq!(blended[FOLD as usize], 0.0, "Pocket Aces should not fold");
+}

@@ -3,16 +3,17 @@
  */
 
 use super::types::Card;
+use crate::game::config::{NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_RANKS, NUM_SUITS};
 
 #[inline]
-pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
-    let board_n = board.len().min(5);
-    let total_cards = 2 + board_n;
+pub fn evaluate_7cards(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> u64 {
+    let board_n = board.len().min(NUM_COMMUNITY_CARDS);
+    let total_cards = NUM_HOLE_CARDS + board_n;
 
-    let mut rank_counts = [0u8; 13];
-    let mut suit_counts = [0u8; 4];
+    let mut rank_counts = [0u8; NUM_RANKS];
+    let mut suit_counts = [0u8; NUM_SUITS];
     let mut rank_mask = 0u16;
-    let mut suit_masks = [0u16; 4];
+    let mut suit_masks = [0u16; NUM_SUITS];
 
     /* Ingest hole cards */
     for c in hole.iter() {
@@ -35,7 +36,9 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     }
 
     /* 1. Check Flush & Straight Flush */
-    let flush_suit = suit_counts.iter().position(|&cnt| cnt >= 5);
+    let flush_suit = suit_counts
+        .iter()
+        .position(|&cnt| cnt >= NUM_COMMUNITY_CARDS as u8);
 
     if let Some(s) = flush_suit {
         let smask = suit_masks[s];
@@ -60,7 +63,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     let mut pairs = [0u64; 3];
     let mut pairs_len = 0;
 
-    for r in (0..13).rev() {
+    for r in (0..NUM_RANKS).rev() {
         match rank_counts[r] {
             4 => {
                 if quads.is_none() {
@@ -103,7 +106,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     if let Some(s) = flush_suit {
         let mut score = 5u64 << 32;
         let mut m = suit_masks[s];
-        for i in 0..5 {
+        for i in 0..NUM_COMMUNITY_CARDS {
             let r = 15 - m.leading_zeros() as u64;
             score |= r << (16 - i * 4);
             m &= !(1 << r);
@@ -180,7 +183,7 @@ pub fn evaluate_7cards(hole: &[Card; 2], board: &[Card]) -> u64 {
     /* 10. High Card */
     let mut score = 0u64;
     let mut rem_mask = rank_mask;
-    let count = total_cards.min(5);
+    let count = total_cards.min(NUM_COMMUNITY_CARDS);
     for i in 0..count {
         if rem_mask == 0 {
             break;

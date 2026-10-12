@@ -1,4 +1,4 @@
-/* Evaluate a trained CFR/MCCFR strategy profile for Leduc Poker.
+/* Evaluate a trained CFR/MCCFR strategy profile for Leduc Poker or 52-Card Texas Hold'em.
  * Features:
  *   - Tabular strategy profile inspection (preflop / postflop decisions)
  *   - Simulation against random opponent (win %, profit chips/hand, mbb/hand)
@@ -6,26 +6,45 @@
  */
 
 use clap::Parser;
-use lil_poker_mccfr::game::card::ALL_CARDS;
-use lil_poker_mccfr::game::leduc::LeducGame;
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
-use serde_json::Value;
-use std::collections::HashMap;
-
-type Strategy = HashMap<String, [f64; 3]>;
+use lil_poker_mccfr::sim::leduc::{
+    compute_exploitability, display_sample_strategy, load_strategy, simulate_vs_random,
+};
 
 /* CLI Arguments */
 #[derive(Parser, Debug)]
-#[command(about = "Evaluate CFR Strategy for Leduc Poker (Rust implementation of evaluate.py)")]
+#[command(about = "Evaluate CFR Strategy for Leduc or 52-Card Texas Hold'em Poker")]
 struct Args {
-    /* Path to strategy JSON file */
-    #[arg(short, long, default_value = "models/leduc_strategy.json")]
-    strategy: String,
+    /* Game type: "leduc" or "holdem" (auto-detected if strategy path contains holdem/leduc) */
+    #[arg(short, long)]
+    game: Option<String>,
 
-    /* Number of hands for simulation benchmark against random agent */
-    #[arg(short = 'n', long, default_value_t = 500_000)]
-    hands: u64,
+    /* Path to strategy JSON file */
+    #[arg(short, long)]
+    strategy: Option<String>,
+
+    /* Number of hands/deals for simulation benchmark */
+    #[arg(short = 'n', long)]
+    hands: Option<u64>,
+
+    /* Opponent archetype for Hold'em: tag, fish, maniac, rock, self, random */
+    #[arg(short = 'o', long, default_value = "tag")]
+    opponent: String,
+
+    /* Optional second strategy file for A/B testing */
+    #[arg(long)]
+    opp_strategy: Option<String>,
+
+    /* Run in Duplicate Poker mode (each deal played in reverse seats to eliminate card luck) */
+    #[arg(short, long, default_value_t = true)]
+    duplicate: bool,
+
+    /* Enable real-time subgame solving for Turn and River */
+    #[arg(long)]
+    subgame: bool,
+
+    /* Opponent exploitation factor (0.0 = pure GTO, 1.0 = full exploit) */
+    #[arg(long, default_value_t = 0.70)]
+    exploit_factor: f64,
 
     /* Show detailed strategy profile table for key infosets */
     #[arg(short, long)]
@@ -36,12 +55,78 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
+    let is_holdem = match args.game.as_deref() {
+        Some("holdem") => true,
+        Some("leduc") => false,
+        _ => {
+            if let Some(ref s) = args.strategy {
+                s.contains("holdem")
+            } else {
+                false
+            }
+        }
+    };
+
+    if is_holdem {
+        let strategy_path = args.strategy.unwrap_or_else(|| {
+            if std::path::Path::new("models/holdem_strategy.json").exists() {
+                "models/holdem_strategy.json".to_string()
+            } else {
+                "models/holdem_abstract_strategy.json".to_string()
+            }
+        });
+        let hands = args.hands.unwrap_or(5000);
+
+        println!("============================================================");
+        println!("     ♠️  lil-poker-mccfr: Texas Hold'em Evaluation Harness  ♥️   ");
+        println!("============================================================");
+        println!("Strategy Model        : {}", strategy_path);
+        println!("Opponent Archetype    : {}", args.opponent.to_uppercase());
+        if let Some(ref opp_strat) = args.opp_strategy {
+            println!("Opponent Strategy     : {}", opp_strat);
+        }
+        println!("Total Duplicate Deals : {}", hands);
+        println!(
+            "Duplicate Mode        : {}",
+            if args.duplicate {
+                "Active (Reverse Seats)"
+            } else {
+                "Single Dealing"
+            }
+        );
+        println!(
+            "Subgame Search        : {}",
+            if args.subgame { "Enabled" } else { "Disabled" }
+        );
+        println!("Exploitation Factor   : {:.2}", args.exploit_factor);
+        println!("============================================================\n");
+
+        let _res = lil_poker_mccfr::sim::run_holdem_benchmark(
+            &strategy_path,
+            hands,
+            0,
+            args.subgame,
+            "0",
+            &args.opponent,
+            args.opp_strategy.as_deref(),
+            args.duplicate,
+            args.exploit_factor,
+            false,
+        );
+        return;
+    }
+
+    let strategy_path = args
+        .strategy
+        .unwrap_or_else(|| "models/leduc_strategy.json".to_string());
+    let hands = args.hands.unwrap_or(500_000);
+
     println!("============================================================");
     println!("        lil-poker-mccfr: Strategy & Model Evaluator         ");
     println!("============================================================");
-    println!("Strategy File : {}", args.strategy);
+    println!("Strategy File : {}", strategy_path);
 
-    let strategy = load_strategy(&args.strategy);
+    let strategy = load_strategy(&strategy_path);
     println!("Loaded Infosets: {}", strategy.len());
 
     /* 1. Display tabular strategy profile if requested or by default */
@@ -50,10 +135,10 @@ fn main() {
     /* 2. Win rate & Simulation against Random Agent */
     println!(
         "\n--- Simulation Benchmark vs Random Opponent ({} hands) ---",
-        args.hands
+        hands
     );
-    let sim0 = simulate_vs_random(&strategy, args.hands, 0, 42);
-    let sim1 = simulate_vs_random(&strategy, args.hands, 1, 99);
+    let sim0 = simulate_vs_random(&strategy, hands, 0, 42);
+    let sim1 = simulate_vs_random(&strategy, hands, 1, 99);
 
     println!("Player 0 (OOP / Out of Position):");
     println!("  Win Percentage : {:.2}%", sim0.win_pct);
@@ -92,281 +177,4 @@ fn main() {
         println!("Status: ❌ WEAK — Requires More Training Iterations");
     }
     println!("============================================================\n");
-}
-
-/* Load Strategy JSON */
-fn load_strategy(path: &str) -> Strategy {
-    let data = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("Cannot read strategy file: {}", path));
-    let json: Value = serde_json::from_str(&data).expect("Invalid JSON format");
-
-    json.as_object()
-        .expect("Strategy JSON root must be an object")
-        .iter()
-        .map(|(k, v)| {
-            let arr = v.as_array().expect("Strategy value must be array");
-            let p = |i: usize| arr.get(i).and_then(|x| x.as_f64()).unwrap_or(1.0 / 3.0);
-            (k.clone(), [p(0), p(1), p(2)])
-        })
-        .collect()
-}
-
-/* Tabular Strategy Display */
-fn display_sample_strategy(strategy: &Strategy, verbose: bool) {
-    println!("\n--- Strategy Profile Highlights ---");
-    println!(
-        "{:<14} | {:<8} | {:<8} | {:<8}",
-        "Infoset Key", "Fold", "Call/Check", "Raise"
-    );
-    println!("--------------------------------------------------");
-
-    let sample_keys = if verbose {
-        /* Show 20 representative keys */
-        vec![
-            "Jc/_//",
-            "Jc/_/r/",
-            "Qc/_//",
-            "Qc/_/r/",
-            "Kc/_//",
-            "Kc/_/r/",
-            "Kc/_/c/",
-            "Kc/_/cr/",
-            "Jc/Jd/cc/",
-            "Jc/Jd/cc/r",
-            "Jc/Qd/cc/",
-            "Jc/Qd/cc/r",
-            "Kc/Jd/cc/",
-            "Kc/Jd/cc/r",
-            "Kc/Kd/cc/",
-            "Kc/Kd/cc/r",
-            "Qc/Qd/cc/",
-            "Qc/Qd/cc/r",
-            "Jc/_/crr/",
-            "Kc/_/crr/",
-        ]
-    } else {
-        /* Show core 8 preflop & postflop keys */
-        vec![
-            "Jc/_//",
-            "Jc/_/r/",
-            "Qc/_//",
-            "Qc/_/r/",
-            "Kc/_//",
-            "Kc/_/r/",
-            "Jc/Jd/cc/",
-            "Kc/Kd/cc/",
-        ]
-    };
-
-    for &key in &sample_keys {
-        if let Some(strat) = strategy.get(key) {
-            println!(
-                "{:<14} | {:<8.3} | {:<8.3} | {:<8.3}",
-                key, strat[0], strat[1], strat[2]
-            );
-        }
-    }
-}
-
-/* Simulation against Random Agent */
-struct SimResult {
-    win_pct: f64,
-    avg_chips: f64,
-    mbb: f64,
-    mbb_se: f64,
-}
-
-fn simulate_vs_random(
-    strategy: &Strategy,
-    hands: u64,
-    model_player: usize,
-    seed: u64,
-) -> SimResult {
-    let mut rng = SmallRng::seed_from_u64(seed);
-    let mut total_payoff = 0.0f64;
-    let mut sq_payoff = 0.0f64;
-    let mut wins = 0u64;
-
-    for _ in 0..hands {
-        let mut game = LeducGame::new_random(&mut rng);
-        loop {
-            if game.is_terminal() {
-                break;
-            }
-            let cp = game.current_player();
-            let act = if cp == model_player {
-                sample_model_action(strategy, &game, cp, &mut rng)
-            } else {
-                let legal = game.legal_actions();
-                legal[rng.gen_range(0..legal.len())]
-            };
-            game = game.apply_action(act);
-        }
-
-        let payoff = game.get_returns()[model_player];
-        if payoff > 0.0 {
-            wins += 1;
-        }
-        total_payoff += payoff;
-        sq_payoff += payoff * payoff;
-    }
-
-    let avg_chips = total_payoff / hands as f64;
-    let var = sq_payoff / hands as f64 - avg_chips * avg_chips;
-    let se_chips = (var / hands as f64).sqrt();
-
-    /* Ante = 1 chip = 1 big blind in Leduc unit */
-    let mbb = avg_chips * 1000.0;
-    let mbb_se = se_chips * 1000.0;
-    let win_pct = (wins as f64 / hands as f64) * 100.0;
-
-    SimResult {
-        win_pct,
-        avg_chips,
-        mbb,
-        mbb_se,
-    }
-}
-
-fn sample_model_action(
-    strategy: &Strategy,
-    game: &LeducGame,
-    player: usize,
-    rng: &mut SmallRng,
-) -> u8 {
-    let legal = game.legal_actions();
-    let key = game.infoset_key(player);
-    let n = legal.len();
-
-    let probs: Vec<f64> = if let Some(s) = strategy.get(&key) {
-        let raw: Vec<f64> = legal.iter().map(|&a| s[a as usize].max(0.0)).collect();
-        let sum: f64 = raw.iter().sum();
-        if sum > 1e-12 {
-            raw.iter().map(|p| p / sum).collect()
-        } else {
-            vec![1.0 / n as f64; n]
-        }
-    } else {
-        vec![1.0 / n as f64; n]
-    };
-
-    let r: f64 = rng.gen();
-    let mut cum = 0.0;
-    for (i, &p) in probs.iter().enumerate() {
-        cum += p;
-        if r < cum {
-            return legal[i];
-        }
-    }
-    legal[n - 1]
-}
-
-/* Best Response Tree Traversal (NashConv) */
-fn compute_exploitability(strategy: &Strategy) -> f64 {
-    let cards = &ALL_CARDS;
-    let n = cards.len();
-    let mut br0_sum = 0.0f64;
-    let mut br1_sum = 0.0f64;
-
-    for i in 0..n {
-        for j in 0..n {
-            if j == i {
-                continue;
-            }
-            let rem_boards: Vec<_> = (0..n)
-                .filter(|&k| k != i && k != j)
-                .map(|k| cards[k])
-                .collect();
-
-            let dummy = rem_boards[0];
-            let g = LeducGame::new_with_cards(cards[i], cards[j], dummy);
-
-            br0_sum += br_recurse_r1(&g, &rem_boards, 0, strategy);
-            br1_sum += br_recurse_r1(&g, &rem_boards, 1, strategy);
-        }
-    }
-
-    (br0_sum / 30.0) + (br1_sum / 30.0)
-}
-
-fn br_recurse_r1(
-    game: &LeducGame,
-    rem_boards: &[lil_poker_mccfr::game::card::Card],
-    br_player: usize,
-    strategy: &Strategy,
-) -> f64 {
-    if game.is_terminal() {
-        return game.get_returns()[br_player];
-    }
-
-    if game.round == 2 {
-        let sum: f64 = rem_boards
-            .iter()
-            .map(|&b| {
-                let mut g2 = LeducGame::new_with_cards(game.hole[0], game.hole[1], b);
-                for &a in &game.history[0] {
-                    g2 = g2.apply_action(a);
-                }
-                br_recurse_r2(&g2, br_player, strategy)
-            })
-            .sum();
-        return sum / rem_boards.len() as f64;
-    }
-
-    let cp = game.current_player();
-    let actions = game.legal_actions();
-
-    if cp == br_player {
-        actions
-            .iter()
-            .map(|&a| br_recurse_r1(&game.apply_action(a), rem_boards, br_player, strategy))
-            .fold(f64::NEG_INFINITY, f64::max)
-    } else {
-        let probs = get_action_probs_evaluate(strategy, game, cp);
-        actions
-            .iter()
-            .zip(probs.iter())
-            .map(|(&a, &p)| {
-                p * br_recurse_r1(&game.apply_action(a), rem_boards, br_player, strategy)
-            })
-            .sum()
-    }
-}
-
-fn br_recurse_r2(game: &LeducGame, br_player: usize, strategy: &Strategy) -> f64 {
-    if game.is_terminal() {
-        return game.get_returns()[br_player];
-    }
-
-    let cp = game.current_player();
-    let actions = game.legal_actions();
-
-    if cp == br_player {
-        actions
-            .iter()
-            .map(|&a| br_recurse_r2(&game.apply_action(a), br_player, strategy))
-            .fold(f64::NEG_INFINITY, f64::max)
-    } else {
-        let probs = get_action_probs_evaluate(strategy, game, cp);
-        actions
-            .iter()
-            .zip(probs.iter())
-            .map(|(&a, &p)| p * br_recurse_r2(&game.apply_action(a), br_player, strategy))
-            .sum()
-    }
-}
-
-fn get_action_probs_evaluate(strategy: &Strategy, game: &LeducGame, cp: usize) -> Vec<f64> {
-    let legal = game.legal_actions();
-    let key = game.infoset_key(cp);
-    let n = legal.len();
-
-    if let Some(s) = strategy.get(&key) {
-        let raw: Vec<f64> = legal.iter().map(|&a| s[a as usize].max(0.0)).collect();
-        let sum: f64 = raw.iter().sum();
-        if sum > 1e-12 {
-            return raw.iter().map(|p| p / sum).collect();
-        }
-    }
-    vec![1.0 / n as f64; n]
 }

@@ -2,6 +2,7 @@
  * Postflop 77-bucket equity mapping and Expected Hand Strength (EHS) rollouts.
  */
 
+use crate::game::config::{NUM_CARDS_DECK, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_RANKS};
 use crate::game::holdem::{evaluate_7cards, Card, ALL_52_CARDS};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -10,9 +11,9 @@ use rand::SeedableRng;
 use super::draws::detect_draws_detailed;
 
 /* Computes Expected Hand Strength (EHS / Equity) via Monte Carlo rollouts or River enumeration. */
-pub fn calculate_ehs_equity(hole: &[Card; 2], board: &[Card]) -> f64 {
-    let mut is_used = [false; 52];
-    let card_idx = |c: Card| -> usize { (c.suit as usize) * 13 + (c.rank as usize) };
+pub fn calculate_ehs_equity(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> f64 {
+    let mut is_used = [false; NUM_CARDS_DECK];
+    let card_idx = |c: Card| -> usize { (c.suit as usize) * NUM_RANKS + (c.rank as usize) };
     is_used[card_idx(hole[0])] = true;
     is_used[card_idx(hole[1])] = true;
     for &b in board {
@@ -25,7 +26,7 @@ pub fn calculate_ehs_equity(hole: &[Card; 2], board: &[Card]) -> f64 {
         .filter(|&c| !is_used[card_idx(c)])
         .collect();
 
-    let num_board_missing = 5 - board.len();
+    let num_board_missing = NUM_COMMUNITY_CARDS - board.len();
 
     /* Fast deterministic evaluation on River */
     if num_board_missing == 0 {
@@ -61,7 +62,7 @@ pub fn calculate_ehs_equity(hole: &[Card; 2], board: &[Card]) -> f64 {
     for _ in 0..num_trials {
         deck.shuffle(&mut rng);
         let opp_hole = [deck[0], deck[1]];
-        let mut full_board = Vec::with_capacity(5);
+        let mut full_board = Vec::with_capacity(NUM_COMMUNITY_CARDS);
         full_board.extend_from_slice(board);
         full_board.extend_from_slice(&deck[2..2 + num_board_missing]);
 
@@ -87,7 +88,7 @@ pub fn calculate_ehs_equity(hole: &[Card; 2], board: &[Card]) -> f64 {
  * - Top Pair Top Kicker vs Mid/Weak Kickers
  * - Dry vs Wet redraws
  */
-pub fn postflop_equity_bucket(hole: &[Card; 2], board: &[Card]) -> usize {
+pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> usize {
     let score = evaluate_7cards(hole, board);
     let category = score >> 32;
 

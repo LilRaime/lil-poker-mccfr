@@ -9,10 +9,10 @@ fn test_opponent_model_context_adjustment() {
     let mut tracker = OpponentTracker::new();
     /* Simulate calling station: 15 calls, 1 fold, 1 raise */
     for _ in 0..15 {
-        tracker.record_action(1, false);
+        tracker.record_action(CALL_CHECK, false);
     }
-    tracker.record_action(0, false);
-    tracker.record_action(2, false);
+    tracker.record_action(FOLD, false);
+    tracker.record_action(RAISE_MIN, false);
 
     let base_strat = [0.15, 0.35, 0.15, 0.15, 0.10, 0.10];
     let legal = [
@@ -26,8 +26,12 @@ fn test_opponent_model_context_adjustment() {
 
     /* Strong hand (bucket 55) against calling station -> raise probability must increase */
     let adj_strong = tracker.adjust_strategy_with_context(&base_strat, &legal, 55, false);
-    let total_raise_base: f64 = base_strat[2..=5].iter().sum();
-    let total_raise_adj_strong: f64 = adj_strong[2..=5].iter().sum();
+    let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
+    let total_raise_adj_strong: f64 = adj_strong[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
     assert!(
         total_raise_adj_strong > total_raise_base,
         "Against calling station, strong hand should raise more"
@@ -35,7 +39,7 @@ fn test_opponent_model_context_adjustment() {
 
     /* Weak hand (bucket 10) against calling station -> bluff raises must decrease */
     let adj_weak = tracker.adjust_strategy_with_context(&base_strat, &legal, 10, false);
-    let total_raise_adj_weak: f64 = adj_weak[2..=5].iter().sum();
+    let total_raise_adj_weak: f64 = adj_weak[RAISE_MIN as usize..=ALL_IN as usize].iter().sum();
     assert!(
         total_raise_adj_weak < total_raise_base,
         "Against calling station, weak hand bluffs should be reduced"
@@ -131,9 +135,146 @@ fn test_opponent_style_classification_and_showdown() {
         card(Rank::Nine, Suit::Diamonds),
         card(Rank::Three, Suit::Clubs),
     ];
-    tracker.record_showdown_hand(opp_trash, &board, true); // opponent raised river with air!
+    tracker.record_showdown_hand(opp_trash, &board, true);
 
     assert_eq!(tracker.showdown_hands, 1);
     assert_eq!(tracker.showdown_bluff_count, 1);
     assert_eq!(tracker.showdown_bluff_rate(), 1.0);
+}
+
+#[test]
+fn test_opponent_barrel_metrics_and_wilson() {
+    let mut tracker = OpponentTracker::new();
+
+    /* Wilson score interval bounds checking */
+    let (low, high) = OpponentTracker::wilson_confidence(50, 100, 1.96);
+    assert!(
+        (0.39..=0.42).contains(&low),
+        "Wilson 95% lower bound for 50/100 should be ~0.40, got {}",
+        low
+    );
+    assert!(
+        (0.58..=0.61).contains(&high),
+        "Wilson 95% upper bound for 50/100 should be ~0.60, got {}",
+        high
+    );
+
+    /* Turn barrel facing and folding */
+    tracker.record_action_street(RAISE_MIN, 1, false);
+    tracker.record_action_street(CALL_CHECK, 2, false);
+    tracker.record_action_street(FOLD, 3, true); /* facing turn cbet and folded! */
+    tracker.end_hand();
+
+    assert_eq!(tracker.turn_cbet_faced, 1);
+    assert_eq!(tracker.turn_fold_to_cbet, 1);
+    assert_eq!(tracker.turn_fold_to_cbet_ratio(), 1.0);
+
+    /* River bet facing and folding */
+    tracker.record_action_street(CALL_CHECK, 1, false);
+    tracker.record_action_street(CALL_CHECK, 2, false);
+    tracker.record_action_street(CALL_CHECK, 3, false);
+    tracker.record_action_street(FOLD, 4, true); /* facing river bet and folded! */
+    tracker.end_hand();
+
+    /* Add realistic preflop folds so opponent represents an over-folding player */
+    for _ in 0..4 {
+        tracker.record_action_street(FOLD, 1, false);
+        tracker.end_hand();
+    }
+
+    assert_eq!(tracker.river_bet_faced, 1);
+    assert_eq!(tracker.river_fold_to_bet, 1);
+    assert_eq!(tracker.river_fold_to_bet_ratio(), 1.0);
+
+    /* Test turn barrel exploit in adjust_strategy_full */
+    let base_strat = [0.30, 0.40, 0.10, 0.10, 0.10, 0.0];
+    let legal = [FOLD, CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT, RAISE_HALF_POT];
+    // Weak hand (bucket 10) on Turn (round 3)
+    let adj_turn = tracker.adjust_strategy_full(&base_strat, &legal, 10, 3);
+    let orig_raise: f64 = base_strat[3] + base_strat[4];
+    let adj_raise: f64 = adj_turn[3] + adj_turn[4];
+    assert!(
+        adj_raise > orig_raise,
+        "Facing turn over-folder, bot should fire 2nd barrel bluff more often (orig {}, adj {})",
+        orig_raise,
+        adj_raise
+    );
+}
+
+#[test]
+fn test_opponent_sizing_tells() {
+    let mut tracker = OpponentTracker::new();
+
+    /* Record detailed actions with bet size and pot */
+    // Opponent bet 20 chips into 100 pot (20% pot -> small bet)
+    tracker.record_action_street_detailed(RAISE_MIN, 2, false, 20, 100);
+    // Opponent bet 50 chips into 100 pot (50% pot -> mid bet)
+    tracker.record_action_street_detailed(RAISE_HALF_POT, 2, false, 50, 100);
+    // Opponent bet 150 chips into 100 pot (150% pot -> large/overbet)
+    tracker.record_action_street_detailed(ALL_IN, 3, false, 150, 100);
+
+    assert_eq!(tracker.sizing_small_bets, 1);
+    assert_eq!(tracker.sizing_mid_bets, 1);
+    assert_eq!(tracker.sizing_large_bets, 1);
+
+    /* Record showdown with large bet and monster cards */
+    let card = |rank, suit| Card { rank, suit };
+    let opp_quads = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Clubs)];
+    let board = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::King, Suit::Spades),
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Two, Suit::Diamonds),
+    ];
+    tracker.record_showdown_hand_detailed(opp_quads, &board, true, 800, 1000); /* 80% pot bet with Quads! */
+
+    assert_eq!(tracker.showdown_large_monster_count, 1);
+}
+
+#[test]
+fn test_exploit_guardrails_and_toggles() {
+    let mut tracker = OpponentTracker::new();
+
+    /* Fill tracker with extreme calling station stats (30 calls, 0 folds) */
+    for _ in 0..30 {
+        tracker.record_action(CALL_CHECK, false);
+    }
+    assert_eq!(tracker.fold_count, 0);
+    assert_eq!(tracker.call_count, 30);
+
+    let bp = vec![0.30, 0.40, 0.15, 0.10, 0.05, 0.0];
+    let legal = vec![FOLD, CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT, RAISE_HALF_POT];
+
+    /* 1. When exploit is disabled: MUST return identical blueprint probabilities! */
+    tracker.set_exploit_enabled(false);
+    let disabled_adj = tracker.adjust_strategy_full(&bp, &legal, 10, 2);
+    for i in 0..5 {
+        assert!(
+            (disabled_adj[i] - bp[i]).abs() < 1e-6,
+            "When disabled, probabilities must exactly match blueprint"
+        );
+    }
+
+    /* 2. When exploit is enabled: adjusted probabilities must be clamped within safe guardrails [0.15*bp, 2.50*bp] */
+    tracker.set_exploit_enabled(true);
+    tracker.set_exploit_factor(0.70);
+    let enabled_adj = tracker.adjust_strategy_full(&bp, &legal, 10, 2);
+    for &a in &legal {
+        let idx = a as usize;
+        /* Even for extreme calling station where bluffing is suppressed, probability cannot drop below 0.15 * bp */
+        assert!(
+            enabled_adj[idx] >= 0.10 * bp[idx],
+            "Probability should never drop below safe floor. Got {} vs bp {}",
+            enabled_adj[idx],
+            bp[idx]
+        );
+        /* And probability cannot explode above 2.50 * bp */
+        assert!(
+            enabled_adj[idx] <= 2.60 * bp[idx] + 0.05,
+            "Probability should never explode above safe ceiling. Got {} vs bp {}",
+            enabled_adj[idx],
+            bp[idx]
+        );
+    }
 }

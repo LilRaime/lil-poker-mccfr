@@ -70,3 +70,62 @@ fn test_subgame_solver_adaptive_budget() {
     assert_eq!(fixed_solver.compute_budget(4, [500, 500], 0), 2000);
     assert_eq!(fixed_solver.compute_budget(2, [10, 10], 0), 2000);
 }
+
+#[test]
+fn test_opponent_reach_distribution() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::ALL_52_CARDS;
+    use rand::SeedableRng;
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    ];
+    let board = [
+        card(Rank::Queen, Suit::Hearts),
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Ten, Suit::Clubs),
+    ];
+
+    let is_used = |c: Card| hole.contains(&c) || board.contains(&c);
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !is_used(c))
+        .collect();
+
+    /* Scenario 1: Opponent raised preflop (strong range) */
+    let history_raised = [vec![1u8, 2u8], vec![], vec![], vec![]];
+    let dist_raised = OpponentReachDistribution::build(&remaining, &board, 2, &history_raised);
+    assert!(dist_raised.effective_combos() > 100);
+    assert!(dist_raised.total_weight > 0.0);
+
+    /* Verify CDF reaches 1.0 */
+    assert!((dist_raised.cdf.last().unwrap() - 1.0).abs() < 1e-6);
+
+    /* Sampling works without panic */
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(12345);
+    let sample = dist_raised.sample(&mut rng);
+    assert_ne!(sample[0], sample[1]);
+    assert!(remaining.contains(&sample[0]));
+    assert!(remaining.contains(&sample[1]));
+
+    /* Scenario 2: Opponent checked/limped (wider, weaker range) */
+    let history_limped = [vec![1u8, 1u8], vec![], vec![], vec![]];
+    let dist_limped = OpponentReachDistribution::build(&remaining, &board, 2, &history_limped);
+    assert_eq!(
+        dist_limped.effective_combos(),
+        dist_raised.effective_combos()
+    );
+
+    /* Top combos list */
+    let top = dist_raised.top_combos(5);
+    assert_eq!(top.len(), 5);
+    for i in 0..4 {
+        assert!(
+            top[i].1 >= top[i + 1].1,
+            "Top combos must be sorted descending"
+        );
+    }
+}

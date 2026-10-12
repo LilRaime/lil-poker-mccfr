@@ -1,12 +1,12 @@
 /* Exploitative Strategy Adjustment and Purified Action Sampling */
 use super::tracker::OpponentTracker;
-use crate::game::config::{ALLIN_GUARD_THRESHOLD, PREFLOP_STEAL_MAX_TO_CALL};
+use crate::game::config::*;
 use rand::Rng;
 
 impl OpponentTracker {
     /* Blends Blueprint action probabilities with an exploitative adjustment. */
     pub fn adjust_strategy(&self, blueprint_probs: &[f64], legal_actions: &[u8]) -> Vec<f64> {
-        self.adjust_strategy_with_context(blueprint_probs, legal_actions, 25, false)
+        self.adjust_strategy_full(blueprint_probs, legal_actions, 25, 2)
     }
 
     /* Advanced exploitative adjustment that knows whether our hand is strong, medium, or weak */
@@ -17,14 +17,37 @@ impl OpponentTracker {
         bucket: usize,
         is_preflop: bool,
     ) -> Vec<f64> {
+        self.adjust_strategy_full(
+            blueprint_probs,
+            legal_actions,
+            bucket,
+            if is_preflop { 1 } else { 2 },
+        )
+    }
+
+    /* Full round-aware exploitative adjustment incorporating Wilson confidence and multi-street barrels */
+    pub fn adjust_strategy_full(
+        &self,
+        blueprint_probs: &[f64],
+        legal_actions: &[u8],
+        bucket: usize,
+        round: u8,
+    ) -> Vec<f64> {
+        if !self.exploit_enabled || self.exploit_factor <= 1e-6 {
+            return blueprint_probs.to_vec();
+        }
+
         let n = blueprint_probs.len();
         let total_acts = self.total_actions();
         if total_acts < 3 {
             return blueprint_probs.to_vec();
         }
 
+        let is_preflop = round == 1;
+
         /* Bayesian confidence weight: smooth transition from GTO to exploitation */
-        let confidence = (total_acts as f64 / (total_acts as f64 + 10.0)).min(0.85);
+        let raw_conf = total_acts as f64 / (total_acts as f64 + 10.0);
+        let confidence = (raw_conf * self.exploit_factor).min(0.75);
 
         let mut adjusted = blueprint_probs.to_vec();
         let fold_rate = self.fold_ratio();
@@ -48,9 +71,9 @@ impl OpponentTracker {
             if bluff_rate > 0.35 {
                 /* Opponent caught bluffing often: call down lighter */
                 for &a in legal_actions {
-                    if a == 1 {
+                    if a == CALL_CHECK {
                         adjusted[a as usize] *= 1.25;
-                    } else if a == 0 {
+                    } else if a == FOLD {
                         adjusted[a as usize] *= 0.75;
                     }
                 }
@@ -58,7 +81,7 @@ impl OpponentTracker {
                 /* Opponent rarely bluffs: fold bluff catchers to big bets */
                 if is_weak {
                     for &a in legal_actions {
-                        if a == 0 {
+                        if a == FOLD {
                             adjusted[a as usize] *= 1.35;
                         }
                     }
@@ -66,18 +89,39 @@ impl OpponentTracker {
             }
         }
 
-        if fold_rate > 0.45 {
+        /* Showdown sizing tell inference: large bet monster bias */
+        if self.showdown_large_monster_count >= 2 {
+            let large_bets = self.sizing_large_bets.max(1) as f64;
+            if self.showdown_large_monster_count as f64 / large_bets > 0.65 && is_weak {
+                /* Opponent almost exclusively bets large with monsters: fold light */
+                for &a in legal_actions {
+                    if a == FOLD {
+                        adjusted[a as usize] *= 1.30;
+                    } else if a == CALL_CHECK {
+                        adjusted[a as usize] *= 0.70;
+                    }
+                }
+            }
+        }
+
+        /* Statistical confidence check using Wilson score interval (80% confidence level z = 1.28) */
+        let (f_low, f_high) = Self::wilson_confidence(self.fold_count, total_acts, 1.28);
+
+        if f_low > 0.42 || fold_rate > 0.45 {
             /* Opponent over-folds (Nit): Steal pots, bluff more, fold less */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a >= 2 {
+                if a >= RAISE_MIN {
                     let mult = if is_weak { 1.60 } else { 1.30 };
                     adjusted[idx] *= mult;
-                } else if a == 0 {
+                } else if a == FOLD {
                     adjusted[idx] *= 0.55;
                 }
             }
-        } else if (fold_rate < 0.22 && call_rate > 0.40) || self.vpip_ratio() > 0.70 {
+        } else if (f_high < 0.25 && call_rate > 0.40)
+            || (fold_rate < 0.22 && call_rate > 0.40)
+            || self.vpip_ratio() > 0.70
+        {
             /* Calling station opponent:
              * 1. Relentlessly value-bet strong hands (boost raises).
              * 2. NEVER bluff weak hands (reduce raises to near zero).
@@ -85,19 +129,19 @@ impl OpponentTracker {
              */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a >= 2 {
+                if a >= RAISE_MIN {
                     if is_strong {
                         adjusted[idx] *= 1.85;
                     } else if is_weak {
                         adjusted[idx] *= 0.05; /* Stop bluffing! */
                     }
-                } else if a == 0 {
+                } else if a == FOLD {
                     if is_strong {
                         adjusted[idx] *= 0.05;
                     } else if is_weak {
                         adjusted[idx] *= 1.35;
                     }
-                } else if a == 1 && is_strong {
+                } else if a == CALL_CHECK && is_strong {
                     adjusted[idx] *= 0.75;
                 }
             }
@@ -109,26 +153,51 @@ impl OpponentTracker {
              */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a == 1 {
+                if a == CALL_CHECK {
                     let mult = if is_strong { 1.65 } else { 1.30 };
                     adjusted[idx] *= mult;
-                } else if a == 0 {
+                } else if a == FOLD {
                     if !is_weak {
                         adjusted[idx] *= 0.40; /* Don't fold solid hands to aggressive bets */
                     } else {
                         adjusted[idx] *= 1.30; /* Quickly ditch trash */
                     }
-                } else if a >= 2 && is_strong {
+                } else if a >= RAISE_MIN && is_strong {
                     adjusted[idx] *= 0.85;
                 }
             }
         }
 
-        /* Situational C-bet fold exploit on flop */
-        if !is_preflop && is_weak && self.flop_fold_to_cbet_ratio() > 0.55 {
+        /* Situational C-bet and Barrel fold exploits across streets */
+        if round == 2 && is_weak && self.flop_fold_to_cbet_ratio() > 0.55 {
             for &a in legal_actions {
-                if a == 3 || a == 4 {
-                    adjusted[a as usize] *= 1.45; /* Fire continuation bet bluff! */
+                if a == RAISE_THIRD_POT || a == RAISE_HALF_POT {
+                    adjusted[a as usize] *= 1.45; /* Fire continuation bet bluff on flop! */
+                }
+            }
+        } else if round == 3 && is_weak && self.turn_fold_to_cbet_ratio() > 0.55 {
+            for &a in legal_actions {
+                if a == RAISE_THIRD_POT || a == RAISE_HALF_POT {
+                    adjusted[a as usize] *= 1.50; /* Fire 2nd barrel bluff on turn! */
+                }
+            }
+        } else if round == 4 && is_weak && self.river_fold_to_bet_ratio() > 0.55 {
+            for &a in legal_actions {
+                if a == RAISE_THIRD_POT || a == RAISE_HALF_POT {
+                    adjusted[a as usize] *= 1.55; /* Fire river probe bluff! */
+                }
+            }
+        }
+
+        /* Apply Safety Guardrails: Prevent catastrophic over-exploitation and keep defense balanced */
+        for &a in legal_actions {
+            let idx = a as usize;
+            if idx < n {
+                let bp = blueprint_probs[idx];
+                if bp > 0.005 {
+                    let min_bound = 0.15 * bp;
+                    let max_bound = 2.50 * bp;
+                    adjusted[idx] = adjusted[idx].clamp(min_bound, max_bound);
                 }
             }
         }
@@ -164,7 +233,7 @@ impl OpponentTracker {
         blended
     }
 
-    /* Purified and noise-filtered action sampling with all-in defense */
+    /* Purified and noise-filtered action sampling with all-in defense (backward-compatible) */
     pub fn select_action_purified<R: Rng>(
         &self,
         raw_probs: &[f64],
@@ -174,8 +243,28 @@ impl OpponentTracker {
         to_call: i32,
         rng: &mut R,
     ) -> u8 {
-        let adjusted_probs =
-            self.adjust_strategy_with_context(raw_probs, legal_actions, bucket, is_preflop);
+        self.select_action_purified_round(
+            raw_probs,
+            legal_actions,
+            bucket,
+            if is_preflop { 1 } else { 2 },
+            to_call,
+            rng,
+        )
+    }
+
+    /* Street-aware purified action sampling */
+    pub fn select_action_purified_round<R: Rng>(
+        &self,
+        raw_probs: &[f64],
+        legal_actions: &[u8],
+        bucket: usize,
+        round: u8,
+        to_call: i32,
+        rng: &mut R,
+    ) -> u8 {
+        let is_preflop = round == 1;
+        let adjusted_probs = self.adjust_strategy_full(raw_probs, legal_actions, bucket, round);
 
         let mut probs: Vec<f64> = legal_actions
             .iter()
@@ -197,7 +286,7 @@ impl OpponentTracker {
         if to_call >= ALLIN_GUARD_THRESHOLD {
             if is_preflop && bucket <= 12 {
                 /* Premium pocket pairs never fold preflop to a shove */
-                if let Some(f_i) = legal_actions.iter().position(|&a| a == 0) {
+                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                     probs[f_i] = 0.0;
                 }
             }
@@ -215,10 +304,10 @@ impl OpponentTracker {
             };
 
             if is_trash {
-                let has_fold = legal_actions.contains(&0);
+                let has_fold = legal_actions.contains(&FOLD);
                 if has_fold {
                     for (i, &a) in legal_actions.iter().enumerate() {
-                        if a == 0 {
+                        if a == FOLD {
                             probs[i] = 1.0;
                         } else {
                             probs[i] = 0.0;
@@ -233,8 +322,10 @@ impl OpponentTracker {
          * For playable hands (bucket <= 120), shift fold probabilities into raises to steal blinds.
          */
         if is_preflop && to_call <= PREFLOP_STEAL_MAX_TO_CALL && bucket <= 120 {
-            let fold_idx = legal_actions.iter().position(|&a| a == 0);
-            let raise_idx = legal_actions.iter().position(|&a| a == 2 || a == 3);
+            let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
+            let raise_idx = legal_actions
+                .iter()
+                .position(|&a| a == RAISE_MIN || a == RAISE_THIRD_POT);
             if let (Some(f_i), Some(r_i)) = (fold_idx, raise_idx) {
                 if probs[f_i] > 0.05 {
                     probs[r_i] += probs[f_i] * 0.85;

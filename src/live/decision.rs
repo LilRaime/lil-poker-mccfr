@@ -1,14 +1,14 @@
 /* Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::map_action_index;
+use super::protocol::map_action_index_round;
 use crate::cfr::abstraction::{
     get_holdem_infoset_key, get_holdem_infoset_key_rich, postflop_equity_bucket, preflop_bucket,
 };
-use crate::cfr::fallback::get_holdem_fallback_strategy;
+use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
 use crate::cfr::opponent_model::OpponentTracker;
-use crate::cfr::subgame::SubgameSolver;
-use crate::game::config::SUBGAME_FLOP_TRIGGER_POT;
+use crate::cfr::subgame::{SubgameContext, SubgameSolver};
+use crate::game::config::*;
 use crate::game::holdem::{Card, RoundHistory};
 
 #[allow(clippy::too_many_arguments)]
@@ -22,6 +22,12 @@ pub fn decide_action(
     subgame_search: bool,
     tracker: &OpponentTracker,
     history: &[RoundHistory; 4],
+    my_player: usize,
+    contributions: [i32; 2],
+    raises_this_round: u8,
+    strategy_index: Option<&StrategyLookupIndex>,
+    solver: Option<&SubgameSolver>,
+    solver_ctx: Option<&mut SubgameContext>,
 ) -> (String, i32) {
     let round = match board.len() {
         0 => 1,
@@ -33,26 +39,26 @@ pub fn decide_action(
     let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
     let mut legal_u8: Vec<u8> = Vec::new();
     if to_call > 0 && has("fold") {
-        legal_u8.push(0);
+        legal_u8.push(FOLD);
     }
     if has("check") || has("call") {
-        legal_u8.push(1);
+        legal_u8.push(CALL_CHECK);
     }
     if has("raise") || has("bet") {
-        legal_u8.push(2);
-        legal_u8.push(3);
-        legal_u8.push(4);
+        legal_u8.push(RAISE_MIN);
+        legal_u8.push(RAISE_THIRD_POT);
+        legal_u8.push(RAISE_HALF_POT);
     }
-    if has("allin") {
-        legal_u8.push(5);
+    if has("allin") || has("all_in") {
+        legal_u8.push(ALL_IN);
     }
     if legal_u8.is_empty() {
         if has("check") || has("call") {
-            legal_u8.push(1);
+            legal_u8.push(CALL_CHECK);
         } else if has("fold") {
-            legal_u8.push(0);
-        } else if has("allin") {
-            legal_u8.push(5);
+            legal_u8.push(FOLD);
+        } else if has("allin") || has("all_in") {
+            legal_u8.push(ALL_IN);
         }
     }
 
@@ -65,12 +71,32 @@ pub fn decide_action(
     /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots) */
     let raw_probs =
         if subgame_search && (round >= 3 || (round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT)) {
-            let solver = SubgameSolver::new(2500);
-            let my_contrib = (pot / 2).max(10);
-            let opp_contrib = my_contrib + to_call;
-            solver.solve_with_state(hole, board, round, history, 0, [my_contrib, opp_contrib], 0)
+            let default_solver = SubgameSolver::default();
+            let active_solver = solver.unwrap_or(&default_solver);
+            if let Some(ctx) = solver_ctx {
+                active_solver.solve_with_context(
+                    hole,
+                    board,
+                    round,
+                    history,
+                    my_player,
+                    contributions,
+                    raises_this_round,
+                    ctx,
+                )
+            } else {
+                active_solver.solve_with_state(
+                    hole,
+                    board,
+                    round,
+                    history,
+                    my_player,
+                    contributions,
+                    raises_this_round,
+                )
+            }
         } else {
-            /* 2. Abstract Strategy Model Lookup with Fallback (rich key first, then exact key) */
+            /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
             let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
             let exact_key = get_holdem_infoset_key(hole, board, round, history);
             if let Some(p) = strategy_map
@@ -78,65 +104,22 @@ pub fn decide_action(
                 .or_else(|| strategy_map.get(&exact_key))
             {
                 p.clone()
+            } else if let Some(idx) = strategy_index {
+                idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
             } else {
-                let prefix = if round == 1 {
-                    let (_, name) = preflop_bucket(hole[0], hole[1]);
-                    format!("P:{}/", name)
-                } else {
-                    let bucket = postflop_equity_bucket(hole, board);
-                    let r_code = match round {
-                        2 => "F",
-                        3 => "T",
-                        4 => "R",
-                        _ => "X",
-                    };
-                    format!("{}:B{:02}", r_code, bucket)
-                };
-
-                let matches: Vec<&Vec<f64>> = strategy_map
-                    .iter()
-                    .filter(|(k, _)| {
-                        if round == 1 {
-                            k.starts_with(&prefix)
-                        } else {
-                            k.contains(&prefix)
-                        }
-                    })
-                    .map(|(_, v)| v)
-                    .collect();
-
                 let fallback =
                     get_holdem_fallback_strategy(hole, board, round, to_call, pot, &legal_u8);
-
-                if !matches.is_empty() {
-                    let n = matches.len() as f64;
-                    let mut avg = [0.0f64; 6];
-                    for vec in matches {
-                        for (i, &val) in vec.iter().enumerate().take(6) {
-                            avg[i] += val / n;
-                        }
-                    }
-                    let mut blended = vec![0.0f64; 6];
-                    for &a in &legal_u8 {
-                        let idx = a as usize;
-                        if idx < 6 {
-                            blended[idx] = 0.55 * avg[idx] + 0.45 * fallback[idx];
-                        }
-                    }
-                    blended
-                } else {
-                    fallback.to_vec()
-                }
+                fallback.to_vec()
             }
         };
 
     /* 3. Action Selection via Purified Strategy Sampling with Opponent Exploitation and All-in Defense */
     let mut rng = rand::thread_rng();
-    let chosen_idx = tracker.select_action_purified(
+    let chosen_idx = tracker.select_action_purified_round(
         &raw_probs,
         &legal_u8,
         current_bucket,
-        round == 1,
+        round,
         to_call,
         &mut rng,
     ) as usize;
@@ -149,11 +132,11 @@ pub fn decide_action(
         suits.iter().any(|&s| s >= 2)
     };
 
-    if let Some(res) = map_action_index(chosen_idx, legal, to_call, pot, is_wet) {
+    if let Some(res) = map_action_index_round(chosen_idx, legal, to_call, pot, is_wet, round) {
         return res;
     }
 
-    /* Safe default: Check -> Call -> Fold */
+    /* Safe default: Check (if to_call == 0) -> Call -> Check -> Fold */
     if to_call == 0 && has("check") {
         ("check".to_string(), 0)
     } else if has("call") {
@@ -163,4 +146,38 @@ pub fn decide_action(
     } else {
         ("fold".to_string(), 0)
     }
+}
+
+/* Convenience wrapper for tests or callers that do not track detailed seats/chips */
+#[allow(clippy::too_many_arguments)]
+pub fn decide_action_simple(
+    hole: &[Card; 2],
+    board: &[Card],
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    strategy_map: &HashMap<String, Vec<f64>>,
+    subgame_search: bool,
+    tracker: &OpponentTracker,
+    history: &[RoundHistory; 4],
+) -> (String, i32) {
+    let my_contrib = ((pot - to_call) / 2).max(10);
+    let opp_contrib = my_contrib + to_call;
+    decide_action(
+        hole,
+        board,
+        legal,
+        to_call,
+        pot,
+        strategy_map,
+        subgame_search,
+        tracker,
+        history,
+        0,
+        [my_contrib, opp_contrib],
+        0,
+        None,
+        None,
+        None,
+    )
 }
