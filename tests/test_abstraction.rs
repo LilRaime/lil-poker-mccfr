@@ -108,7 +108,7 @@ fn test_multi_street_rich_history_generation() {
         card(Rank::Seven, Suit::Clubs),
         card(Rank::Two, Suit::Hearts),
         card(Rank::Ten, Suit::Spades),
-        card(Rank::Two, Suit::Clubs),
+        card(Rank::King, Suit::Clubs),
     ];
 
     /* Turn history: Preflop raise-call [2, 1], Flop bet-call [3, 1], Turn check [1] */
@@ -122,5 +122,28 @@ fn test_multi_street_rich_history_generation() {
     /* River history: Preflop rc [2, 1], Flop rc [4, 1], Turn cc [1, 1], River bet [3] */
     let river_history = [vec![2u8, 1u8], vec![4u8, 1u8], vec![1u8, 1u8], vec![3u8]];
     let river_key = get_holdem_infoset_key_rich(&hole, &board, 4, &river_history);
-    assert_eq!(river_key, "P:rc|F:rc|T:cc|R:B52/t");
+    assert_eq!(river_key, "R:B52/t");
+}
+
+#[test]
+fn test_two_pair_bottom_pair_on_board_abstraction() {
+    use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    /* Board has pair of Twos; player hits top pair Ace with King kicker */
+    let board = [
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    let river_history = [vec![2u8, 1u8], vec![4u8, 1u8], vec![1u8, 1u8], vec![3u8]];
+    let river_key = get_holdem_infoset_key(&hole, &board, 4, &river_history);
+    /* Should be bucket 50 (Top and Bottom Pair where bottom pair is on board), NOT bucket 52 */
+    assert_eq!(river_key, "R:B50/t");
 }

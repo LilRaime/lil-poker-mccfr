@@ -173,11 +173,18 @@ pub fn evaluate_7cards(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> u64 {
             0
         };
         let k1 = if rem_mask != 0 {
+            let r = 15 - rem_mask.leading_zeros() as u64;
+            rem_mask &= !(1 << r);
+            r
+        } else {
+            0
+        };
+        let k2 = if rem_mask != 0 {
             15 - rem_mask.leading_zeros() as u64
         } else {
             0
         };
-        return (1 << 32) | (p << 16) | (k0 << 8) | k1;
+        return (1 << 32) | (p << 16) | (k0 << 12) | (k1 << 8) | (k2 << 4);
     }
 
     /* 10. High Card */

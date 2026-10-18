@@ -170,3 +170,60 @@ fn test_opponent_reach_with_strategy_map() {
         remaining.len() * (remaining.len() - 1) / 2
     );
 }
+
+#[test]
+fn test_opponent_reach_distribution_position_aware() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::King, Suit::Clubs),
+        card(Rank::Queen, Suit::Diamonds),
+    ];
+    let board = [
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    /* History: Action 0 (Player 0) = Raise (2), Action 1 (Player 1) = Call (1) */
+    let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
+
+    /* If my_player == 0: Bot raised, opponent called. Opponent range should be CALLER range */
+    let dist_bot_raised =
+        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(0));
+
+    /* If my_player == 1: Opponent raised, bot called. Opponent range should be RAISER range */
+    let dist_opp_raised =
+        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(1));
+
+    /* Find weight for a premium hand like AA */
+    let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
+    let idx_aa = dist_bot_raised
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == aa_pair[0] && c[1] == aa_pair[1]) || (c[0] == aa_pair[1] && c[1] == aa_pair[0])
+        })
+        .expect("AA combo must exist in remaining deck");
+
+    let w_aa_caller = dist_bot_raised.weights[idx_aa];
+    let w_aa_raiser = dist_opp_raised.weights[idx_aa];
+
+    /* Raiser has full weight on AA (1.0), whereas caller has discounted slowplay weight (0.35) */
+    assert!(
+        w_aa_raiser > w_aa_caller,
+        "AA weight for raiser ({}) must exceed AA weight for caller ({})",
+        w_aa_raiser,
+        w_aa_caller
+    );
+    assert_eq!(w_aa_raiser, 1.0);
+    assert_eq!(w_aa_caller, 0.35);
+}

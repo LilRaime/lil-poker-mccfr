@@ -139,7 +139,7 @@ impl HoldemMCCFRSolver {
                     let p_disc = t_alpha / (t_alpha + 1.0);
                     let t_beta = t.powf(0.5);
                     let n_disc = t_beta / (t_beta + 1.0);
-                    let w = (t / (t + 1.0)).powf(2.0);
+                    let w = (t / iterations as f64).powf(2.0);
                     (p_disc, n_disc, w)
                 } else {
                     let linear_weight = if iter_idx < warmup {
@@ -407,18 +407,97 @@ impl HoldemMCCFRSolver {
     pub fn export_strategy_f32(
         &self,
     ) -> std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> {
+        self.export_strategy_filtered_f32(false, 0)
+    }
+
+    /* Strategy export with optional river pruning and turn action pruning */
+    pub fn export_strategy_filtered_f32(
+        &self,
+        prune_river: bool,
+        max_turn_actions: usize,
+    ) -> std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> {
         self.nodes
             .iter()
-            .map(|entry| {
-                let key = entry.value().key.clone();
+            .filter_map(|entry| {
+                let key = &entry.value().key;
+                if prune_river || max_turn_actions > 0 {
+                    let street = if key.starts_with("P:") && !key.contains('|') {
+                        1
+                    } else if key.contains("F:B") {
+                        2
+                    } else if key.contains("T:B") {
+                        3
+                    } else if key.contains("R:B") {
+                        4
+                    } else {
+                        0
+                    };
+
+                    match street {
+                        1 => {}
+                        2 => {
+                            if key.starts_with("P:") {
+                                if let Some(end) = key.find('|') {
+                                    if key[2..end].len() > 3 {
+                                        return None;
+                                    }
+                                }
+                            }
+                        }
+                        3 => {
+                            if key.starts_with("P:") {
+                                if let Some(end) = key.find('|') {
+                                    if key[2..end].len() > 3 {
+                                        return None;
+                                    }
+                                }
+                            }
+                            if max_turn_actions > 0 {
+                                if let Some(pos) = key.find("T:B") {
+                                    let after = &key[pos..];
+                                    if let Some(slash) = after.find('/') {
+                                        let turn_act_len = after[slash + 1..].len();
+                                        if turn_act_len > max_turn_actions {
+                                            return None;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        4 if prune_river => return None,
+                        _ => {}
+                    }
+                }
+
                 let avg = entry.value().node.get_average_strategy();
                 let mut f32_arr = [0.0f32; HOLDEM_NUM_ACTIONS];
                 for i in 0..HOLDEM_NUM_ACTIONS {
                     f32_arr[i] = avg[i] as f32;
                 }
-                (key, f32_arr)
+                Some((key.clone(), f32_arr))
             })
             .collect()
+    }
+
+    pub fn save_strategy_to_file_filtered(
+        &self,
+        path: &str,
+        prune_river: bool,
+        max_turn_actions: usize,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let strategy_f32 = self.export_strategy_filtered_f32(prune_river, max_turn_actions);
+        let count = strategy_f32.len();
+        bincode::serialize_into(&mut writer, &strategy_f32)?;
+        use std::io::Write;
+        writer.flush()?;
+        Ok(count)
     }
 
     pub fn save_strategy_to_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
@@ -429,10 +508,8 @@ impl HoldemMCCFRSolver {
         }
         let file = std::fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
-        let is_bin = path.ends_with(".bin")
-            || path.ends_with(".bincode")
-            || path.contains(".bin.")
-            || path.contains(".bincode.");
+        let is_bin =
+            !path.ends_with(".json") && !path.contains(".json.") && !path.contains(".tmp.json");
         let node_count = if is_bin {
             let strategy_f32 = self.export_strategy_f32();
             let count = strategy_f32.len();
@@ -467,7 +544,7 @@ impl HoldemMCCFRSolver {
         let is_json_content =
             prefix[0] == b'{' || prefix[0] == b'[' || prefix[0] == b' ' || prefix[0] == b'\n';
 
-        if !is_json_content && (path.ends_with(".bin") || path.ends_with(".bincode")) {
+        if !is_json_content {
             let file_bincode = std::fs::File::open(path)?;
             let mut reader = std::io::BufReader::new(file_bincode);
             if let Ok(raw_f32) = bincode::deserialize_from::<
@@ -483,16 +560,20 @@ impl HoldemMCCFRSolver {
             }
             let file_retry = std::fs::File::open(path)?;
             let reader_retry = std::io::BufReader::new(file_retry);
-            let strat: std::collections::HashMap<String, Vec<f64>> =
-                bincode::deserialize_from(reader_retry)?;
-            Ok(strat)
-        } else {
-            let file_json = std::fs::File::open(path)?;
-            let reader_json = std::io::BufReader::new(file_json);
-            let strat: std::collections::HashMap<String, Vec<f64>> =
-                serde_json::from_reader(reader_json)?;
-            Ok(strat)
+            if let Ok(strat) = bincode::deserialize_from::<
+                _,
+                std::collections::HashMap<String, Vec<f64>>,
+            >(reader_retry)
+            {
+                return Ok(strat);
+            }
         }
+
+        let file_json = std::fs::File::open(path)?;
+        let reader_json = std::io::BufReader::new(file_json);
+        let strat: std::collections::HashMap<String, Vec<f64>> =
+            serde_json::from_reader(reader_json)?;
+        Ok(strat)
     }
 }
 

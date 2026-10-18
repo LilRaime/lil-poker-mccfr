@@ -126,12 +126,27 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             out.push(action_to_char(a));
         }
+    } else if round == 4 {
+        /* Compact River: R:B<bucket>/<river_actions>
+         * Eliminates the 11.8M combinatorial explosion on river while keeping
+         * rich preflop/flop/turn context. Real-time Subgame Solver re-solves river. */
+        let bucket = postflop_equity_bucket(hole, board);
+        out.push_str("R:B");
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+        for &a in history.actions_in_round(3) {
+            out.push(action_to_char(a));
+        }
     } else {
         let pf_actions = history.actions_in_round(0);
         if !pf_actions.is_empty() {
             out.push_str("P:");
             for &a in pf_actions {
-                out.push(action_to_char(a));
+                out.push(action_to_char_coarse(a));
             }
             out.push('|');
         }
@@ -145,23 +160,8 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
                 out.push('|');
             }
         }
-        if round >= 4 {
-            let t_actions = history.actions_in_round(2);
-            if !t_actions.is_empty() {
-                out.push_str("T:");
-                for &a in t_actions {
-                    out.push(action_to_char_coarse(a));
-                }
-                out.push('|');
-            }
-        }
         let bucket = postflop_equity_bucket(hole, board);
-        let round_code = match round {
-            2 => "F:B",
-            3 => "T:B",
-            4 => "R:B",
-            _ => "X:B",
-        };
+        let round_code = if round == 2 { "F:B" } else { "T:B" };
         out.push_str(round_code);
         if bucket < 10 {
             out.push('0');
@@ -252,12 +252,26 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             h = fnv1a_combine(h, a);
         }
+    } else if round == 4 {
+        h = fnv1a_combine(h, 4);
+        h = fnv1a_combine(h, b':');
+        let bucket = postflop_equity_bucket(hole, board);
+        h = fnv1a_combine(h, bucket as u8);
+        h = fnv1a_combine(h, b'/');
+        for &a in history.actions_in_round(3) {
+            h = fnv1a_combine(h, a);
+        }
     } else {
         let pf_actions = history.actions_in_round(0);
         if !pf_actions.is_empty() {
             h = fnv1a_combine(h, b'P');
             for &a in pf_actions {
-                h = fnv1a_combine(h, a);
+                let byte = match a {
+                    0 => b'f',
+                    1 => b'c',
+                    _ => b'r',
+                };
+                h = fnv1a_combine(h, byte);
             }
             h = fnv1a_combine(h, b'|');
         }
@@ -266,17 +280,12 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
             if !f_actions.is_empty() {
                 h = fnv1a_combine(h, b'F');
                 for &a in f_actions {
-                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
-                }
-                h = fnv1a_combine(h, b'|');
-            }
-        }
-        if round >= 4 {
-            let t_actions = history.actions_in_round(2);
-            if !t_actions.is_empty() {
-                h = fnv1a_combine(h, b'T');
-                for &a in t_actions {
-                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                    let byte = match a {
+                        0 => b'f',
+                        1 => b'c',
+                        _ => b'r',
+                    };
+                    h = fnv1a_combine(h, byte);
                 }
                 h = fnv1a_combine(h, b'|');
             }
@@ -312,12 +321,25 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             h = fnv1a_combine(h, a);
         }
+    } else if round == 4 {
+        h = fnv1a_combine(h, 4);
+        h = fnv1a_combine(h, b':');
+        h = fnv1a_combine(h, bucket);
+        h = fnv1a_combine(h, b'/');
+        for &a in history.actions_in_round(3) {
+            h = fnv1a_combine(h, a);
+        }
     } else {
         let pf_actions = history.actions_in_round(0);
         if !pf_actions.is_empty() {
             h = fnv1a_combine(h, b'P');
             for &a in pf_actions {
-                h = fnv1a_combine(h, a);
+                let byte = match a {
+                    0 => b'f',
+                    1 => b'c',
+                    _ => b'r',
+                };
+                h = fnv1a_combine(h, byte);
             }
             h = fnv1a_combine(h, b'|');
         }
@@ -326,17 +348,12 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
             if !f_actions.is_empty() {
                 h = fnv1a_combine(h, b'F');
                 for &a in f_actions {
-                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
-                }
-                h = fnv1a_combine(h, b'|');
-            }
-        }
-        if round >= 4 {
-            let t_actions = history.actions_in_round(2);
-            if !t_actions.is_empty() {
-                h = fnv1a_combine(h, b'T');
-                for &a in t_actions {
-                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                    let byte = match a {
+                        0 => b'f',
+                        1 => b'c',
+                        _ => b'r',
+                    };
+                    h = fnv1a_combine(h, byte);
                 }
                 h = fnv1a_combine(h, b'|');
             }

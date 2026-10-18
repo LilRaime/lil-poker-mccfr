@@ -282,19 +282,94 @@ pub fn lookup_strategy_hierarchical<'a, V>(
 ) -> Option<&'a V> {
     use crate::cfr::abstraction::{get_holdem_infoset_key, get_holdem_infoset_key_rich};
 
-    // 1. Exact rich key (e.g. "P:rc|F:B36/c")
+    /* 1. Exact rich key (e.g. "P:rc|F:B36/c") */
     let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
     if let Some(v) = get_fn(&rich_key) {
         return Some(v);
     }
 
-    // 2. Exact compact key (for non-rich models, e.g. "F:B36/c")
+    /* 2. Exact compact key (for non-rich models, e.g. "F:B36/c") */
     let exact_key = get_holdem_infoset_key(hole, board, round, history);
     if let Some(v) = get_fn(&exact_key) {
         return Some(v);
     }
 
-    // 3. For postflop (round >= 2), test canonical preflop lines with current street action
+    /* 3. For postflop (round >= 2), test canonical preflop lines with current street action */
+    if round == 2 {
+        let rc_key = format!("P:rc|{}", exact_key);
+        if let Some(v) = get_fn(&rc_key) {
+            return Some(v);
+        }
+        let cc_key = format!("P:cc|{}", exact_key);
+        if let Some(v) = get_fn(&cc_key) {
+            return Some(v);
+        }
+    } else if round == 3 {
+        let rc_f_c = format!("P:rc|F:c|{}", exact_key);
+        if let Some(v) = get_fn(&rc_f_c) {
+            return Some(v);
+        }
+        let cc_f_c = format!("P:cc|F:c|{}", exact_key);
+        if let Some(v) = get_fn(&cc_f_c) {
+            return Some(v);
+        }
+        let rc_key = format!("P:rc|{}", exact_key);
+        if let Some(v) = get_fn(&rc_key) {
+            return Some(v);
+        }
+    }
+
+    if round >= 2 {
+        /* 4. Street action prefix truncation */
+        if let Some(slash_idx) = exact_key.find('/') {
+            let street_prefix = &exact_key[..slash_idx];
+            let acts = &exact_key[slash_idx + 1..];
+            for end in (0..acts.len()).rev() {
+                let sub_acts = &acts[..end];
+                let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
+                if round == 3 {
+                    let t_rc_f_c = format!("P:rc|F:c|{}", truncated_exact);
+                    if let Some(v) = get_fn(&t_rc_f_c) {
+                        return Some(v);
+                    }
+                }
+                let t_rc = format!("P:rc|{}", truncated_exact);
+                if let Some(v) = get_fn(&t_rc) {
+                    return Some(v);
+                }
+                let t_cc = format!("P:cc|{}", truncated_exact);
+                if let Some(v) = get_fn(&t_cc) {
+                    return Some(v);
+                }
+                if let Some(v) = get_fn(&truncated_exact) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+pub fn lookup_strategy_hierarchical_owned<V>(
+    get_fn: impl Fn(&str) -> Option<V>,
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
+) -> Option<V> {
+    use crate::cfr::abstraction::{get_holdem_infoset_key, get_holdem_infoset_key_rich};
+
+    let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
+    if let Some(v) = get_fn(&rich_key) {
+        return Some(v);
+    }
+
+    let exact_key = get_holdem_infoset_key(hole, board, round, history);
+    if let Some(v) = get_fn(&exact_key) {
+        return Some(v);
+    }
+
     if round >= 2 {
         let rc_key = format!("P:rc|{}", exact_key);
         if let Some(v) = get_fn(&rc_key) {
@@ -305,7 +380,6 @@ pub fn lookup_strategy_hierarchical<'a, V>(
             return Some(v);
         }
 
-        // 4. Street action prefix truncation
         if let Some(slash_idx) = exact_key.find('/') {
             let street_prefix = &exact_key[..slash_idx];
             let acts = &exact_key[slash_idx + 1..];

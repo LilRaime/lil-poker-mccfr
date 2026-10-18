@@ -221,12 +221,13 @@ impl SubgameSolver {
         let effective_iterations = self.compute_budget(round, contributions, my_player);
 
         /* Construct explicit Bayesian reach range distribution across all remaining combos */
-        let reach_dist = OpponentReachDistribution::build_with_strategy_map(
+        let reach_dist = OpponentReachDistribution::build_detailed(
             &remaining_deck,
             board,
             round,
             history,
             strategy_map,
+            Some(my_player),
         );
 
         /* Run local CFR+ iterations with O(log K) Bayesian reach sampling */
@@ -425,7 +426,7 @@ impl OpponentReachDistribution {
         round: u8,
         history: &H,
     ) -> Self {
-        Self::build_with_strategy_map(remaining_deck, board, round, history, None)
+        Self::build_detailed(remaining_deck, board, round, history, None, None)
     }
 
     pub fn build_with_strategy_map<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
@@ -434,6 +435,17 @@ impl OpponentReachDistribution {
         round: u8,
         history: &H,
         strategy_map: Option<&HashMap<String, Vec<f64>>>,
+    ) -> Self {
+        Self::build_detailed(remaining_deck, board, round, history, strategy_map, None)
+    }
+
+    pub fn build_detailed<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        remaining_deck: &[Card],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        strategy_map: Option<&HashMap<String, Vec<f64>>>,
+        my_player: Option<usize>,
     ) -> Self {
         use crate::cfr::abstraction::detect_draws;
         use crate::cfr::abstraction::preflop_bucket;
@@ -467,17 +479,59 @@ impl OpponentReachDistribution {
         let mut combos = Vec::with_capacity(num_combos);
         let mut weights = Vec::with_capacity(num_combos);
 
-        let pf_actions = history.actions_in_round(0);
-        let opp_raised_pf = pf_actions.iter().any(|&a| a >= 2);
-        let opp_called_pf = pf_actions.contains(&1);
+        let (opp_raised_pf, opp_called_pf) = if let Some(mp) = my_player {
+            let opp = 1 - mp;
+            let actions = history.actions_in_round(0);
+            let opp_actions: Vec<u8> = actions
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| idx % 2 == opp)
+                .map(|(_, &a)| a)
+                .collect();
+            (
+                opp_actions.iter().any(|&a| a >= 2),
+                opp_actions.contains(&1),
+            )
+        } else {
+            let actions = history.actions_in_round(0);
+            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+        };
 
-        let flop_actions = history.actions_in_round(1);
-        let opp_raised_flop = flop_actions.iter().any(|&a| a >= 2);
-        let opp_called_flop = flop_actions.contains(&1);
+        let (opp_raised_flop, opp_called_flop) = if let Some(mp) = my_player {
+            let opp = 1 - mp;
+            let actions = history.actions_in_round(1);
+            let opp_actions: Vec<u8> = actions
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| idx % 2 == opp)
+                .map(|(_, &a)| a)
+                .collect();
+            (
+                opp_actions.iter().any(|&a| a >= 2),
+                opp_actions.contains(&1),
+            )
+        } else {
+            let actions = history.actions_in_round(1);
+            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+        };
 
-        let turn_actions = history.actions_in_round(2);
-        let opp_raised_turn = turn_actions.iter().any(|&a| a >= 2);
-        let opp_called_turn = turn_actions.contains(&1);
+        let (opp_raised_turn, opp_called_turn) = if let Some(mp) = my_player {
+            let opp = 1 - mp;
+            let actions = history.actions_in_round(2);
+            let opp_actions: Vec<u8> = actions
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| idx % 2 == opp)
+                .map(|(_, &a)| a)
+                .collect();
+            (
+                opp_actions.iter().any(|&a| a >= 2),
+                opp_actions.contains(&1),
+            )
+        } else {
+            let actions = history.actions_in_round(2);
+            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+        };
 
         let mut sum_w = 0.0f64;
 

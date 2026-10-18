@@ -14,7 +14,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use super::decision::decide_action;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{parse_live_state, process_showdown, LiveRoundTracker};
-use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
 
@@ -79,9 +78,14 @@ pub async fn run_live_bot(
     println!("Room ID:    {}", room);
     println!("Bot Name:   {}", name);
 
-    /* 1. Load Strategy Model */
+    /* 1. Load Strategy Model (Target: <= 400MB RAM) */
     let strategy_map = load_live_strategy(strategy_path);
-    println!("Loaded strategy with {} infosets.", strategy_map.len());
+    let ram_mb = (strategy_map.len() * 140) as f64 / (1024.0 * 1024.0);
+    println!(
+        "Loaded strategy with {} infosets (RAM footprint: ~{:.1} MB).",
+        strategy_map.len(),
+        ram_mb
+    );
 
     /* 2. Guest Login */
     let jar = Arc::new(reqwest::cookie::Jar::default());
@@ -158,9 +162,8 @@ pub async fn run_live_bot(
     let (_, mut read) = ws_stream.split();
     let mut tracker = OpponentTracker::new();
     let mut last_action_key = String::new();
-    let strategy_index = Arc::new(StrategyLookupIndex::build_from_slice_map(&strategy_map));
     let subgame_solver = Arc::new(SubgameSolver::default());
-    let strategy_map = Arc::new(strategy_map);
+    let strategy_arc = Arc::new(strategy_map);
 
     let mut round_tracker = LiveRoundTracker::new();
 
@@ -232,8 +235,7 @@ pub async fn run_live_bot(
         let (engine_contributions, raises_this_round) =
             round_tracker.compute_engine_contributions(&snapshot);
 
-        let strat_map = Arc::clone(&strategy_map);
-        let strat_idx = Arc::clone(&strategy_index);
+        let strat_clone = Arc::clone(&strategy_arc);
         let solver_arc = Arc::clone(&subgame_solver);
         let subgame = subgame_search;
         let tracker_clone = tracker.clone();
@@ -253,14 +255,14 @@ pub async fn run_live_bot(
                 &legal_actions,
                 to_call,
                 pot,
-                &strat_map,
+                &strat_clone,
                 subgame,
                 &tracker_clone,
                 &history_clone,
                 my_player,
                 engine_contributions,
                 raises_this_round,
-                Some(&strat_idx),
+                None,
                 Some(&solver_arc),
                 Some(&mut ctx),
             )

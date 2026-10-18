@@ -160,7 +160,7 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
         2 => {
             /* Two Pair */
             let top_pair = ((score >> 16) & 0xF) as usize;
-            let bottom_pair = (score & 0xF) as usize;
+            let bottom_pair = ((score >> 8) & 0xF) as usize;
             let is_pocket_pair = hole[0].rank == hole[1].rank;
             let hit_top =
                 (hole[0].rank as usize == top_pair) || (hole[1].rank as usize == top_pair);

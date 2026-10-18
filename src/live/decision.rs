@@ -96,14 +96,14 @@ pub fn decide_action(
             }
         } else {
             /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
-            if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical(
-                |k| strategy_map.get(k),
+            if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned(
+                |k| strategy_map.get(k).cloned(),
                 hole,
                 board,
                 round,
                 history,
             ) {
-                p.clone()
+                p
             } else if let Some(idx) = strategy_index {
                 idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
             } else {

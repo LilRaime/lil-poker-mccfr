@@ -17,7 +17,7 @@ struct Args {
     log_every: u64,
 
     /* Output file path for strategy */
-    #[arg(short, long, default_value = "models/holdem_abstract_strategy.json")]
+    #[arg(short, long, default_value = "models/holdem_abstract_strategy.bin")]
     save_path: String,
 
     /* Save checkpoint every N iterations */
@@ -25,20 +25,28 @@ struct Args {
     checkpoint_every: u64,
 
     /* Also keep versioned checkpoint files */
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     keep_checkpoints: bool,
 
     /* Retain previous-round betting context (distinguish 3-bet from limp pots) */
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     rich_history: bool,
 
     /* Regret-based pruning (speeds up training 2-3x by skipping sub-optimal branches) */
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pruning: bool,
 
     /* Discounted CFR (DCFR, Brown & Sandholm 2019, used in Pluribus) */
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     dcfr: bool,
+
+    /* Prune river nodes upon saving (optimizes model size for bots <= 400MB RAM) */
+    #[arg(long, default_value_t = false)]
+    prune_river: bool,
+
+    /* Maximum actions retained on Turn upon saving (0 = unlimited) */
+    #[arg(long, default_value_t = 3)]
+    max_turn_actions: usize,
 }
 
 fn get_checkpoint_path(save_path: &str, done: u64) -> String {
@@ -67,13 +75,20 @@ fn get_checkpoint_path(save_path: &str, done: u64) -> String {
 fn save_atomic(
     solver: &HoldemMCCFRSolver,
     target_path: &str,
+    prune_river: bool,
+    max_turn_actions: usize,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let tmp_path = format!(
-        "{}.{}.tmp.bin",
-        target_path.strip_suffix(".bin").unwrap_or(target_path),
-        std::process::id()
-    );
-    let count = solver.save_strategy_to_file(&tmp_path)?;
+    let ext = if target_path.ends_with(".json") {
+        "tmp.json"
+    } else {
+        "tmp.bin"
+    };
+    let tmp_path = format!("{}.{}.{}", target_path, std::process::id(), ext);
+    let count = if prune_river || max_turn_actions > 0 {
+        solver.save_strategy_to_file_filtered(&tmp_path, prune_river, max_turn_actions)?
+    } else {
+        solver.save_strategy_to_file(&tmp_path)?
+    };
     std::fs::rename(&tmp_path, target_path)?;
     Ok(count)
 }
@@ -129,7 +144,7 @@ fn main() {
                 save_path.clone()
             };
 
-            match save_atomic(s, &ckpt_path) {
+            match save_atomic(s, &ckpt_path, args.prune_river, args.max_turn_actions) {
                 Ok(count) => {
                     if keep_checkpoints && ckpt_path != save_path {
                         let _ = std::fs::copy(&ckpt_path, &save_path);
@@ -156,9 +171,15 @@ fn main() {
     );
 
     let elapsed = start.elapsed();
-    let node_count = save_atomic(&solver, &args.save_path).expect("Failed to save strategy file");
+    let node_count = save_atomic(
+        &solver,
+        &args.save_path,
+        args.prune_river,
+        args.max_turn_actions,
+    )
+    .expect("Failed to save strategy file");
 
-    if args.keep_checkpoints {
+    if args.checkpoint_every > 0 && args.keep_checkpoints {
         let final_ckpt = get_checkpoint_path(&args.save_path, args.iterations);
         if final_ckpt != args.save_path {
             let _ = std::fs::copy(&args.save_path, &final_ckpt);

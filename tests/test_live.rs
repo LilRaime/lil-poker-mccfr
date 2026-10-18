@@ -526,8 +526,8 @@ fn test_live_street_transition_closes_preflop_for_rich_keys() {
     ];
     let rich_key = get_holdem_infoset_key_rich(&hole, &board, 2, &tracker.live_history);
     assert!(
-        rich_key.starts_with("P:hc|F:B"),
-        "Flop key must start with P:hc|F:B, got: {}",
+        rich_key.starts_with("P:rc|F:B"),
+        "Flop key must start with P:rc|F:B, got: {}",
         rich_key
     );
 

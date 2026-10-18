@@ -438,3 +438,34 @@ fn test_bitwise_evaluate_7cards_tiebreakers() {
     assert_eq!((score_3p1 >> 8) & 0xFF, 11, "Second pair King (11)");
     assert_eq!(score_3p1 & 0xFF, 10, "Kicker Queen (10)");
 }
+
+#[test]
+fn test_one_pair_third_kicker_tiebreaker() {
+    let card = |rank, suit| Card { rank, suit };
+    let board = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Queen, Suit::Diamonds),
+        card(Rank::Two, Suit::Clubs),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    let hole1 = [card(Rank::Ace, Suit::Clubs), card(Rank::Nine, Suit::Spades)];
+    let hole2 = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::Eight, Suit::Spades),
+    ];
+
+    let score1 = evaluate_7cards(&hole1, &board);
+    let score2 = evaluate_7cards(&hole2, &board);
+
+    assert_eq!(score1 >> 32, 1, "Must be One Pair category 1");
+    assert_eq!(score2 >> 32, 1, "Must be One Pair category 1");
+
+    /* Both hands have AA KQ, but hole1 has 9 kicker while hole2 has 8 kicker */
+    assert!(
+        score1 > score2,
+        "AA-KQ9 (score1: {:x}) must defeat AA-KQ8 (score2: {:x}) by 3rd kicker",
+        score1,
+        score2
+    );
+}
