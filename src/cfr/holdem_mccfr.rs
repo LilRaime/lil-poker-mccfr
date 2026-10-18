@@ -12,10 +12,9 @@ use crate::game::holdem::TexasHoldemGame;
 
 pub use crate::game::config::HOLDEM_NUM_ACTIONS;
 
-#[derive(Clone)]
 pub struct InfosetEntry {
     pub key: String,
-    pub node: Arc<InfosetNode>,
+    pub node: Box<InfosetNode>,
 }
 
 pub struct HoldemMCCFRSolver {
@@ -37,8 +36,21 @@ impl HoldemMCCFRSolver {
     }
 
     pub fn with_config(rich_history: bool, pruning: bool, dcfr: bool) -> Self {
+        Self::with_options(rich_history, pruning, dcfr, 1_000_000, 2048)
+    }
+
+    pub fn with_options(
+        rich_history: bool,
+        pruning: bool,
+        dcfr: bool,
+        capacity: usize,
+        shard_amount: usize,
+    ) -> Self {
         HoldemMCCFRSolver {
-            nodes: Arc::new(DashMap::with_capacity_and_shard_amount(500_000, 1024)),
+            nodes: Arc::new(DashMap::with_capacity_and_shard_amount(
+                capacity,
+                shard_amount,
+            )),
             rich_history,
             pruning,
             dcfr,
@@ -47,38 +59,55 @@ impl HoldemMCCFRSolver {
 
     /* Fast get or create node by u64 hash; key string generated lazily only on insertion */
     #[inline(always)]
-    fn get_node<F>(&self, hash: u64, make_key: F) -> Arc<InfosetNode>
+    fn get_node<F>(&self, hash: u64, make_key: F) -> &InfosetNode
     where
         F: FnOnce() -> String,
     {
         if let Some(entry) = self.nodes.get(&hash) {
-            return Arc::clone(&entry.node);
+            let ptr: *const InfosetNode = &*entry.node;
+            return unsafe { &*ptr };
         }
-        self.nodes
-            .entry(hash)
-            .or_insert_with(|| InfosetEntry {
-                key: make_key(),
-                node: Arc::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)),
-            })
-            .node
-            .clone()
+        let entry = self.nodes.entry(hash).or_insert_with(|| InfosetEntry {
+            key: make_key(),
+            node: Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)),
+        });
+        let ptr: *const InfosetNode = &*entry.node;
+        unsafe { &*ptr }
     }
 
     /* Run iterations of parallel Bucketed External Sampling MCCFR */
     pub fn train(&self, iterations: u64, threads: usize, log_every: u64) {
+        self.train_with_checkpoint(iterations, threads, log_every, 0, |_, _| {});
+    }
+
+    /* Run iterations of parallel Bucketed External Sampling MCCFR with optional checkpointing */
+    pub fn train_with_checkpoint<F>(
+        &self,
+        iterations: u64,
+        threads: usize,
+        log_every: u64,
+        checkpoint_every: u64,
+        mut on_checkpoint: F,
+    ) where
+        F: FnMut(u64, &HoldemMCCFRSolver),
+    {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .stack_size(8 * 1024 * 1024)
             .build_global()
             .unwrap_or(());
 
-        let nodes = Arc::clone(&self.nodes);
-        let rich_hist = self.rich_history;
-        let prune = self.pruning;
         let is_dcfr = self.dcfr;
-        let chunk_size = if log_every > 0 { log_every } else { iterations };
+        let chunk_size = match (log_every, checkpoint_every) {
+            (0, 0) => iterations,
+            (0, c) => c,
+            (l, 0) => l,
+            (l, c) => l.min(c),
+        };
         let width = iterations.to_string().len();
         let mut done = 0u64;
+        let mut last_checkpoint = 0u64;
+        let mut last_log = 0u64;
         let train_start = std::time::Instant::now();
         let warmup = (iterations / 10).min(500_000);
         let train_iters_after_warmup = (iterations.saturating_sub(warmup).max(1)) as f64;
@@ -93,7 +122,7 @@ impl HoldemMCCFRSolver {
         while done < iterations {
             let batch_end = (done + chunk_size).min(iterations);
             let batch = done..batch_end;
-            let nodes_ref = Arc::clone(&nodes);
+            let batch_count = batch_end - done;
             let entropy_ref = Arc::clone(&entropy_base);
 
             let batch_start = std::time::Instant::now();
@@ -104,12 +133,6 @@ impl HoldemMCCFRSolver {
                 let mut rng = SmallRng::seed_from_u64(seed);
                 let updating_player = (iter_idx % 2) as usize;
                 let game = TexasHoldemGame::new_random(&mut rng);
-                let solver_ref = HoldemMCCFRSolver {
-                    nodes: Arc::clone(&nodes_ref),
-                    rich_history: rich_hist,
-                    pruning: prune,
-                    dcfr: is_dcfr,
-                };
                 let (pos_disc, neg_disc, weight) = if is_dcfr {
                     let t = (iter_idx + 1) as f64;
                     let t_alpha = t.powf(1.5);
@@ -127,15 +150,16 @@ impl HoldemMCCFRSolver {
                     };
                     (1.0, 0.0, linear_weight)
                 };
-                solver_ref.traverse(&game, updating_player, weight, pos_disc, neg_disc, &mut rng);
+                self.traverse(&game, updating_player, weight, pos_disc, neg_disc, &mut rng);
             });
 
             done = batch_end;
 
-            if log_every > 0 {
+            if log_every > 0 && (done - last_log >= log_every || done == iterations) {
+                last_log = done;
                 let elapsed = train_start.elapsed().as_secs_f64();
                 let batch_secs = batch_start.elapsed().as_secs_f64().max(1e-9);
-                let iter_per_s = chunk_size as f64 / batch_secs;
+                let iter_per_s = batch_count as f64 / batch_secs;
                 let remaining = iterations - done;
                 let eta_secs = remaining as f64 / iter_per_s;
                 let pct = done as f64 / iterations as f64 * 100.0;
@@ -154,18 +178,27 @@ impl HoldemMCCFRSolver {
                 eprintln!(
                     "  [{:>width$}/{} | {:5.1}%]  infosets={:>7}  speed={:.0}k/s  elapsed={}  eta={}",
                     done, iterations, pct,
-                    nodes.len(),
+                    self.nodes.len(),
                     iter_per_s / 1000.0,
                     fmt_secs(elapsed),
                     fmt_secs(eta_secs),
                     width = width,
                 );
             }
+
+            if checkpoint_every > 0
+                && done < iterations
+                && (done - last_checkpoint >= checkpoint_every)
+            {
+                last_checkpoint = done;
+                on_checkpoint(done, self);
+            }
         }
 
         eprintln!();
     }
 
+    #[inline(always)]
     fn traverse(
         &self,
         game: &TexasHoldemGame,
@@ -174,6 +207,30 @@ impl HoldemMCCFRSolver {
         pos_discount: f64,
         neg_discount: f64,
         rng: &mut SmallRng,
+    ) -> f64 {
+        self.traverse_internal(
+            game,
+            updating_player,
+            weight,
+            pos_discount,
+            neg_discount,
+            rng,
+            [0, 0],
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn traverse_internal(
+        &self,
+        game: &TexasHoldemGame,
+        updating_player: usize,
+        weight: f64,
+        pos_discount: f64,
+        neg_discount: f64,
+        rng: &mut SmallRng,
+        cached_buckets: [u8; 2],
+        cached_round: u8,
     ) -> f64 {
         if game.is_terminal() {
             return game.get_returns()[updating_player];
@@ -186,13 +243,32 @@ impl HoldemMCCFRSolver {
             return 0.0;
         }
 
+        let (buckets, buckets_round) = if game.round > 1 && game.round != cached_round {
+            let b0 =
+                crate::cfr::abstraction::postflop_equity_bucket(&game.hole[0], &game.board) as u8;
+            let b1 =
+                crate::cfr::abstraction::postflop_equity_bucket(&game.hole[1], &game.board) as u8;
+            ([b0, b1], game.round)
+        } else {
+            (cached_buckets, cached_round)
+        };
+
         let node = if self.rich_history {
-            let hash = crate::cfr::abstraction::hash_holdem_infoset_key_rich(
-                &game.hole[curr_player],
-                &game.board,
-                game.round,
-                &game.history,
-            );
+            let hash = if game.round > 1 {
+                crate::cfr::abstraction::hash_holdem_infoset_key_rich_with_bucket(
+                    &game.hole[curr_player],
+                    buckets[curr_player],
+                    game.round,
+                    &game.history,
+                )
+            } else {
+                crate::cfr::abstraction::hash_holdem_infoset_key_rich(
+                    &game.hole[curr_player],
+                    &game.board,
+                    game.round,
+                    &game.history,
+                )
+            };
             self.get_node(hash, || {
                 crate::cfr::abstraction::get_holdem_infoset_key_rich(
                     &game.hole[curr_player],
@@ -244,7 +320,7 @@ impl HoldemMCCFRSolver {
             let mut node_util = 0.0f64;
             let mut explored = [true; HOLDEM_NUM_ACTIONS];
 
-            let r_thresh = -300.0;
+            let r_thresh = -200.0;
             let p_prune = 0.95;
 
             for i in 0..n {
@@ -260,13 +336,15 @@ impl HoldemMCCFRSolver {
                 }
 
                 let child = game.apply_action(act);
-                let u = self.traverse(
+                let u = self.traverse_internal(
                     &child,
                     updating_player,
                     weight,
                     pos_discount,
                     neg_discount,
                     rng,
+                    buckets,
+                    buckets_round,
                 );
                 action_utils[i] = u;
                 node_util += legal_probs[i] * u;
@@ -301,13 +379,15 @@ impl HoldemMCCFRSolver {
             }
 
             let child = game.apply_action(chosen_act);
-            self.traverse(
+            self.traverse_internal(
                 &child,
                 updating_player,
                 weight,
                 pos_discount,
                 neg_discount,
                 rng,
+                buckets,
+                buckets_round,
             )
         }
     }
@@ -321,6 +401,98 @@ impl HoldemMCCFRSolver {
                 (key, avg)
             })
             .collect()
+    }
+
+    /* Fast f32-quantized fixed-array strategy export */
+    pub fn export_strategy_f32(
+        &self,
+    ) -> std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> {
+        self.nodes
+            .iter()
+            .map(|entry| {
+                let key = entry.value().key.clone();
+                let avg = entry.value().node.get_average_strategy();
+                let mut f32_arr = [0.0f32; HOLDEM_NUM_ACTIONS];
+                for i in 0..HOLDEM_NUM_ACTIONS {
+                    f32_arr[i] = avg[i] as f32;
+                }
+                (key, f32_arr)
+            })
+            .collect()
+    }
+
+    pub fn save_strategy_to_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let file = std::fs::File::create(path)?;
+        let writer = std::io::BufWriter::new(file);
+        let is_bin = path.ends_with(".bin")
+            || path.ends_with(".bincode")
+            || path.contains(".bin.")
+            || path.contains(".bincode.");
+        let node_count = if is_bin {
+            let strategy_f32 = self.export_strategy_f32();
+            let count = strategy_f32.len();
+            bincode::serialize_into(writer, &strategy_f32)?;
+            count
+        } else {
+            let strategy = self.export_strategy();
+            let count = strategy.len();
+            let rounded: std::collections::HashMap<String, Vec<f64>> = strategy
+                .into_iter()
+                .map(|(k, v)| {
+                    let r: Vec<f64> = v.iter().map(|x| (x * 10000.0).round() / 10000.0).collect();
+                    (k, r)
+                })
+                .collect();
+            serde_json::to_writer_pretty(writer, &rounded)?;
+            count
+        };
+        Ok(node_count)
+    }
+
+    pub fn load_strategy_from_file(
+        path: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Box<dyn std::error::Error>> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let mut prefix = [0u8; 1];
+        let n = file.read(&mut prefix)?;
+        if n == 0 {
+            return Err("Empty strategy file".into());
+        }
+        let is_json_content =
+            prefix[0] == b'{' || prefix[0] == b'[' || prefix[0] == b' ' || prefix[0] == b'\n';
+
+        if !is_json_content && (path.ends_with(".bin") || path.ends_with(".bincode")) {
+            let file_bincode = std::fs::File::open(path)?;
+            let mut reader = std::io::BufReader::new(file_bincode);
+            if let Ok(raw_f32) = bincode::deserialize_from::<
+                _,
+                std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]>,
+            >(&mut reader)
+            {
+                let map = raw_f32
+                    .into_iter()
+                    .map(|(k, v)| (k, v.iter().map(|&x| x as f64).collect()))
+                    .collect();
+                return Ok(map);
+            }
+            let file_retry = std::fs::File::open(path)?;
+            let reader_retry = std::io::BufReader::new(file_retry);
+            let strat: std::collections::HashMap<String, Vec<f64>> =
+                bincode::deserialize_from(reader_retry)?;
+            Ok(strat)
+        } else {
+            let file_json = std::fs::File::open(path)?;
+            let reader_json = std::io::BufReader::new(file_json);
+            let strat: std::collections::HashMap<String, Vec<f64>> =
+                serde_json::from_reader(reader_json)?;
+            Ok(strat)
+        }
     }
 }
 

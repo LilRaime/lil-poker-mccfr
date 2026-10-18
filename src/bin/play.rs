@@ -34,7 +34,7 @@ struct Args {
     delay: u64,
 
     /* Enable Real-Time Subgame Search (Subgame Solving) on Turn/River */
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     subgame_search: bool,
 
     /* Player seat: 'alternate' (default, alternates SB and BB), '0' (SB), or '1' (BB) */
@@ -60,7 +60,13 @@ fn main() {
     if args.game == "holdem" {
         /* Default holdem strategy path if the user didn't override it. */
         let holdem_strategy_path = if args.strategy == "models/leduc_strategy.json" {
-            "models/holdem_abstract_strategy.json".to_string()
+            if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
+                "models/holdem_strategy_distilled.bin".to_string()
+            } else if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
+                "models/holdem_abstract_strategy.bin".to_string()
+            } else {
+                "models/holdem_abstract_strategy.json".to_string()
+            }
         } else {
             args.strategy.clone()
         };

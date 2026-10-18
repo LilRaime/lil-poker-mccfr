@@ -278,3 +278,169 @@ fn test_exploit_guardrails_and_toggles() {
         );
     }
 }
+
+#[test]
+fn test_opponent_positional_and_3bet_tracking() {
+    let mut tracker = OpponentTracker::new();
+
+    /* SB: 10 hands, 8 VPIP, 6 PFR */
+    for _ in 0..6 {
+        tracker.record_preflop_positional(true, true, true);
+    }
+    for _ in 0..2 {
+        tracker.record_preflop_positional(true, true, false);
+    }
+    for _ in 0..2 {
+        tracker.record_preflop_positional(true, false, false);
+    }
+
+    assert_eq!(tracker.sb_total_hands, 10);
+    assert_eq!(tracker.sb_vpip_hands, 8);
+    assert_eq!(tracker.sb_pfr_hands, 6);
+    assert!((tracker.sb_vpip_ratio() - 0.80).abs() < 1e-6);
+    assert!((tracker.sb_pfr_ratio() - 0.60).abs() < 1e-6);
+
+    /* BB: 10 hands, 5 VPIP */
+    for _ in 0..5 {
+        tracker.record_preflop_positional(false, true, false);
+    }
+    for _ in 0..5 {
+        tracker.record_preflop_positional(false, false, false);
+    }
+    assert_eq!(tracker.bb_total_hands, 10);
+    assert_eq!(tracker.bb_vpip_hands, 5);
+    assert!((tracker.bb_vpip_ratio() - 0.50).abs() < 1e-6);
+
+    /* 3-bet facing: faced 4, folded 3 */
+    tracker.record_facing_3bet(true);
+    tracker.record_facing_3bet(true);
+    tracker.record_facing_3bet(true);
+    tracker.record_facing_3bet(false);
+    assert_eq!(tracker.faced_3bet_count, 4);
+    assert_eq!(tracker.fold_to_3bet_count, 3);
+    assert!((tracker.fold_to_3bet_ratio() - 0.75).abs() < 1e-6);
+}
+
+#[test]
+fn test_limper_exploitation_and_float_probe() {
+    let mut tracker = OpponentTracker::new();
+
+    /* SB limper: 10 hands on SB, 8 VPIP, 1 PFR -> 7 limps (limp_ratio = 70%) */
+    for _ in 0..7 {
+        tracker.record_preflop_positional(true, true, false);
+    }
+    tracker.record_preflop_positional(true, true, true);
+    for _ in 0..2 {
+        tracker.record_preflop_positional(true, false, false);
+    }
+    assert!((tracker.sb_limp_ratio() - 0.70).abs() < 1e-6);
+
+    /* Flop passive checker: 8 flop actions, 7 checks, 1 bet -> check_ratio = 87.5% */
+    for _ in 0..7 {
+        tracker.record_action_street(CALL_CHECK, 2, false);
+    }
+    tracker.record_action_street(RAISE_MIN, 2, false);
+    assert!(tracker.flop_check_ratio() > 0.80);
+
+    /* Test 1: Preflop ISO-raise against limper on BB (bucket 40, to_call = 0) */
+    let base_strat = [0.0, 0.60, 0.20, 0.20, 0.0, 0.0];
+    let legal = [CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT];
+    let adj_limp = tracker.adjust_strategy_full(&base_strat, &legal, 40, 1);
+    let total_raise_limp = adj_limp[RAISE_MIN as usize] + adj_limp[RAISE_THIRD_POT as usize];
+    let total_raise_base = base_strat[RAISE_MIN as usize] + base_strat[RAISE_THIRD_POT as usize];
+    assert!(
+        total_raise_limp > total_raise_base,
+        "ISO-raise against frequent limper must increase. Got {} vs base {}",
+        total_raise_limp,
+        total_raise_base
+    );
+
+    /* Test 2: Turn Float/Probe on missed flop c-bet (round 3) */
+    let adj_turn = tracker.adjust_strategy_full(&base_strat, &legal, 30, 3);
+    let total_raise_turn = adj_turn[RAISE_MIN as usize] + adj_turn[RAISE_THIRD_POT as usize];
+    assert!(
+        total_raise_turn > total_raise_base,
+        "Turn probe bet against missed c-bet must increase"
+    );
+}
+
+#[test]
+fn test_river_blocker_detection_and_bluffing() {
+    use lil_poker_mccfr::cfr::abstraction::detect_river_nut_blocker;
+
+    let card = |rank, suit| Card { rank, suit };
+    /* Board with 3 Spades (Ks, 9s, 4s, 2h, 7d) */
+    let board = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Four, Suit::Spades),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Seven, Suit::Diamonds),
+    ];
+
+    /* Hole has Ace of spades -> holding Nut Flush blocker */
+    let hole_with_nut_blocker = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    assert!(
+        detect_river_nut_blocker(&hole_with_nut_blocker, &board),
+        "Ace of spades on 3-spade board must be detected as nut blocker"
+    );
+
+    /* Hole without Ace of spades -> no blocker */
+    let hole_no_blocker = [
+        card(Rank::Queen, Suit::Clubs),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    assert!(
+        !detect_river_nut_blocker(&hole_no_blocker, &board),
+        "Hand without spade should not trigger nut blocker"
+    );
+
+    /* Verify purified selection boosts bluff with blocker */
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(123);
+    let raw_probs = [0.40, 0.40, 0.0, 0.10, 0.10, 0.0];
+    let legal = [FOLD, CALL_CHECK, RAISE_THIRD_POT, RAISE_HALF_POT];
+
+    /* Sample 200 actions with blocker vs without blocker */
+    let mut raises_with_blocker = 0;
+    let mut raises_without_blocker = 0;
+    for _ in 0..200 {
+        let a1 = tracker.select_action_purified_context(
+            &raw_probs,
+            &legal,
+            10,
+            4,
+            0,
+            Some(&hole_with_nut_blocker),
+            Some(&board),
+            &mut rng,
+        );
+        if a1 == RAISE_THIRD_POT || a1 == RAISE_HALF_POT {
+            raises_with_blocker += 1;
+        }
+
+        let a2 = tracker.select_action_purified_context(
+            &raw_probs,
+            &legal,
+            10,
+            4,
+            0,
+            Some(&hole_no_blocker),
+            Some(&board),
+            &mut rng,
+        );
+        if a2 == RAISE_THIRD_POT || a2 == RAISE_HALF_POT {
+            raises_without_blocker += 1;
+        }
+    }
+
+    assert!(
+        raises_with_blocker > raises_without_blocker,
+        "River bluffing frequency with nut blocker ({}) must exceed without blocker ({})",
+        raises_with_blocker,
+        raises_without_blocker
+    );
+}

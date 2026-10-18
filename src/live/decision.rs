@@ -2,9 +2,7 @@
 use std::collections::HashMap;
 
 use super::protocol::map_action_index_round;
-use crate::cfr::abstraction::{
-    get_holdem_infoset_key, get_holdem_infoset_key_rich, postflop_equity_bucket, preflop_bucket,
-};
+use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
@@ -74,7 +72,7 @@ pub fn decide_action(
             let default_solver = SubgameSolver::default();
             let active_solver = solver.unwrap_or(&default_solver);
             if let Some(ctx) = solver_ctx {
-                active_solver.solve_with_context(
+                active_solver.solve_with_context_and_strategy(
                     hole,
                     board,
                     round,
@@ -83,6 +81,7 @@ pub fn decide_action(
                     contributions,
                     raises_this_round,
                     ctx,
+                    Some(strategy_map),
                 )
             } else {
                 active_solver.solve_with_state(
@@ -97,12 +96,13 @@ pub fn decide_action(
             }
         } else {
             /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
-            let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
-            let exact_key = get_holdem_infoset_key(hole, board, round, history);
-            if let Some(p) = strategy_map
-                .get(&rich_key)
-                .or_else(|| strategy_map.get(&exact_key))
-            {
+            if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical(
+                |k| strategy_map.get(k),
+                hole,
+                board,
+                round,
+                history,
+            ) {
                 p.clone()
             } else if let Some(idx) = strategy_index {
                 idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
@@ -115,12 +115,14 @@ pub fn decide_action(
 
     /* 3. Action Selection via Purified Strategy Sampling with Opponent Exploitation and All-in Defense */
     let mut rng = rand::thread_rng();
-    let chosen_idx = tracker.select_action_purified_round(
+    let chosen_idx = tracker.select_action_purified_context(
         &raw_probs,
         &legal_u8,
         current_bucket,
         round,
         to_call,
+        Some(hole),
+        Some(board),
         &mut rng,
     ) as usize;
 

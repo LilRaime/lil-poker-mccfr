@@ -150,12 +150,31 @@ fn test_geometric_street_aware_bet_sizing() {
     assert_eq!(game.round, 4);
     let river_pot = game.contributions[0] + game.contributions[1];
 
-    /* On River: P0 applies RAISE_HALF_POT (full pot bet 100% of pot!) */
+    /* On River: P0 applies RAISE_HALF_POT (polarized 125% pot overbet!) */
     let river_g = game.apply_action(RAISE_HALF_POT);
     let river_bet = river_g.contributions[0] - game.contributions[0];
     assert_eq!(
         river_bet,
-        river_pot.max(RAISE_HALF_POT_FLOOR_RIVER),
-        "River RAISE_HALF_POT must be 100% full pot bet"
+        (river_pot * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER),
+        "River RAISE_HALF_POT must be 125% pot overbet"
     );
+}
+
+#[test]
+fn test_preflop_2_5bb_open_raise() {
+    let mut rng = rand::thread_rng();
+    let game = TexasHoldemGame::new_random(&mut rng);
+
+    /* Initially P0 = Small Blind (50), P1 = Big Blind (100) */
+    assert_eq!(game.contributions[0], SMALL_BLIND);
+    assert_eq!(game.contributions[1], BIG_BLIND);
+
+    /* P0 opens with RAISE_MIN -> commits exactly 2.5x BB = 250 chips */
+    let g1 = game.apply_action(RAISE_MIN);
+    assert_eq!(g1.contributions[0], PREFLOP_OPEN_MIN_TOTAL);
+    assert_eq!(g1.contributions[0], 250);
+
+    /* P1 faces 250 chips (diff = 150). P1 3-bets with RAISE_MIN -> 100 + 150 + 400 = 650 chips */
+    let g2 = g1.apply_action(RAISE_MIN);
+    assert_eq!(g2.contributions[1], 650);
 }

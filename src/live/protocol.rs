@@ -154,8 +154,8 @@ pub fn map_action_index_round(
                 }
                 RAISE_HALF_POT => {
                     let s = if round == 4 {
-                        /* River: Polarized 100% full pot */
-                        pot.max(RAISE_HALF_POT_FLOOR_RIVER)
+                        /* River: Polarized 125% pot overbet */
+                        (pot * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER)
                     } else if round == 3 {
                         /* Turn: 75% pot bet */
                         (pot * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)
@@ -171,7 +171,10 @@ pub fn map_action_index_round(
                     }
                 }
                 _ => {
-                    if to_call > 0 {
+                    if round == 1 && to_call <= BIG_BLIND / 2 {
+                        /* Preflop initial open-raise: 2.5x BB (250 chips total) */
+                        PREFLOP_OPEN_MIN_TOTAL
+                    } else if to_call > 0 {
                         (to_call + RAISE_MIN_AMT).max(min_raise)
                     } else {
                         RAISE_MIN_AMT.max(min_raise)

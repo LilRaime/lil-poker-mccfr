@@ -17,7 +17,7 @@ Powered by an ultra-fast **$O(1)$ bitwise 7-card hand evaluator** capable of sus
 - **Regret-Based Pruning (RBP)** — Skips 95% of deeply negative regret branches (`regret < -300`), accelerating MCCFR traversals by 2–3x without equilibrium distortion.
 - **Exploitative Opponent Modeling & Style Classifier** — Tracks VPIP, PFR, 3-bet frequency, aggression frequency, and classifies opponents into archetypes (`CallingStation`, `Maniac`, `Rock`, `TAG`, `LAG`) with Wilson score confidence intervals.
 - **Showdown Learning & Sizing Tells** — Detects opponent bluffing, trapping habits, and bet-sizing tells (small vs large bet hand strengths) from revealed showdown hole cards, dynamically tuning bluff-catching and barrel frequencies.
-- **Geometric Street-Aware Bet Sizing & Overbets** — Dynamic pot-scaled sizing: 50% pot on dry flop, 75% pot on wet flop/turn, 100% full pot on river, with geometric stack commitment utility.
+- **Geometric Street-Aware Bet Sizing & Overbets** — Dynamic pot-scaled sizing: 2.5x BB open-raise preflop, 50% pot on dry flop, 75% pot on wet flop/turn, 125% polarized overbet on river, and geometric stack commitment utility.
 - **Purified Action Defense** — Clamps Monte Carlo noise and prevents accidental folds of premium pocket pairs (AA/KK/QQ) when facing all-in shoves.
 - **Live Server Bot Client (`play_live`)** — Native async WebSocket & REST client connecting directly to [lil-poker](https://github.com/LilRaime/lil-poker) web rooms with live showdown tracking.
 - **Exact Full-Tree Vanilla CFR+ (Leduc)** — Full game tree traversal solver for Leduc Hold'em with exact Best Response / NashConv computation.
@@ -123,6 +123,7 @@ src/
 └── bin/
     ├── play_live.rs             # CLI: Live bot client for lil-poker server
     ├── play.rs                  # CLI: Offline interactive & benchmark game simulator
+    ├── distill_model.rs         # CLI: Prune & distill large blueprint models for low-RAM live containers
     ├── train_holdem.rs          # CLI: Train Texas Hold'em MCCFR/DCFR model
     ├── train_vanilla.rs         # CLI: Train exact full-tree Leduc solver
     └── evaluate.rs              # CLI: Evaluate strategies (win rate, exploitability)
@@ -135,9 +136,7 @@ tests/
 ├── test_live.rs                 # Live client card parser, JSON handling, round tracker, and action mapping
 ├── test_opponent.rs             # Opponent tracking metrics, showdown learning, and defense
 └── test_subgame.rs              # Subgame solver state exploration and adaptive budgeting
-models/
-├── leduc_strategy.json          # Pre-trained Leduc strategy
-└── holdem_abstract_strategy.json  # Pre-trained Hold'em blueprint model
+models/                          # Trained strategy models & checkpoints (.bin)
 ```
 
 ---
@@ -155,7 +154,7 @@ cargo build --release
 ```bash
 cargo test
 ```
-*(All 36 unit tests covering DCFR, bitwise evaluator tiebreakers, explicit reach range subgame solving, pseudo-harmonic translation, live round tracking, draw detection, live client protocols, Wilson intervals, and opponent modeling pass in < 0.05s).*
+*(All 45 unit and integration tests covering DCFR, bitwise evaluator tiebreakers, explicit reach range subgame solving, pseudo-harmonic translation, live round tracking, draw detection, binary model serialization, live client protocols, Wilson intervals, and opponent modeling pass in < 0.05s).*
 
 ---
 
@@ -169,24 +168,38 @@ cargo run --release --bin train_holdem -- \
   --iterations 200000000 \
   --threads 16 \
   --log-every 5000000 \
-  --save-path models/holdem_abstract_strategy.json
+  --save-path models/holdem_abstract_strategy.bin
 
 # Ultra High-Convergence Training (1.6 Billion iterations, ~20 minutes)
 cargo run --release --bin train_holdem -- \
   --iterations 1600000000 \
   --threads 16 \
   --log-every 50000000 \
-  --save-path models/holdem_abstract_strategy.json
+  --save-path models/holdem_abstract_strategy.bin
 ```
 
 CLI options for `train_holdem`:
 - `-i, --iterations <N>`: Total training iterations (default: `10000000`).
 - `-t, --threads <N>`: Number of parallel Rayon threads (default: `16`).
 - `-l, --log-every <N>`: Frequency of progress logging (default: `50000`).
-- `-s, --save-path <PATH>`: Output path for strategy JSON (default: `models/holdem_abstract_strategy.json`).
+- `-s, --save-path <PATH>`: Output path for strategy binary (default: `models/holdem_abstract_strategy.bin`).
 - `--dcfr`: Enable Pluribus Discounted CFR (default: `true`).
 - `--pruning`: Enable regret-based pruning (default: `true`).
 - `--rich-history`: Distinguish previous street action contexts (default: `false`).
+
+---
+
+### Model Distillation (Low-RAM Containers)
+
+Prune large blueprint models (e.g. 15.75M infosets) down to compact runtime strategies (~1.64M infosets) to fit within tight Docker RAM constraints (< 500 MB RAM limit, ~261 MB RSS):
+
+```bash
+cargo run --release --bin distill_model -- \
+  --input models/holdem_abstract_strategy.bin \
+  --output models/holdem_strategy_distilled.bin \
+  --max-river-actions 2 \
+  --max-preflop-actions 3
+```
 
 ---
 
@@ -273,8 +286,8 @@ cargo run --release --bin evaluate -- \
 # 2. A/B Head-to-Head Testing Between Two Hold'em Strategy Profiles
 cargo run --release --bin evaluate -- \
   --game holdem \
-  --strategy models/holdem_abstract_strategy.json \
-  --opp-strategy models/holdem_abstract_strategy.json \
+  --strategy models/holdem_abstract_strategy.bin \
+  --opp-strategy models/holdem_abstract_strategy.bin \
   --hands 5000 \
   --duplicate
 

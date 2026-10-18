@@ -129,3 +129,44 @@ fn test_opponent_reach_distribution() {
         );
     }
 }
+
+#[test]
+fn test_opponent_reach_with_strategy_map() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::ALL_52_CARDS;
+    use std::collections::HashMap;
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Two, Suit::Spades),
+        card(Rank::Three, Suit::Hearts),
+    ];
+    let board = [
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Eight, Suit::Clubs),
+        card(Rank::Nine, Suit::Hearts),
+    ];
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    let mut strat_map = HashMap::new();
+    strat_map.insert("P:AA/".to_string(), vec![0.0, 0.0, 0.5, 0.3, 0.2, 0.0]);
+    strat_map.insert("P:72o/".to_string(), vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+    let history_raised = [vec![1u8, 2u8], vec![], vec![], vec![]];
+    let dist = OpponentReachDistribution::build_with_strategy_map(
+        &remaining,
+        &board,
+        2,
+        &history_raised,
+        Some(&strat_map),
+    );
+    assert!(dist.total_weight > 0.0);
+    assert_eq!(
+        dist.combos.len(),
+        remaining.len() * (remaining.len() - 1) / 2
+    );
+}

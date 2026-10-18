@@ -108,3 +108,36 @@ pub fn detect_draws(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, boo
     let d = detect_draws_detailed(hole, board);
     (d.is_flush_draw, d.is_straight_draw)
 }
+
+/* Fast blocker detection for River bluffing:
+ * Checks whether the player holds a key blocker that removes the opponent's nut hands:
+ * 1. Nut Flush Blocker: board has >= 3 cards of suit S, and player holds the Ace of suit S.
+ * 2. Broadway Straight Blocker: board has >= 3 broadway cards, and player holds an Ace or King. */
+#[inline]
+pub fn detect_river_nut_blocker(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> bool {
+    if board.len() < 5 {
+        return false;
+    }
+    let mut board_suit_counts = [0u8; NUM_SUITS];
+    for &b in board {
+        board_suit_counts[b.suit as usize] += 1;
+    }
+    for (s, &cnt) in board_suit_counts.iter().enumerate() {
+        if cnt >= 3
+            && ((hole[0].rank == Rank::Ace && hole[0].suit as usize == s)
+                || (hole[1].rank == Rank::Ace && hole[1].suit as usize == s))
+        {
+            return true;
+        }
+    }
+    let broadway_count = board.iter().filter(|c| c.rank as usize >= 8).count();
+    if broadway_count >= 3
+        && (hole[0].rank == Rank::Ace
+            || hole[1].rank == Rank::Ace
+            || hole[0].rank == Rank::King
+            || hole[1].rank == Rank::King)
+    {
+        return true;
+    }
+    false
+}

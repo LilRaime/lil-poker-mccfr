@@ -112,7 +112,7 @@ fn test_strategy_lookup_index() {
 
     // 1. Preflop lookup
     let pf_avg = index
-        .query_bucket_avg(1, &hole_aa, &[])
+        .query_bucket_avg(1, &hole_aa, &[], 0)
         .expect("preflop bucket avg");
     // Average of [0.0, 0.2, 0.4, 0.2, 0.2, 0.0] and [0.0, 0.0, 0.2, 0.4, 0.3, 0.1]
     assert!((pf_avg[0] - 0.0).abs() < 1e-6);
@@ -140,4 +140,26 @@ fn test_strategy_lookup_index() {
         "Sum of probabilities must equal 1.0"
     );
     assert_eq!(blended[FOLD as usize], 0.0, "Pocket Aces should not fold");
+}
+
+#[test]
+fn test_binary_strategy_save_and_load() {
+    use lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver;
+    let solver = HoldemMCCFRSolver::new();
+    let temp_path = "/tmp/test_binary_strategy.bin";
+
+    solver.train(100, 1, 0);
+    let count = solver
+        .save_strategy_to_file(temp_path)
+        .expect("Save binary failed");
+    assert!(count > 0);
+
+    let loaded = HoldemMCCFRSolver::load_strategy_from_file(temp_path).expect("Load binary failed");
+    assert_eq!(loaded.len(), count);
+
+    let loaded_via_sim =
+        lil_poker_mccfr::sim::holdem::load_holdem_strategy(temp_path).expect("Load via sim failed");
+    assert_eq!(loaded_via_sim.len(), count);
+
+    let _ = std::fs::remove_file(temp_path);
 }

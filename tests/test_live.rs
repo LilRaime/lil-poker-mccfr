@@ -98,10 +98,13 @@ fn test_live_map_action_index_round() {
         "allin".to_string(),
     ];
 
-    /* On River (round 4), Index 4 should be full pot (1000 chips) */
+    /* On River (round 4), Index 4 should be polarized 125% pot overbet (1250 chips) */
     let (_, amt_river) = map_action_index_round(RAISE_HALF_POT as usize, &legal, 0, 1000, false, 4)
         .expect("river bet sizing");
-    assert_eq!(amt_river, 1000, "River bet sizing must scale to full pot");
+    assert_eq!(
+        amt_river, 1250,
+        "River bet sizing must scale to 125% pot overbet"
+    );
 
     /* On Turn (round 3), Index 4 should be 75% pot (750 chips) */
     let (_, amt_turn) = map_action_index_round(RAISE_HALF_POT as usize, &legal, 0, 1000, false, 3)
@@ -470,4 +473,74 @@ fn test_call_check_facing_bet_never_checks() {
         "Free action must map to check, not call!"
     );
     assert_eq!(amt_free, 0);
+}
+
+#[test]
+fn test_live_street_transition_closes_preflop_for_rich_keys() {
+    use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key_rich;
+    use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical;
+    use lil_poker_mccfr::game::holdem::Card;
+    use lil_poker_mccfr::live::state::LiveRoundTracker;
+    use std::collections::HashMap;
+
+    let mut tracker = LiveRoundTracker::new();
+    tracker.reset_hand(1);
+
+    /* Bot is SB, raises preflop */
+    tracker.record_bot_action("raise", 200, 150);
+    assert_eq!(tracker.live_history[0].as_slice(), &[RAISE_HALF_POT]);
+
+    /* Opponent calls, dealer deals flop (3 board cards) */
+    let new_round = tracker.update_street(3);
+    assert_eq!(new_round, 1); /* Flop index */
+    /* Previous preflop street MUST be closed with CALL_CHECK! */
+    assert_eq!(
+        tracker.live_history[0].as_slice(),
+        &[RAISE_HALF_POT, CALL_CHECK]
+    );
+
+    /* Test rich key generation on flop */
+    let hole = [
+        Card {
+            rank: Rank::Ace,
+            suit: Suit::Spades,
+        },
+        Card {
+            rank: Rank::King,
+            suit: Suit::Hearts,
+        },
+    ];
+    let board = [
+        Card {
+            rank: Rank::Ace,
+            suit: Suit::Clubs,
+        },
+        Card {
+            rank: Rank::Seven,
+            suit: Suit::Diamonds,
+        },
+        Card {
+            rank: Rank::Two,
+            suit: Suit::Hearts,
+        },
+    ];
+    let rich_key = get_holdem_infoset_key_rich(&hole, &board, 2, &tracker.live_history);
+    assert!(
+        rich_key.starts_with("P:hc|F:B"),
+        "Flop key must start with P:hc|F:B, got: {}",
+        rich_key
+    );
+
+    /* Test hierarchical strategy lookup succeeds */
+    let mut strat_map: HashMap<String, Vec<f64>> = HashMap::new();
+    strat_map.insert(rich_key.clone(), vec![0.0, 0.4, 0.3, 0.2, 0.1, 0.0]);
+
+    let res = lookup_strategy_hierarchical(
+        |k| strat_map.get(k),
+        &hole,
+        &board,
+        2,
+        &tracker.live_history,
+    );
+    assert!(res.is_some(), "Hierarchical lookup must find rich key!");
 }

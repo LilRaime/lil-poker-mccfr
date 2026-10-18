@@ -5,12 +5,11 @@ use std::time::Duration;
 use rand::rngs::SmallRng;
 
 use super::strategy::{find_strategy_or_fallback, HoldemStrategy};
-use crate::cfr::abstraction::{
-    get_holdem_infoset_key, get_holdem_infoset_key_rich, postflop_equity_bucket, preflop_bucket,
-};
+use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::SubgameSolver;
+use crate::game::config::*;
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -37,7 +36,7 @@ pub fn simulate_holdem_hand(
         println!("\n--- {} ---", label);
     }
 
-    let initial_chips = 1000i32;
+    let initial_chips = STACK_SIZE;
     let hole = game.hole[my_player];
     let card_str = format!("[{}, {}]", hole[0], hole[1]);
 
@@ -73,54 +72,29 @@ pub fn simulate_holdem_hand(
             let pot = game.contributions[0] + game.contributions[1];
 
             /* 1. Get raw Blueprint/Subgame probabilities */
-            let raw_probs =
-                if enable_subgame_search && (game.round >= 3 || (game.round == 2 && pot >= 120)) {
-                    subgame_solver.solve_with_state(
-                        &game.hole[my_player],
-                        &game.board,
-                        game.round,
-                        &game.history,
-                        my_player,
-                        game.contributions,
-                        game.raises_this_round,
-                    )
-                } else if let Some(ref strat) = strategy {
-                    let rich_key = get_holdem_infoset_key_rich(
-                        &game.hole[my_player],
-                        &game.board,
-                        game.round,
-                        &game.history,
-                    );
-                    let exact_key = get_holdem_infoset_key(
-                        &game.hole[my_player],
-                        &game.board,
-                        game.round,
-                        &game.history,
-                    );
-                    if let Some(s) = strat.get(&rich_key).or_else(|| strat.get(&exact_key)) {
-                        s.to_vec()
-                    } else if let Some(idx) = strategy_index {
-                        idx.get_blended_fallback(
-                            &game.hole[my_player],
-                            &game.board,
-                            game.round,
-                            to_call,
-                            pot,
-                            &legal,
-                        )
-                    } else {
-                        find_strategy_or_fallback(
-                            strat,
-                            &game.hole[my_player],
-                            &game.board,
-                            game.round,
-                            to_call,
-                            pot,
-                            &legal,
-                        )
-                    }
-                } else {
-                    get_holdem_fallback_strategy(
+            let raw_probs = if enable_subgame_search
+                && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT))
+            {
+                subgame_solver.solve_with_state(
+                    &game.hole[my_player],
+                    &game.board,
+                    game.round,
+                    &game.history,
+                    my_player,
+                    game.contributions,
+                    game.raises_this_round,
+                )
+            } else if let Some(ref strat) = strategy {
+                if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(
+                    |k| strat.get(k),
+                    &game.hole[my_player],
+                    &game.board,
+                    game.round,
+                    &game.history,
+                ) {
+                    s.to_vec()
+                } else if let Some(idx) = strategy_index {
+                    idx.get_blended_fallback(
                         &game.hole[my_player],
                         &game.board,
                         game.round,
@@ -128,8 +102,28 @@ pub fn simulate_holdem_hand(
                         pot,
                         &legal,
                     )
-                    .to_vec()
-                };
+                } else {
+                    find_strategy_or_fallback(
+                        strat,
+                        &game.hole[my_player],
+                        &game.board,
+                        game.round,
+                        to_call,
+                        pot,
+                        &legal,
+                    )
+                }
+            } else {
+                get_holdem_fallback_strategy(
+                    &game.hole[my_player],
+                    &game.board,
+                    game.round,
+                    to_call,
+                    pot,
+                    &legal,
+                )
+                .to_vec()
+            };
 
             /* 2. Adjust using Opponent Tracker with hand context */
             let current_bucket = if game.round == 1 {
@@ -168,7 +162,7 @@ pub fn simulate_holdem_hand(
 
             let step_reward = if game.is_terminal() {
                 let final_ret = game.get_returns()[my_player];
-                final_ret / 1000.0
+                final_ret / STACK_SIZE as f64
             } else {
                 -0.0005 * delta_contrib
             };

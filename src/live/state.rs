@@ -318,6 +318,28 @@ impl LiveRoundTracker {
             _ => 3,
         };
         if round_idx != self.current_round_idx {
+            if round_idx > self.current_round_idx {
+                for s in self.current_round_idx..round_idx {
+                    if self.live_history[s].is_empty() {
+                        /* Previous street unrecorded; default to standard sequence so rich keys match */
+                        if s == 0 {
+                            self.live_history[s].push(RAISE_MIN);
+                            self.live_history[s].push(CALL_CHECK);
+                        } else {
+                            self.live_history[s].push(CALL_CHECK);
+                            self.live_history[s].push(CALL_CHECK);
+                        }
+                    } else if let Some(&last_act) = self.live_history[s].last() {
+                        if last_act >= RAISE_MIN {
+                            /* Street ended on a bet/raise that was called to advance to next street */
+                            self.live_history[s].push(CALL_CHECK);
+                        } else if self.live_history[s].len() == 1 && last_act == CALL_CHECK {
+                            /* Single limp / call on street was checked by opponent to advance */
+                            self.live_history[s].push(CALL_CHECK);
+                        }
+                    }
+                }
+            }
             self.current_round_idx = round_idx;
             self.last_opp_bet = 0;
         }
@@ -347,6 +369,7 @@ impl LiveRoundTracker {
                             snapshot.opp_bet,
                             snapshot.pot,
                         );
+                        tracker.record_preflop_positional(true, true, false);
                     } else {
                         let raise_act = pseudo_harmonic_action_mapping(
                             snapshot.opp_bet,
@@ -362,6 +385,7 @@ impl LiveRoundTracker {
                             snapshot.opp_bet,
                             snapshot.pot,
                         );
+                        tracker.record_preflop_positional(true, true, true);
                     }
                 }
             } else {
@@ -418,7 +442,7 @@ impl LiveRoundTracker {
     }
 
     pub fn compute_engine_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
-        let my_contrib = ((snapshot.pot - snapshot.to_call) / 2).max(10);
+        let my_contrib = ((snapshot.pot - snapshot.to_call) / 2).max(SMALL_BLIND);
         let opp_contrib = my_contrib + snapshot.to_call;
         let engine_contributions = if snapshot.my_player == 0 {
             [my_contrib, opp_contrib]

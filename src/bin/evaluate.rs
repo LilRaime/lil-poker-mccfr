@@ -69,7 +69,11 @@ fn main() {
 
     if is_holdem {
         let strategy_path = args.strategy.unwrap_or_else(|| {
-            if std::path::Path::new("models/holdem_strategy.json").exists() {
+            if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
+                "models/holdem_strategy_distilled.bin".to_string()
+            } else if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
+                "models/holdem_abstract_strategy.bin".to_string()
+            } else if std::path::Path::new("models/holdem_strategy.json").exists() {
                 "models/holdem_strategy.json".to_string()
             } else {
                 "models/holdem_abstract_strategy.json".to_string()

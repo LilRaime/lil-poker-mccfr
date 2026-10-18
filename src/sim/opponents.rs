@@ -1,10 +1,8 @@
 /* Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::{find_strategy_or_fallback, HoldemStrategy};
-use crate::cfr::abstraction::{
-    detect_draws, get_holdem_infoset_key, get_holdem_infoset_key_rich, postflop_equity_bucket,
-    preflop_bucket,
-};
+use crate::cfr::abstraction::{detect_draws, postflop_equity_bucket, preflop_bucket};
 use crate::cfr::fallback::get_holdem_fallback_strategy;
+use crate::game::config::BIG_BLIND;
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -77,7 +75,7 @@ pub fn sample_opponent_action(
                             &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
                             rng,
                         )
-                    } else if opp_to_call <= 40 {
+                    } else if opp_to_call <= BIG_BLIND * 2 {
                         pick_preferred_action(&legal, &[CALL_CHECK, RAISE_MIN], rng)
                     } else {
                         pick_preferred_action(&legal, &[CALL_CHECK, H_FOLD], rng)
@@ -85,7 +83,7 @@ pub fn sample_opponent_action(
                 } else if idx <= 90 {
                     if opp_to_call == 0 {
                         CALL_CHECK
-                    } else if opp_to_call <= 20 {
+                    } else if opp_to_call <= BIG_BLIND {
                         pick_preferred_action(&legal, &[CALL_CHECK, H_FOLD], rng)
                     } else {
                         H_FOLD
@@ -121,7 +119,7 @@ pub fn sample_opponent_action(
                         } else {
                             CALL_CHECK
                         }
-                    } else if opp_to_call <= 60 {
+                    } else if opp_to_call <= BIG_BLIND * 3 {
                         CALL_CHECK
                     } else {
                         if rng.gen_bool(0.60) {
@@ -156,8 +154,8 @@ pub fn sample_opponent_action(
                 } else {
                     postflop_equity_bucket(hole, board)
                 };
-                if (opp_to_call > 100 && bucket < 16 && rng.gen_bool(0.35))
-                    || (opp_to_call > 250 && bucket < 22 && rng.gen_bool(0.60))
+                if (opp_to_call > BIG_BLIND && bucket < 16 && rng.gen_bool(0.35))
+                    || (opp_to_call > BIG_BLIND * 3 && bucket < 22 && rng.gen_bool(0.60))
                 {
                     H_FOLD
                 } else {
@@ -195,7 +193,7 @@ pub fn sample_opponent_action(
                 let (idx, _) = preflop_bucket(hole[0], hole[1]);
                 if idx <= 15 {
                     pick_preferred_action(&legal, &[RAISE_MIN, RAISE_THIRD_POT, CALL_CHECK], rng)
-                } else if idx <= 30 && opp_to_call <= 20 {
+                } else if idx <= 30 && opp_to_call <= BIG_BLIND {
                     CALL_CHECK
                 } else {
                     if opp_to_call == 0 {
@@ -212,7 +210,7 @@ pub fn sample_opponent_action(
                         &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
                         rng,
                     )
-                } else if bucket >= 23 && opp_to_call <= 40 {
+                } else if bucket >= 23 && opp_to_call <= BIG_BLIND * 2 {
                     CALL_CHECK
                 } else {
                     if opp_to_call == 0 {
@@ -225,10 +223,13 @@ pub fn sample_opponent_action(
         }
         "self" | "model" => {
             if let Some(strat) = opp_strategy {
-                let rich_key = get_holdem_infoset_key_rich(hole, board, game.round, &game.history);
-                let exact_key = get_holdem_infoset_key(hole, board, game.round, &game.history);
-                let probs = if let Some(s) = strat.get(&rich_key).or_else(|| strat.get(&exact_key))
-                {
+                let probs = if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(
+                    |k| strat.get(k),
+                    hole,
+                    board,
+                    game.round,
+                    &game.history,
+                ) {
                     s.to_vec()
                 } else {
                     find_strategy_or_fallback(

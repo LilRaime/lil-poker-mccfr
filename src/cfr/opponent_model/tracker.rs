@@ -42,6 +42,15 @@ pub struct OpponentTracker {
     pub showdown_trap_count: u64,
     pub showdown_loose_count: u64,
 
+    /* Positional & 3-bet situational metrics */
+    pub sb_vpip_hands: u64,
+    pub sb_pfr_hands: u64,
+    pub sb_total_hands: u64,
+    pub bb_vpip_hands: u64,
+    pub bb_total_hands: u64,
+    pub faced_3bet_count: u64,
+    pub fold_to_3bet_count: u64,
+
     /* Exploitation guardrails & configuration */
     pub exploit_enabled: bool,
     pub exploit_factor: f64,
@@ -83,6 +92,13 @@ impl OpponentTracker {
             showdown_bluff_count: 0,
             showdown_trap_count: 0,
             showdown_loose_count: 0,
+            sb_vpip_hands: 0,
+            sb_pfr_hands: 0,
+            sb_total_hands: 0,
+            bb_vpip_hands: 0,
+            bb_total_hands: 0,
+            faced_3bet_count: 0,
+            fold_to_3bet_count: 0,
             exploit_enabled: true,
             exploit_factor: 0.70,
         }
@@ -264,6 +280,84 @@ impl OpponentTracker {
             0.30
         } else {
             self.went_to_showdown as f64 / self.saw_flop as f64
+        }
+    }
+
+    pub fn sb_vpip_ratio(&self) -> f64 {
+        if self.sb_total_hands == 0 {
+            0.70
+        } else {
+            self.sb_vpip_hands as f64 / self.sb_total_hands as f64
+        }
+    }
+
+    pub fn sb_pfr_ratio(&self) -> f64 {
+        if self.sb_total_hands == 0 {
+            0.50
+        } else {
+            self.sb_pfr_hands as f64 / self.sb_total_hands as f64
+        }
+    }
+
+    pub fn bb_vpip_ratio(&self) -> f64 {
+        if self.bb_total_hands == 0 {
+            0.55
+        } else {
+            self.bb_vpip_hands as f64 / self.bb_total_hands as f64
+        }
+    }
+
+    pub fn fold_to_3bet_ratio(&self) -> f64 {
+        if self.faced_3bet_count == 0 {
+            0.50
+        } else {
+            self.fold_to_3bet_count as f64 / self.faced_3bet_count as f64
+        }
+    }
+
+    pub fn sb_limp_ratio(&self) -> f64 {
+        if self.sb_total_hands == 0 {
+            0.0
+        } else {
+            (self.sb_vpip_hands.saturating_sub(self.sb_pfr_hands)) as f64
+                / self.sb_total_hands as f64
+        }
+    }
+
+    pub fn flop_check_ratio(&self) -> f64 {
+        let total = self.flop_actions[1] + self.flop_actions[2];
+        if total == 0 {
+            0.50
+        } else {
+            self.flop_actions[1] as f64 / total as f64
+        }
+    }
+
+    pub fn record_preflop_positional(&mut self, is_sb: bool, is_vpip: bool, is_pfr: bool) {
+        if is_sb {
+            self.sb_total_hands += 1;
+            if is_vpip {
+                self.sb_vpip_hands += 1;
+            }
+            if is_pfr {
+                self.sb_pfr_hands += 1;
+            }
+        } else {
+            self.bb_total_hands += 1;
+            if is_vpip {
+                self.bb_vpip_hands += 1;
+            }
+            if is_pfr {
+                /* BB 3-bet / raise */
+                self.pfr_hands += 1;
+            }
+        }
+    }
+
+    pub fn record_facing_3bet(&mut self, folded: bool) {
+        self.faced_3bet_count += 1;
+        if folded {
+            self.fold_to_3bet_count += 1;
         }
     }
 

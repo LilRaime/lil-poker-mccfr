@@ -154,7 +154,14 @@ impl TexasHoldemGame {
             RAISE_MIN => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let raise_amt = RAISE_MIN_AMT;
+                let raise_amt = if next.round == 1 && next.raises_this_round == 0 {
+                    /* Preflop initial open-raise: 2.5x BB (250 chips total) */
+                    PREFLOP_OPEN_MIN_TOTAL
+                        .saturating_sub(next.contributions[next.current_player] + diff)
+                        .max(BIG_BLIND)
+                } else {
+                    RAISE_MIN_AMT
+                };
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
                 next.raises_this_round += 1;
@@ -179,8 +186,8 @@ impl TexasHoldemGame {
                 };
                 let pot_with_call = pot + diff;
                 let raise_amt = if next.round == 4 {
-                    /* River: Full pot bet (100% pot) for polarized value and bluffing */
-                    pot_with_call.max(RAISE_HALF_POT_FLOOR_RIVER)
+                    /* River: Polarized 125% pot overbet */
+                    (pot_with_call * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER)
                 } else if next.round == 3 {
                     /* Turn: 75% pot bet for geometric pot growth */
                     (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)

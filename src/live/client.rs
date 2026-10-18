@@ -22,8 +22,29 @@ pub fn load_live_strategy(path: &str) -> HashMap<String, Vec<f64>> {
     if std::path::Path::new(path).exists() {
         println!("Loading strategy model from {}...", path);
         if let Ok(file) = File::open(path) {
-            let reader = BufReader::new(file);
-            if let Ok(raw) = serde_json::from_reader::<_, HashMap<String, Vec<f64>>>(reader) {
+            let mut reader = BufReader::new(file);
+            if path.ends_with(".bin") || path.ends_with(".bincode") {
+                if let Ok(raw_f32) = bincode::deserialize_from::<
+                    _,
+                    HashMap<String, [f32; crate::game::config::HOLDEM_NUM_ACTIONS]>,
+                >(&mut reader)
+                {
+                    let mut map = HashMap::new();
+                    for (k, v) in raw_f32 {
+                        map.insert(k, v.iter().map(|&x| x as f64).collect());
+                    }
+                    return map;
+                }
+                if let Ok(file_retry) = File::open(path) {
+                    let reader_retry = BufReader::new(file_retry);
+                    if let Ok(raw) =
+                        bincode::deserialize_from::<_, HashMap<String, Vec<f64>>>(reader_retry)
+                    {
+                        return raw;
+                    }
+                }
+            } else if let Ok(raw) = serde_json::from_reader::<_, HashMap<String, Vec<f64>>>(reader)
+            {
                 let mut map = HashMap::new();
                 for (k, v) in raw {
                     if v.len() >= 6 {

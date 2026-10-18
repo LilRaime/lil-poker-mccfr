@@ -97,7 +97,18 @@ pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     s
 }
 
-/* Rich Information Set key formatting that retains previous-street action context (e.g. preflop 3-bet vs limp) */
+#[inline(always)]
+pub fn action_to_char_coarse(a: u8) -> char {
+    match a {
+        0 => 'f',
+        1 => 'c',
+        _ => 'r',
+    }
+}
+
+/* Rich Information Set key formatting that retains full multi-street betting context across Preflop, Flop, Turn, and River.
+ * Previous rounds use canonical coarse actions ('c' or 'r') to prevent combinatorial explosion,
+ * while current round uses exact actions ('f', 'c', 'r', 't', 'h', 'a'). */
 #[inline]
 pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     hole: &[Card; 2],
@@ -123,6 +134,26 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
                 out.push(action_to_char(a));
             }
             out.push('|');
+        }
+        if round >= 3 {
+            let f_actions = history.actions_in_round(1);
+            if !f_actions.is_empty() {
+                out.push_str("F:");
+                for &a in f_actions {
+                    out.push(action_to_char_coarse(a));
+                }
+                out.push('|');
+            }
+        }
+        if round >= 4 {
+            let t_actions = history.actions_in_round(2);
+            if !t_actions.is_empty() {
+                out.push_str("T:");
+                for &a in t_actions {
+                    out.push(action_to_char_coarse(a));
+                }
+                out.push('|');
+            }
         }
         let bucket = postflop_equity_bucket(hole, board);
         let round_code = match round {
@@ -151,7 +182,7 @@ pub fn get_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     round: u8,
     history: &H,
 ) -> String {
-    let mut s = String::with_capacity(24);
+    let mut s = String::with_capacity(36);
     format_holdem_infoset_key_rich(hole, board, round, history, &mut s);
     s
 }
@@ -230,10 +261,89 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
             }
             h = fnv1a_combine(h, b'|');
         }
+        if round >= 3 {
+            let f_actions = history.actions_in_round(1);
+            if !f_actions.is_empty() {
+                h = fnv1a_combine(h, b'F');
+                for &a in f_actions {
+                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                }
+                h = fnv1a_combine(h, b'|');
+            }
+        }
+        if round >= 4 {
+            let t_actions = history.actions_in_round(2);
+            if !t_actions.is_empty() {
+                h = fnv1a_combine(h, b'T');
+                for &a in t_actions {
+                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                }
+                h = fnv1a_combine(h, b'|');
+            }
+        }
         h = fnv1a_combine(h, round);
         h = fnv1a_combine(h, b':');
         let bucket = postflop_equity_bucket(hole, board);
         h = fnv1a_combine(h, bucket as u8);
+        h = fnv1a_combine(h, b'/');
+        let r_idx = (round.saturating_sub(1)) as usize;
+        for &a in history.actions_in_round(r_idx) {
+            h = fnv1a_combine(h, a);
+        }
+    }
+    h
+}
+
+#[inline]
+pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    if round == 1 {
+        h = fnv1a_combine(h, 1);
+        h = fnv1a_combine(h, b':');
+        let (idx, _) = preflop_bucket(hole[0], hole[1]);
+        h = fnv1a_combine(h, (idx & 0xff) as u8);
+        h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
+        h = fnv1a_combine(h, b'/');
+        for &a in history.actions_in_round(0) {
+            h = fnv1a_combine(h, a);
+        }
+    } else {
+        let pf_actions = history.actions_in_round(0);
+        if !pf_actions.is_empty() {
+            h = fnv1a_combine(h, b'P');
+            for &a in pf_actions {
+                h = fnv1a_combine(h, a);
+            }
+            h = fnv1a_combine(h, b'|');
+        }
+        if round >= 3 {
+            let f_actions = history.actions_in_round(1);
+            if !f_actions.is_empty() {
+                h = fnv1a_combine(h, b'F');
+                for &a in f_actions {
+                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                }
+                h = fnv1a_combine(h, b'|');
+            }
+        }
+        if round >= 4 {
+            let t_actions = history.actions_in_round(2);
+            if !t_actions.is_empty() {
+                h = fnv1a_combine(h, b'T');
+                for &a in t_actions {
+                    h = fnv1a_combine(h, if a >= 2 { b'r' } else { a });
+                }
+                h = fnv1a_combine(h, b'|');
+            }
+        }
+        h = fnv1a_combine(h, round);
+        h = fnv1a_combine(h, b':');
+        h = fnv1a_combine(h, bucket);
         h = fnv1a_combine(h, b'/');
         let r_idx = (round.saturating_sub(1)) as usize;
         for &a in history.actions_in_round(r_idx) {

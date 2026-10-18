@@ -47,6 +47,7 @@ pub const DEFAULT_SUBGAME_ITERATIONS: usize = 2500;
 /* ── Raise Sizing Floors ──────────────────────────────────── */
 
 pub const RAISE_MIN_AMT: i32 = BIG_BLIND * 4;
+pub const PREFLOP_OPEN_MIN_TOTAL: i32 = BIG_BLIND * 5 / 2;
 pub const RAISE_THIRD_POT_FLOOR: i32 = BIG_BLIND * 3;
 pub const RAISE_HALF_POT_FLOOR_DRY: i32 = BIG_BLIND * 4;
 pub const RAISE_HALF_POT_FLOOR_WET: i32 = BIG_BLIND * 5;

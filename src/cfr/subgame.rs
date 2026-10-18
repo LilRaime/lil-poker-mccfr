@@ -106,7 +106,15 @@ impl SubgameSolver {
         history: &H,
         my_player: usize,
     ) -> Vec<f64> {
-        self.solve_with_state(hole, board, round, history, my_player, [100, 100], 0)
+        self.solve_with_state(
+            hole,
+            board,
+            round,
+            history,
+            my_player,
+            [BIG_BLIND, BIG_BLIND],
+            0,
+        )
     }
 
     /* Solves subgame with exact table contributions, pot odds, and raise limits. */
@@ -147,6 +155,33 @@ impl SubgameSolver {
         raises_this_round: u8,
         ctx: &mut SubgameContext,
     ) -> Vec<f64> {
+        self.solve_with_context_and_strategy(
+            hole,
+            board,
+            round,
+            history,
+            my_player,
+            contributions,
+            raises_this_round,
+            ctx,
+            None,
+        )
+    }
+
+    /* Solves subgame with explicit blueprint-informed opponent reach ranges */
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_with_context_and_strategy<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        &self,
+        hole: &[Card; 2],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        my_player: usize,
+        contributions: [i32; 2],
+        raises_this_round: u8,
+        ctx: &mut SubgameContext,
+        strategy_map: Option<&HashMap<String, Vec<f64>>>,
+    ) -> Vec<f64> {
         use rand::Rng;
 
         ctx.clear();
@@ -186,7 +221,13 @@ impl SubgameSolver {
         let effective_iterations = self.compute_budget(round, contributions, my_player);
 
         /* Construct explicit Bayesian reach range distribution across all remaining combos */
-        let reach_dist = OpponentReachDistribution::build(&remaining_deck, board, round, history);
+        let reach_dist = OpponentReachDistribution::build_with_strategy_map(
+            &remaining_deck,
+            board,
+            round,
+            history,
+            strategy_map,
+        );
 
         /* Run local CFR+ iterations with O(log K) Bayesian reach sampling */
         for iter_idx in 0..effective_iterations {
@@ -384,6 +425,16 @@ impl OpponentReachDistribution {
         round: u8,
         history: &H,
     ) -> Self {
+        Self::build_with_strategy_map(remaining_deck, board, round, history, None)
+    }
+
+    pub fn build_with_strategy_map<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        remaining_deck: &[Card],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        strategy_map: Option<&HashMap<String, Vec<f64>>>,
+    ) -> Self {
         use crate::cfr::abstraction::detect_draws;
         use crate::cfr::abstraction::preflop_bucket;
         use crate::game::holdem::evaluate_7cards;
@@ -435,8 +486,51 @@ impl OpponentReachDistribution {
                 let cand = [remaining_deck[i], remaining_deck[j]];
                 let (pf_idx, _) = preflop_bucket(cand[0], cand[1]);
 
-                /* 1. Preflop Bayesian Prior */
-                let pf_weight: f64 = if opp_raised_pf {
+                /* 1. Preflop Bayesian Prior (informed by blueprint strategy when provided) */
+                let pf_weight: f64 = if let Some(strat_map) = strategy_map {
+                    let (_, pf_name) = preflop_bucket(cand[0], cand[1]);
+                    let pf_key = format!("P:{}/", pf_name);
+                    if let Some(probs) = strat_map.get(&pf_key) {
+                        if opp_raised_pf {
+                            let r_prob: f64 = probs.iter().skip(RAISE_MIN as usize).sum();
+                            r_prob.max(0.03)
+                        } else {
+                            probs
+                                .get(CALL_CHECK as usize)
+                                .copied()
+                                .unwrap_or(0.5)
+                                .max(0.05)
+                        }
+                    } else if opp_raised_pf {
+                        if pf_idx <= 45 {
+                            1.0
+                        } else if pf_idx <= 90 {
+                            0.75
+                        } else if pf_idx <= 125 {
+                            0.25
+                        } else {
+                            0.04
+                        }
+                    } else if opp_called_pf {
+                        if pf_idx <= 12 {
+                            0.35
+                        } else if pf_idx <= 90 {
+                            0.95
+                        } else if pf_idx <= 125 {
+                            0.65
+                        } else {
+                            0.18
+                        }
+                    } else {
+                        if pf_idx <= 12 {
+                            0.25
+                        } else if pf_idx <= 90 {
+                            0.85
+                        } else {
+                            0.60
+                        }
+                    }
+                } else if opp_raised_pf {
                     if pf_idx <= 45 {
                         1.0
                     } else if pf_idx <= 90 {
@@ -448,7 +542,7 @@ impl OpponentReachDistribution {
                     }
                 } else if opp_called_pf {
                     if pf_idx <= 12 {
-                        0.35 /* Monster pair slow-play trap */
+                        0.35
                     } else if pf_idx <= 90 {
                         0.95
                     } else if pf_idx <= 125 {
@@ -457,7 +551,6 @@ impl OpponentReachDistribution {
                         0.18
                     }
                 } else {
-                    /* Checked through preflop (e.g. BB check option) */
                     if pf_idx <= 12 {
                         0.25
                     } else if pf_idx <= 90 {
