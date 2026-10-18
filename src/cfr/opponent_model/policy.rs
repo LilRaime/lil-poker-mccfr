@@ -129,14 +129,38 @@ impl OpponentTracker {
         let (f_low, f_high) = Self::wilson_confidence(self.fold_count, total_acts, 1.28);
 
         if f_low > 0.42 || fold_rate > 0.45 {
-            /* Opponent over-folds (Nit): Steal pots, bluff more, fold less */
+            /* Opponent over-folds (Nit/Rock):
+             * 1. Bluff cheaply with small sizing (RAISE_MIN, RAISE_THIRD_POT) where fold equity is highest per chip risked.
+             * 2. Avoid costly large-bet bluffs (RAISE_HALF_POT, ALL_IN) which risk too many chips unnecessarily.
+             * 3. With strong hands, bet small or smooth call to avoid scaring them out of the pot.
+             */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a >= RAISE_MIN {
-                    let mult = if is_weak { 1.60 } else { 1.30 };
-                    adjusted[idx] *= mult;
-                } else if a == FOLD {
-                    adjusted[idx] *= 0.55;
+                if is_weak {
+                    if a == RAISE_MIN {
+                        adjusted[idx] *= 2.00;
+                    } else if a == RAISE_THIRD_POT {
+                        adjusted[idx] *= 2.20;
+                    } else if a == RAISE_HALF_POT || a == ALL_IN {
+                        adjusted[idx] *= 0.45;
+                    } else if a == FOLD {
+                        adjusted[idx] *= 0.50;
+                    }
+                } else if is_strong {
+                    if a == RAISE_MIN || a == RAISE_THIRD_POT {
+                        adjusted[idx] *= 1.45;
+                    } else if a == RAISE_HALF_POT || a == ALL_IN {
+                        adjusted[idx] *= 0.80;
+                    } else if a == CALL_CHECK {
+                        adjusted[idx] *= 1.25;
+                    }
+                } else {
+                    /* Medium hands: steal aggressively with cheap raises */
+                    if a == RAISE_MIN || a == RAISE_THIRD_POT {
+                        adjusted[idx] *= 1.35;
+                    } else if a == FOLD {
+                        adjusted[idx] *= 0.70;
+                    }
                 }
             }
         } else if (f_high < 0.25 && call_rate > 0.40)
@@ -144,47 +168,67 @@ impl OpponentTracker {
             || self.vpip_ratio() > 0.70
         {
             /* Calling station opponent:
-             * 1. Relentlessly value-bet strong hands (boost raises).
-             * 2. NEVER bluff weak hands (reduce raises to near zero).
-             * 3. Don't fold strong hands.
+             * 1. Extract MAX VALUE with massive sizing (RAISE_HALF_POT, ALL_IN) since stations call any size.
+             * 2. Small min-raises waste massive EV against inelastic callers.
+             * 3. NEVER bluff weak hands (reduce raises to near zero).
+             * 4. Never fold value hands.
              */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a >= RAISE_MIN {
-                    if is_strong {
-                        adjusted[idx] *= 1.85;
-                    } else if is_weak {
-                        adjusted[idx] *= 0.05; /* Stop bluffing! */
+                if is_strong {
+                    if a == RAISE_HALF_POT {
+                        adjusted[idx] *= 2.50;
+                    } else if a == ALL_IN {
+                        adjusted[idx] *= 2.30;
+                    } else if a == RAISE_THIRD_POT {
+                        adjusted[idx] *= 1.65;
+                    } else if a == RAISE_MIN {
+                        adjusted[idx] *= 1.15;
+                    } else if a == CALL_CHECK {
+                        adjusted[idx] *= 0.50;
+                    } else if a == FOLD {
+                        adjusted[idx] *= 0.02;
                     }
-                } else if a == FOLD {
-                    if is_strong {
-                        adjusted[idx] *= 0.05;
-                    } else if is_weak {
-                        adjusted[idx] *= 1.35;
+                } else if is_weak {
+                    if a >= RAISE_MIN {
+                        adjusted[idx] *= 0.03; /* Stop bluffing! */
+                    } else if a == FOLD {
+                        adjusted[idx] *= 1.45;
                     }
-                } else if a == CALL_CHECK && is_strong {
-                    adjusted[idx] *= 0.75;
+                } else {
+                    /* Medium hands: thin value bet with small-to-medium sizing */
+                    if a == RAISE_MIN || a == RAISE_THIRD_POT {
+                        adjusted[idx] *= 1.30;
+                    }
                 }
             }
         } else if raise_rate > 0.40 || self.pfr_ratio() > 0.45 {
             /* Hyper-aggressive / Maniac:
              * 1. Trap with strong hands (allow them to barrel, smooth call).
-             * 2. Call down with bluff-catchers (reduce folds on non-trash).
-             * 3. Discard trash cleanly without paying off their bets.
+             * 2. Call down with bluff-catchers (especially on Turn/River where they over-barrel).
+             * 3. Ditch trash cleanly without paying off their bets.
              */
             for &a in legal_actions {
                 let idx = a as usize;
-                if a == CALL_CHECK {
-                    let mult = if is_strong { 1.65 } else { 1.30 };
-                    adjusted[idx] *= mult;
-                } else if a == FOLD {
-                    if !is_weak {
-                        adjusted[idx] *= 0.40; /* Don't fold solid hands to aggressive bets */
-                    } else {
-                        adjusted[idx] *= 1.30; /* Quickly ditch trash */
+                if is_strong {
+                    if a == CALL_CHECK {
+                        adjusted[idx] *= 1.85; /* Trap and induce barrels */
+                    } else if a >= RAISE_MIN {
+                        adjusted[idx] *= 0.70;
                     }
-                } else if a >= RAISE_MIN && is_strong {
-                    adjusted[idx] *= 0.85;
+                } else if is_weak {
+                    if a == FOLD {
+                        adjusted[idx] *= 1.40;
+                    } else if a >= RAISE_MIN {
+                        adjusted[idx] *= 0.05; /* Don't bluff into maniacs */
+                    }
+                } else {
+                    /* Medium / bluff-catcher hand */
+                    if round >= 3 && a == CALL_CHECK {
+                        adjusted[idx] *= 1.50; /* Bluff-catch turn/river */
+                    } else if a == FOLD {
+                        adjusted[idx] *= 0.40; /* Don't fold bluff-catchers */
+                    }
                 }
             }
         }
@@ -242,8 +286,8 @@ impl OpponentTracker {
             if idx < n {
                 let bp = blueprint_probs[idx];
                 if bp > 0.005 {
-                    let min_bound = 0.15 * bp;
-                    let max_bound = 2.50 * bp;
+                    let min_bound = 0.02 * bp;
+                    let max_bound = 2.80 * bp;
                     adjusted[idx] = adjusted[idx].clamp(min_bound, max_bound);
                 }
             }

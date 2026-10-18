@@ -444,3 +444,70 @@ fn test_river_blocker_detection_and_bluffing() {
         raises_without_blocker
     );
 }
+
+#[test]
+fn test_dynamic_bet_sizing_against_leaks() {
+    let mut station_tracker = OpponentTracker::new();
+    /* Simulate Calling Station: 15 calls, 1 fold, 1 raise */
+    for _ in 0..15 {
+        station_tracker.record_action(CALL_CHECK, false);
+    }
+    station_tracker.record_action(FOLD, false);
+    station_tracker.record_action(RAISE_MIN, false);
+
+    let base_strat = [0.10, 0.30, 0.15, 0.15, 0.15, 0.15];
+    let legal = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+
+    /* 1. Strong hand (bucket 50) against calling station -> Overbets (RAISE_HALF_POT, ALL_IN) boosted more than RAISE_MIN */
+    let adj_station_strong = station_tracker.adjust_strategy_full(&base_strat, &legal, 50, 2);
+    let boost_half =
+        adj_station_strong[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
+    let boost_min = adj_station_strong[RAISE_MIN as usize] / base_strat[RAISE_MIN as usize];
+    assert!(
+        boost_half > boost_min,
+        "Against Calling Station, large sizing (half pot boost {}) must exceed min-raise (boost {})",
+        boost_half,
+        boost_min
+    );
+
+    /* 2. Weak hand (bucket 10) against calling station -> All raises suppressed */
+    let adj_station_weak = station_tracker.adjust_strategy_full(&base_strat, &legal, 10, 2);
+    let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
+    let total_raise_weak: f64 = adj_station_weak[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
+    assert!(
+        total_raise_weak < total_raise_base,
+        "Against Calling Station, bluffs should be reduced below base (base {}, weak {})",
+        total_raise_base,
+        total_raise_weak
+    );
+
+    /* 3. Weak hand against Nit/Rock (over-folder) -> Cheap bluffs (RAISE_THIRD_POT / RAISE_MIN) boosted, large bets dampened */
+    let mut nit_tracker = OpponentTracker::new();
+    for _ in 0..15 {
+        nit_tracker.record_action(FOLD, false);
+    }
+    nit_tracker.record_action(CALL_CHECK, false);
+    nit_tracker.record_action(RAISE_MIN, false);
+
+    let adj_nit_weak = nit_tracker.adjust_strategy_full(&base_strat, &legal, 10, 2);
+    let boost_third = adj_nit_weak[RAISE_THIRD_POT as usize] / base_strat[RAISE_THIRD_POT as usize];
+    let boost_half_nit =
+        adj_nit_weak[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
+    assert!(
+        boost_third > boost_half_nit,
+        "Against Nit, cheap bluffs (1/3 pot boost {}) must be favored over large bluffs (half pot boost {})",
+        boost_third,
+        boost_half_nit
+    );
+}

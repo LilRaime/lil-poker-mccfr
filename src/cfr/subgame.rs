@@ -16,6 +16,7 @@ use std::collections::HashMap;
 pub struct SubgameSolver {
     pub num_iterations: usize,
     pub adaptive: bool,
+    pub threads: usize,
 }
 
 /* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
@@ -45,14 +46,24 @@ impl Default for SubgameSolver {
 
 impl SubgameSolver {
     pub fn new(num_iterations: usize) -> Self {
+        let default_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(4);
         SubgameSolver {
             num_iterations,
             adaptive: true,
+            threads: default_threads,
         }
     }
 
     pub fn with_adaptive(mut self, adaptive: bool) -> Self {
         self.adaptive = adaptive;
+        self
+    }
+
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = threads.max(1);
         self
     }
 
@@ -230,57 +241,151 @@ impl SubgameSolver {
             Some(my_player),
         );
 
-        /* Run local CFR+ iterations with O(log K) Bayesian reach sampling */
-        for iter_idx in 0..effective_iterations {
-            let opp_hole = reach_dist.sample(&mut rng);
+        /* Extract root infoset key */
+        let root_key = get_holdem_infoset_key(hole, board, round, history);
 
-            let (p0_hole, p1_hole) = if my_player == 0 {
-                (*hole, opp_hole)
-            } else {
-                (opp_hole, *hole)
-            };
+        let hist_rounds = [
+            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
+            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),
+            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
+            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
+        ];
 
-            /* Fast partial Fisher-Yates shuffle only for missing board cards */
-            let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
-            let mut rem_count = 0;
-            for &c in &remaining_deck {
-                if c != opp_hole[0] && c != opp_hole[1] {
-                    deck_rem_cards[rem_count] = c;
-                    rem_count += 1;
+        let available_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let eff_threads = self.threads.min(available_threads);
+
+        /* Run local CFR+ iterations with O(log K) Bayesian reach sampling (parallel or sequential) */
+        let solved_strategy: Option<Vec<f64>> = if eff_threads > 1 && effective_iterations >= 200 {
+            use rayon::prelude::*;
+            let num_threads = eff_threads.min(8);
+            let iters_per_thread = effective_iterations.div_ceil(num_threads);
+
+            let thread_results: Vec<Option<Vec<f64>>> = (0..num_threads)
+                .into_par_iter()
+                .map(|t_id| {
+                    let t_seed = seed
+                        .wrapping_add((t_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+                        .wrapping_add(0x517c_c1b7_2722_0a95);
+                    let mut t_rng = SmallRng::seed_from_u64(t_seed);
+                    let mut local_nodes: HashMap<String, InfosetNode> = HashMap::with_capacity(256);
+
+                    for iter_idx in 0..iters_per_thread {
+                        let opp_hole = reach_dist.sample(&mut t_rng);
+
+                        let (p0_hole, p1_hole) = if my_player == 0 {
+                            (*hole, opp_hole)
+                        } else {
+                            (opp_hole, *hole)
+                        };
+
+                        let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
+                        let mut rem_count = 0;
+                        for &c in &remaining_deck {
+                            if c != opp_hole[0] && c != opp_hole[1] {
+                                deck_rem_cards[rem_count] = c;
+                                rem_count += 1;
+                            }
+                        }
+                        let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
+                        for i in 0..num_board_missing.min(rem_count) {
+                            let j = t_rng.gen_range(i..rem_count);
+                            deck_rem_cards.swap(i, j);
+                        }
+
+                        let game = TexasHoldemGame {
+                            hole: [p0_hole, p1_hole],
+                            board: crate::game::holdem::Board::from_slice(board),
+                            deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
+                                &deck_rem_cards[..rem_count],
+                            ),
+                            history: hist_rounds,
+                            contributions,
+                            current_player: my_player,
+                            round,
+                            raises_this_round,
+                            terminal: false,
+                            returns: [0.0, 0.0],
+                        };
+
+                        let updating_player = iter_idx % 2;
+                        self.cfr(
+                            &game,
+                            updating_player,
+                            iter_idx as f64,
+                            &mut local_nodes,
+                            &mut t_rng,
+                        );
+                    }
+
+                    local_nodes.get(&root_key).map(|n| n.get_average_strategy())
+                })
+                .collect();
+
+            let mut avg_strat = vec![0.0f64; HOLDEM_NUM_ACTIONS];
+            let mut valid_count = 0;
+            for s in thread_results.into_iter().flatten() {
+                for (i, &v) in s.iter().enumerate() {
+                    avg_strat[i] += v;
                 }
+                valid_count += 1;
             }
-            let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
-            for i in 0..num_board_missing.min(rem_count) {
-                let j = rng.gen_range(i..rem_count);
-                deck_rem_cards.swap(i, j);
+            if valid_count > 0 {
+                let inv = 1.0 / valid_count as f64;
+                for v in &mut avg_strat {
+                    *v *= inv;
+                }
+                Some(avg_strat)
+            } else {
+                None
             }
+        } else {
+            for iter_idx in 0..effective_iterations {
+                let opp_hole = reach_dist.sample(&mut rng);
 
-            let game = TexasHoldemGame {
-                hole: [p0_hole, p1_hole],
-                board: crate::game::holdem::Board::from_slice(board),
-                deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
-                    &deck_rem_cards[..rem_count],
-                ),
-                history: [
-                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
-                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),
-                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
-                    crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
-                ],
-                contributions,
-                current_player: my_player,
-                round,
-                raises_this_round,
-                terminal: false,
-                returns: [0.0, 0.0],
-            };
+                let (p0_hole, p1_hole) = if my_player == 0 {
+                    (*hole, opp_hole)
+                } else {
+                    (opp_hole, *hole)
+                };
 
-            let updating_player = iter_idx % 2;
-            self.cfr(&game, updating_player, iter_idx as f64, nodes, &mut rng);
-        }
+                let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
+                let mut rem_count = 0;
+                for &c in &remaining_deck {
+                    if c != opp_hole[0] && c != opp_hole[1] {
+                        deck_rem_cards[rem_count] = c;
+                        rem_count += 1;
+                    }
+                }
+                let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
+                for i in 0..num_board_missing.min(rem_count) {
+                    let j = rng.gen_range(i..rem_count);
+                    deck_rem_cards.swap(i, j);
+                }
+
+                let game = TexasHoldemGame {
+                    hole: [p0_hole, p1_hole],
+                    board: crate::game::holdem::Board::from_slice(board),
+                    deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
+                        &deck_rem_cards[..rem_count],
+                    ),
+                    history: hist_rounds,
+                    contributions,
+                    current_player: my_player,
+                    round,
+                    raises_this_round,
+                    terminal: false,
+                    returns: [0.0, 0.0],
+                };
+
+                let updating_player = iter_idx % 2;
+                self.cfr(&game, updating_player, iter_idx as f64, nodes, &mut rng);
+            }
+            nodes.get(&root_key).map(|n| n.get_average_strategy())
+        };
 
         /* Extract average strategy for root infoset */
-        let root_key = get_holdem_infoset_key(hole, board, round, history);
         let opp = 1 - my_player;
         let to_call = (contributions[opp] - contributions[my_player]).max(0);
         let pot = contributions[0] + contributions[1];
@@ -306,8 +411,7 @@ impl SubgameSolver {
             hole, board, round, to_call, pot, &legal,
         );
 
-        if let Some(node) = nodes.get(&root_key) {
-            let solved = node.get_average_strategy();
+        if let Some(solved) = solved_strategy {
             /* Safe Resolving (Burch et al. 2014):
              * Blend real-time solved subgame policy with robust GTO fallback bounds (85% solved / 15% fallback)
              * to guarantee gift-proofing and prevent opponent out-of-distribution exploitation. */
@@ -479,7 +583,8 @@ impl OpponentReachDistribution {
         let mut combos = Vec::with_capacity(num_combos);
         let mut weights = Vec::with_capacity(num_combos);
 
-        let (opp_raised_pf, opp_called_pf) = if let Some(mp) = my_player {
+        let (opp_raised_pf, opp_called_pf, opp_3bet_pf, opp_limped_pf) = if let Some(mp) = my_player
+        {
             let opp = 1 - mp;
             let actions = history.actions_in_round(0);
             let opp_actions: Vec<u8> = actions
@@ -488,13 +593,37 @@ impl OpponentReachDistribution {
                 .filter(|(idx, _)| idx % 2 == opp)
                 .map(|(_, &a)| a)
                 .collect();
-            (
-                opp_actions.iter().any(|&a| a >= 2),
-                opp_actions.contains(&1),
-            )
+            let opp_raised = opp_actions.iter().any(|&a| a >= RAISE_MIN);
+            let opp_called = opp_actions.contains(&CALL_CHECK);
+
+            let mut is_3bet = false;
+            for (idx, &a) in actions.iter().enumerate() {
+                if idx % 2 == opp && a >= RAISE_MIN {
+                    let prior_raises = actions[..idx].iter().filter(|&&pa| pa >= RAISE_MIN).count();
+                    if prior_raises >= 1 {
+                        is_3bet = true;
+                        break;
+                    }
+                }
+            }
+            if opp_actions.iter().filter(|&&a| a >= RAISE_MIN).count() >= 2 {
+                is_3bet = true;
+            }
+            let total_pf_raises = actions.iter().filter(|&&a| a >= RAISE_MIN).count();
+            let is_limped =
+                total_pf_raises == 0 && (opp_called || actions.iter().all(|&a| a == CALL_CHECK));
+            (opp_raised, opp_called, is_3bet, is_limped)
         } else {
             let actions = history.actions_in_round(0);
-            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+            let total_pf_raises = actions.iter().filter(|&&a| a >= RAISE_MIN).count();
+            let opp_raised = actions.iter().any(|&a| a >= RAISE_MIN);
+            let opp_called = actions.contains(&CALL_CHECK);
+            (
+                opp_raised,
+                opp_called,
+                total_pf_raises >= 2,
+                total_pf_raises == 0 && actions.iter().all(|&a| a == CALL_CHECK),
+            )
         };
 
         let (opp_raised_flop, opp_called_flop) = if let Some(mp) = my_player {
@@ -533,7 +662,93 @@ impl OpponentReachDistribution {
             (actions.iter().any(|&a| a >= 2), actions.contains(&1))
         };
 
+        /* Check for monotone / 3-flush board texture across current community cards */
+        let mut suit_counts = [0u8; 4];
+        for c in board {
+            suit_counts[c.suit as usize] += 1;
+        }
+        let monotone_suit = suit_counts
+            .iter()
+            .enumerate()
+            .find(|(_, &cnt)| cnt >= 3)
+            .map(|(s_idx, _)| match s_idx {
+                0 => crate::game::holdem::Suit::Clubs,
+                1 => crate::game::holdem::Suit::Diamonds,
+                2 => crate::game::holdem::Suit::Hearts,
+                _ => crate::game::holdem::Suit::Spades,
+            });
+
         let mut sum_w = 0.0f64;
+
+        let compute_pf_fallback_weight = |pf_idx: usize,
+                                          opp_3bet: bool,
+                                          opp_raised: bool,
+                                          opp_called: bool,
+                                          opp_limped: bool|
+         -> f64 {
+            if opp_3bet {
+                /* Condensed 3-bet/4-bet range: AA-TT (0..=4), AKs-AQs (13..=14), AKo-AQo (91, 92) */
+                let is_tier1 =
+                    pf_idx <= 4 || pf_idx == 13 || pf_idx == 14 || pf_idx == 91 || pf_idx == 92;
+                let is_tier2 = (5..=7).contains(&pf_idx)
+                    || (15..=17).contains(&pf_idx)
+                    || pf_idx == 21
+                    || pf_idx == 22
+                    || pf_idx == 25
+                    || pf_idx == 93
+                    || pf_idx == 103;
+                if is_tier1 {
+                    1.00
+                } else if is_tier2 {
+                    0.65
+                } else if pf_idx <= 25 || (91..=95).contains(&pf_idx) {
+                    0.20
+                } else {
+                    0.01 /* Pure junk almost never 3-bets */
+                }
+            } else if opp_limped {
+                /* Capped limping range: monsters rarely limp, mid pairs/connectors limp often */
+                if pf_idx <= 2 || pf_idx == 13 || pf_idx == 91 {
+                    0.08 /* AA, KK, QQ, AKs, AKo trap rarely */
+                } else if pf_idx <= 4 || pf_idx == 14 || pf_idx == 92 {
+                    0.25 /* JJ, TT, AQs, AQo rarely limp */
+                } else if (5..=12).contains(&pf_idx) || (15..=85).contains(&pf_idx) {
+                    1.00 /* 99-22, suited connectors / suited broadways */
+                } else if pf_idx <= 130 {
+                    0.75 /* Offsuit connectors / broadways */
+                } else {
+                    0.35 /* Lowest junk */
+                }
+            } else if opp_raised {
+                if pf_idx <= 45 {
+                    1.00
+                } else if pf_idx <= 90 {
+                    0.75
+                } else if pf_idx <= 125 {
+                    0.25
+                } else {
+                    0.04
+                }
+            } else if opp_called {
+                if pf_idx <= 12 {
+                    0.35
+                } else if pf_idx <= 90 {
+                    0.95
+                } else if pf_idx <= 125 {
+                    0.65
+                } else {
+                    0.18
+                }
+            } else {
+                if pf_idx <= 12 {
+                    0.25
+                } else if pf_idx <= 90 {
+                    0.85
+                } else {
+                    0.60
+                }
+            }
+        };
 
         for i in 0..rem_len {
             for j in (i + 1)..rem_len {
@@ -545,9 +760,19 @@ impl OpponentReachDistribution {
                     let (_, pf_name) = preflop_bucket(cand[0], cand[1]);
                     let pf_key = format!("P:{}/", pf_name);
                     if let Some(probs) = strat_map.get(&pf_key) {
-                        if opp_raised_pf {
+                        if opp_3bet_pf {
+                            let r_prob: f64 = probs.iter().skip(RAISE_MIN as usize).sum();
+                            r_prob.powi(2).max(0.01)
+                        } else if opp_raised_pf {
                             let r_prob: f64 = probs.iter().skip(RAISE_MIN as usize).sum();
                             r_prob.max(0.03)
+                        } else if opp_limped_pf {
+                            let c_prob = probs.get(CALL_CHECK as usize).copied().unwrap_or(0.5);
+                            if pf_idx <= 2 || pf_idx == 13 || pf_idx == 91 {
+                                (c_prob * 0.15).max(0.05)
+                            } else {
+                                c_prob.max(0.20)
+                            }
                         } else {
                             probs
                                 .get(CALL_CHECK as usize)
@@ -555,63 +780,23 @@ impl OpponentReachDistribution {
                                 .unwrap_or(0.5)
                                 .max(0.05)
                         }
-                    } else if opp_raised_pf {
-                        if pf_idx <= 45 {
-                            1.0
-                        } else if pf_idx <= 90 {
-                            0.75
-                        } else if pf_idx <= 125 {
-                            0.25
-                        } else {
-                            0.04
-                        }
-                    } else if opp_called_pf {
-                        if pf_idx <= 12 {
-                            0.35
-                        } else if pf_idx <= 90 {
-                            0.95
-                        } else if pf_idx <= 125 {
-                            0.65
-                        } else {
-                            0.18
-                        }
                     } else {
-                        if pf_idx <= 12 {
-                            0.25
-                        } else if pf_idx <= 90 {
-                            0.85
-                        } else {
-                            0.60
-                        }
-                    }
-                } else if opp_raised_pf {
-                    if pf_idx <= 45 {
-                        1.0
-                    } else if pf_idx <= 90 {
-                        0.75
-                    } else if pf_idx <= 125 {
-                        0.25
-                    } else {
-                        0.04
-                    }
-                } else if opp_called_pf {
-                    if pf_idx <= 12 {
-                        0.35
-                    } else if pf_idx <= 90 {
-                        0.95
-                    } else if pf_idx <= 125 {
-                        0.65
-                    } else {
-                        0.18
+                        compute_pf_fallback_weight(
+                            pf_idx,
+                            opp_3bet_pf,
+                            opp_raised_pf,
+                            opp_called_pf,
+                            opp_limped_pf,
+                        )
                     }
                 } else {
-                    if pf_idx <= 12 {
-                        0.25
-                    } else if pf_idx <= 90 {
-                        0.85
-                    } else {
-                        0.60
-                    }
+                    compute_pf_fallback_weight(
+                        pf_idx,
+                        opp_3bet_pf,
+                        opp_raised_pf,
+                        opp_called_pf,
+                        opp_limped_pf,
+                    )
                 };
 
                 /* 2. Flop Bayesian Likelihood Update */
@@ -696,7 +881,42 @@ impl OpponentReachDistribution {
                     1.0
                 };
 
-                let w: f64 = (pf_weight * flop_weight * turn_weight).max(1e-5f64);
+                /* 4. Monotone Texture Blocker Adjustment */
+                let texture_mult: f64 = if let Some(mono_suit) = monotone_suit {
+                    let c0_mono = cand[0].suit == mono_suit;
+                    let c1_mono = cand[1].suit == mono_suit;
+                    let opp_aggressive = opp_raised_flop || opp_raised_turn;
+
+                    if opp_aggressive {
+                        if c0_mono && c1_mono {
+                            1.45 /* Made flush raising */
+                        } else if c0_mono || c1_mono {
+                            let mono_card = if c0_mono { cand[0] } else { cand[1] };
+                            if mono_card.rank == crate::game::holdem::Rank::Ace {
+                                1.35 /* Nut flush draw / blocker */
+                            } else if mono_card.rank == crate::game::holdem::Rank::King {
+                                1.20 /* 2nd nut flush draw */
+                            } else {
+                                1.05
+                            }
+                        } else {
+                            /* No flush card and aggressive on monotone board: less likely unless set */
+                            0.70
+                        }
+                    } else if opp_called_flop || opp_called_turn {
+                        if c0_mono || c1_mono {
+                            1.25 /* Calling with flush draw */
+                        } else {
+                            0.80 /* Calling without flush draw */
+                        }
+                    } else {
+                        1.00
+                    }
+                } else {
+                    1.00
+                };
+
+                let w: f64 = (pf_weight * flop_weight * turn_weight * texture_mult).max(1e-5f64);
                 combos.push(cand);
                 weights.push(w);
                 sum_w += w;

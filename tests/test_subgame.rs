@@ -227,3 +227,232 @@ fn test_opponent_reach_distribution_position_aware() {
     assert_eq!(w_aa_raiser, 1.0);
     assert_eq!(w_aa_caller, 0.35);
 }
+
+#[test]
+fn test_subgame_solver_multithreaded() {
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    ];
+    let board = [
+        card(Rank::Queen, Suit::Hearts),
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Ten, Suit::Clubs),
+        card(Rank::Two, Suit::Diamonds),
+    ];
+    let history_dummy = [vec![1u8, 2u8], vec![1u8], vec![], vec![]];
+
+    let solver = SubgameSolver::new(400).with_threads(4);
+    assert_eq!(solver.threads, 4);
+
+    let probs = solver.solve_with_state(&hole, &board, 3, &history_dummy, 0, [200, 240], 1);
+    assert_eq!(probs.len(), 6);
+    let sum: f64 = probs.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-4,
+        "Parallel subgame probs must sum to 1.0, got {}",
+        sum
+    );
+    /* Nut straight in position facing small bet should have very low fold probability */
+    assert!(
+        probs[FOLD as usize] < 0.15,
+        "Nut straight should rarely fold, got fold prob {}",
+        probs[FOLD as usize]
+    );
+}
+
+#[test]
+fn test_subgame_solver_single_threaded() {
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    ];
+    let board = [
+        card(Rank::Queen, Suit::Hearts),
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Ten, Suit::Clubs),
+        card(Rank::Two, Suit::Diamonds),
+    ];
+    let history_dummy = [vec![1u8, 2u8], vec![1u8], vec![], vec![]];
+
+    /* Explicitly configure single-threaded execution */
+    let solver = SubgameSolver::new(400).with_threads(1);
+    assert_eq!(solver.threads, 1);
+
+    let probs = solver.solve_with_state(&hole, &board, 3, &history_dummy, 0, [200, 240], 1);
+    assert_eq!(probs.len(), 6);
+    let sum: f64 = probs.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-4,
+        "Single-threaded subgame probs must sum to 1.0, got {}",
+        sum
+    );
+    assert!(
+        probs[FOLD as usize] < 0.15,
+        "Nut straight should rarely fold in single-threaded solver, got {}",
+        probs[FOLD as usize]
+    );
+}
+
+#[test]
+fn test_opponent_reach_distribution_3bet_and_limp_lines() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [card(Rank::Two, Suit::Clubs), card(Rank::Three, Suit::Clubs)];
+    let board = [
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Eight, Suit::Hearts),
+        card(Rank::Nine, Suit::Spades),
+    ];
+
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    /* 1. Opponent 3-Bet Line: Bot raises (action 0 = 2), Opponent 3-bets (action 1 = 4) */
+    let history_3bet = [vec![2u8, 4u8], vec![], vec![], vec![]];
+    let dist_3bet = OpponentReachDistribution::build_detailed(
+        &remaining,
+        &board,
+        2,
+        &history_3bet,
+        None,
+        Some(0), /* My player is 0, so opponent is 1 (the 3-bettor) */
+    );
+
+    let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
+    let junk_72 = [
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Two, Suit::Diamonds),
+    ];
+
+    let idx_aa = dist_3bet
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == aa_pair[0] && c[1] == aa_pair[1]) || (c[0] == aa_pair[1] && c[1] == aa_pair[0])
+        })
+        .expect("AA combo exists");
+    let idx_72 = dist_3bet
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == junk_72[0] && c[1] == junk_72[1]) || (c[0] == junk_72[1] && c[1] == junk_72[0])
+        })
+        .expect("72 combo exists");
+
+    assert_eq!(
+        dist_3bet.weights[idx_aa], 1.0,
+        "3-bet range must include AA at 1.0 weight"
+    );
+    assert_eq!(
+        dist_3bet.weights[idx_72], 0.01,
+        "3-bet range must filter out 72o junk to 0.01"
+    );
+
+    /* 2. Limped Pot Line: Both players limp/check (actions = [1, 1]) */
+    let history_limp = [vec![1u8, 1u8], vec![], vec![], vec![]];
+    let dist_limp = OpponentReachDistribution::build_detailed(
+        &remaining,
+        &board,
+        2,
+        &history_limp,
+        None,
+        Some(0),
+    );
+
+    let mid_pair_88 = [
+        card(Rank::Eight, Suit::Spades),
+        card(Rank::Eight, Suit::Clubs),
+    ];
+    let idx_88 = dist_limp
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == mid_pair_88[0] && c[1] == mid_pair_88[1])
+                || (c[0] == mid_pair_88[1] && c[1] == mid_pair_88[0])
+        })
+        .expect("88 combo exists");
+
+    assert_eq!(
+        dist_limp.weights[idx_aa], 0.08,
+        "Limped pot caps AA to slowplay frequency 0.08"
+    );
+    assert_eq!(
+        dist_limp.weights[idx_88], 1.00,
+        "Limped pot contains mid pairs at 1.00 weight"
+    );
+}
+
+#[test]
+fn test_opponent_reach_distribution_monotone_texture() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [card(Rank::Two, Suit::Clubs), card(Rank::Three, Suit::Clubs)];
+    /* Monotone board with 3 Spades */
+    let board = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Four, Suit::Spades),
+    ];
+
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    /* History: Bot calls (1), Opponent raises (2) on flop */
+    let history = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
+    let dist = OpponentReachDistribution::build_detailed(
+        &remaining,
+        &board,
+        2,
+        &history,
+        None,
+        Some(1), /* My player is 1, so opponent is 0 (the raiser on flop) */
+    );
+
+    /* Candidate 1: Made flush with 2 spades (K♠ Q♠) */
+    let flush_combo = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Queen, Suit::Spades),
+    ];
+    /* Candidate 2: Offsuit no-flush cards (K♥ Q♦) */
+    let no_spade_combo = [
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Queen, Suit::Diamonds),
+    ];
+
+    let idx_flush = dist
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == flush_combo[0] && c[1] == flush_combo[1])
+                || (c[0] == flush_combo[1] && c[1] == flush_combo[0])
+        })
+        .expect("K♠ Q♠ exists");
+    let idx_no_spade = dist
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == no_spade_combo[0] && c[1] == no_spade_combo[1])
+                || (c[0] == no_spade_combo[1] && c[1] == no_spade_combo[0])
+        })
+        .expect("K♥ Q♦ exists");
+
+    assert!(
+        dist.weights[idx_flush] > dist.weights[idx_no_spade] * 1.5,
+        "Opponent raising on monotone board should weight flush combo ({}) much higher than no-spade combo ({})",
+        dist.weights[idx_flush],
+        dist.weights[idx_no_spade]
+    );
+}

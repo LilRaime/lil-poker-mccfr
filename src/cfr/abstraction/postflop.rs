@@ -107,25 +107,89 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
             }
         }
         5 => {
-            /* Flush */
-            let high_flush = ((score >> 16) & 0xF) as usize;
-            match high_flush {
-                12 => 71,     /* Nut Ace-high flush */
-                11 => 70,     /* King-high flush */
-                9..=10 => 69, /* Queen/Jack-high flush */
-                6..=8 => 68,  /* Mid flush */
-                _ => 67,      /* Low flush */
+            /* Kicker-aware Flush Abstraction:
+             * Distinguishes nut flush, 2nd nut flush, mid/low flush, and board flush.
+             * Prevents holding 4s 5s on A-J-T-3-2 monotone board from being misclassified as Nut Flush. */
+            let mut suit_counts = [0u8; 4];
+            for c in board {
+                suit_counts[c.suit as usize] += 1;
+            }
+            suit_counts[hole[0].suit as usize] += 1;
+            suit_counts[hole[1].suit as usize] += 1;
+            let flush_suit = suit_counts.iter().position(|&cnt| cnt >= 5).unwrap_or(0);
+
+            let my_flush_cards: Vec<usize> = hole
+                .iter()
+                .filter(|c| c.suit as usize == flush_suit)
+                .map(|c| c.rank as usize)
+                .collect();
+
+            if my_flush_cards.is_empty() {
+                /* Purely playing the board flush (chop / bluff-catch only) */
+                67 /* Board Flush */
+            } else {
+                let my_high_flush = *my_flush_cards.iter().max().unwrap();
+
+                /* Find the Nut rank for this suit (highest rank not on board) */
+                let mut nut_rank = 12;
+                while board
+                    .iter()
+                    .any(|c| c.suit as usize == flush_suit && c.rank as usize == nut_rank)
+                {
+                    if nut_rank == 0 {
+                        break;
+                    }
+                    nut_rank -= 1;
+                }
+
+                /* Find the 2nd Nut rank for this suit */
+                let mut second_nut_rank = nut_rank.saturating_sub(1);
+                while board
+                    .iter()
+                    .any(|c| c.suit as usize == flush_suit && c.rank as usize == second_nut_rank)
+                {
+                    if second_nut_rank == 0 {
+                        break;
+                    }
+                    second_nut_rank -= 1;
+                }
+
+                if my_high_flush == nut_rank {
+                    71 /* Nut Flush */
+                } else if my_high_flush == second_nut_rank {
+                    70 /* 2nd Nut Flush */
+                } else if my_high_flush >= 9 {
+                    69 /* Queen/Jack-high flush */
+                } else if my_high_flush >= 6 {
+                    68 /* Mid flush */
+                } else {
+                    67 /* Low flush */
+                }
             }
         }
         4 => {
-            /* Straight */
+            /* Kicker-aware Straight Abstraction:
+             * Accurately detects when player holds higher straight card vs playing the board straight. */
             let st_high = (score & 0xF) as usize;
-            match st_high {
-                12 => 66,      /* Broadway A-high straight */
-                10..=11 => 65, /* King/Queen-high straight */
-                7..=9 => 64,   /* Mid straight */
-                4..=6 => 63,   /* Low straight */
-                _ => 62,       /* 5-high Wheel (A-2-3-4-5) */
+
+            let is_board_straight = if board.len() >= 5 {
+                let b_score = evaluate_7cards(&[board[0], board[1]], &board[2..]);
+                (b_score >> 32) == 4 && ((b_score & 0xF) as usize == st_high)
+            } else {
+                false
+            };
+
+            if is_board_straight {
+                /* Player does not hold a higher card than the board straight */
+                62 /* Board Straight */
+            } else {
+                match st_high {
+                    12 => 66,      /* Broadway A-high straight */
+                    10..=11 => 65, /* King/Queen-high straight */
+                    7..=9 => 64,   /* Mid straight */
+                    4..=6 => 63,   /* Low straight */
+                    _ => 62,       /* 5-high Wheel (A-2-3-4-5) */
+                }
             }
         }
         3 => {

@@ -6,7 +6,7 @@ use super::postflop::postflop_equity_bucket;
 use super::preflop::preflop_bucket;
 use crate::game::holdem::{Card, RoundHistory};
 
-pub trait HistoryActions {
+pub trait HistoryActions: Sync {
     fn actions_in_round(&self, r_idx: usize) -> &[u8];
 }
 

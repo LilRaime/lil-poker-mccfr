@@ -469,3 +469,83 @@ fn test_one_pair_third_kicker_tiebreaker() {
         score2
     );
 }
+
+#[test]
+fn test_kicker_aware_flush_and_straight_abstraction() {
+    let card = |rank, suit| Card { rank, suit };
+    /* Monotone board with Ace: A♠ J♠ 10♠ 3♠ 2♠ */
+    let board_mono = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Jack, Suit::Spades),
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::Three, Suit::Spades),
+        card(Rank::Two, Suit::Spades),
+    ];
+
+    let hole_king = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Four, Suit::Diamonds),
+    ];
+    let hole_queen = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Four, Suit::Diamonds),
+    ];
+    let hole_low = [
+        card(Rank::Six, Suit::Spades),
+        card(Rank::Four, Suit::Spades),
+    ];
+    let hole_board_only = [
+        card(Rank::Seven, Suit::Hearts),
+        card(Rank::Eight, Suit::Diamonds),
+    ];
+
+    let b_king = postflop_equity_bucket(&hole_king, &board_mono);
+    let b_queen = postflop_equity_bucket(&hole_queen, &board_mono);
+    let b_low = postflop_equity_bucket(&hole_low, &board_mono);
+    let b_board_only = postflop_equity_bucket(&hole_board_only, &board_mono);
+
+    assert_eq!(
+        b_king, 71,
+        "King of spades on Ace-board must be Nut Flush (bucket 71)"
+    );
+    assert_eq!(
+        b_queen, 70,
+        "Queen of spades on Ace-board must be 2nd Nut Flush (bucket 70)"
+    );
+    assert_eq!(
+        b_low, 67,
+        "6s 4s on Ace-board must be Low Flush (bucket 67)"
+    );
+    assert_eq!(
+        b_board_only, 67,
+        "No spades in hand must be Board Flush (bucket 67)"
+    );
+
+    /* Straight board: 5♠ 6♥ 7♦ 8♣ 9♠ */
+    let board_straight = [
+        card(Rank::Five, Suit::Spades),
+        card(Rank::Six, Suit::Hearts),
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Eight, Suit::Clubs),
+        card(Rank::Nine, Suit::Spades),
+    ];
+    let hole_nut_straight = [card(Rank::Ten, Suit::Spades), card(Rank::Two, Suit::Clubs)];
+    let hole_board_straight = [
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Three, Suit::Clubs),
+    ];
+
+    let b_nut_st = postflop_equity_bucket(&hole_nut_straight, &board_straight);
+    let b_board_st = postflop_equity_bucket(&hole_board_straight, &board_straight);
+
+    assert!(
+        b_nut_st > b_board_st,
+        "Holding Ten must produce higher straight bucket ({}) than playing board ({})",
+        b_nut_st,
+        b_board_st
+    );
+    assert_eq!(
+        b_board_st, 62,
+        "Playing the board straight must map to bucket 62"
+    );
+}
