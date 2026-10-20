@@ -163,3 +163,77 @@ fn test_binary_strategy_save_and_load() {
 
     let _ = std::fs::remove_file(temp_path);
 }
+
+#[test]
+fn test_preflop_strength_tiers_and_88_shove_defense() {
+    use lil_poker_mccfr::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
+
+    let card = |rank, suit| Card { rank, suit };
+
+    /* Tier 1: AA, KK, QQ, AKs, AKo */
+    let (aa_idx, _) = preflop_bucket(card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts));
+    let (aks_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Spades),
+    );
+    let (ako_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    );
+    assert_eq!(preflop_strength_tier(aa_idx), 1);
+    assert_eq!(preflop_strength_tier(aks_idx), 1);
+    assert_eq!(preflop_strength_tier(ako_idx), 1);
+
+    /* Tier 2: JJ, TT, 99, AQs, AQo, KQo */
+    let (jj_idx, _) = preflop_bucket(
+        card(Rank::Jack, Suit::Spades),
+        card(Rank::Jack, Suit::Hearts),
+    );
+    let (aqs_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Queen, Suit::Spades),
+    );
+    let (aqo_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Queen, Suit::Hearts),
+    );
+    assert_eq!(preflop_strength_tier(jj_idx), 2);
+    assert_eq!(preflop_strength_tier(aqs_idx), 2);
+    assert_eq!(preflop_strength_tier(aqo_idx), 2);
+
+    /* Tier 3: 88, 77, 66, A9s, KJs, JTs, 76s, AJo */
+    let (eight_idx, _) = preflop_bucket(
+        card(Rank::Eight, Suit::Spades),
+        card(Rank::Eight, Suit::Hearts),
+    );
+    let (ajo_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Jack, Suit::Hearts),
+    );
+    assert_eq!(preflop_strength_tier(eight_idx), 3);
+    assert_eq!(preflop_strength_tier(ajo_idx), 3);
+
+    /* Tier 4: 22, 55, K5s */
+    let (two_idx, _) = preflop_bucket(card(Rank::Two, Suit::Spades), card(Rank::Two, Suit::Hearts));
+    assert_eq!(preflop_strength_tier(two_idx), 4);
+
+    /* Tier 5: 72o */
+    let (trash_idx, _) = preflop_bucket(
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Two, Suit::Clubs),
+    );
+    assert_eq!(preflop_strength_tier(trash_idx), 5);
+
+    /* Check fallback strategy for 88 facing a large 35+ BB shove */
+    let hole_88 = [
+        card(Rank::Eight, Suit::Spades),
+        card(Rank::Eight, Suit::Hearts),
+    ];
+    let legal = [FOLD, CALL_CHECK, ALL_IN];
+    let strat_88_shove = get_holdem_fallback_strategy(&hole_88, &[], 1, 4000, 8000, &legal);
+    assert!(
+        strat_88_shove[FOLD as usize] >= 0.70,
+        "Pocket 88 facing 40 BB shove in fallback must fold >= 70%, got {}",
+        strat_88_shove[FOLD as usize]
+    );
+}

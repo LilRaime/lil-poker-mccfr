@@ -1,4 +1,5 @@
 use lil_poker_mccfr::cfr::opponent_model::{OpponentStyle, OpponentTracker};
+use lil_poker_mccfr::game::config::{BIG_BLIND, SMALL_BLIND};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -509,5 +510,185 @@ fn test_dynamic_bet_sizing_against_leaks() {
         "Against Nit, cheap bluffs (1/3 pot boost {}) must be favored over large bluffs (half pot boost {})",
         boost_third,
         boost_half_nit
+    );
+}
+
+#[test]
+fn test_shove_defense_pocket_pairs_and_board_textures() {
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+    let card = |rank, suit| Card { rank, suit };
+    let legal = [FOLD, CALL_CHECK];
+
+    /* 1. Pocket 88 (bucket 6) facing 40 BB preflop shove (to_call = 4000)
+     * Even if raw CFR probs suggests calling with some weight,
+     * the guard MUST classify 88 as trash against a massive 35+ BB shove and fold! */
+    let raw_probs_88 = [0.20, 0.80, 0.0, 0.0, 0.0, 0.0];
+    let chosen_88 = tracker.select_action_purified_context(
+        &raw_probs_88,
+        &legal,
+        6, /* 88 */
+        1, /* Preflop */
+        4000,
+        None,
+        None,
+        &mut rng,
+    );
+    assert_eq!(chosen_88, FOLD, "Pocket 88 facing a 40 BB shove must fold!");
+
+    /* 2. Monster Pocket AA (bucket 0) facing 40 BB preflop shove
+     * Must NEVER fold */
+    let raw_probs_aa = [0.40, 0.60, 0.0, 0.0, 0.0, 0.0];
+    let chosen_aa = tracker.select_action_purified_context(
+        &raw_probs_aa,
+        &legal,
+        0, /* AA */
+        1, /* Preflop */
+        4000,
+        None,
+        None,
+        &mut rng,
+    );
+    assert_eq!(chosen_aa, CALL_CHECK, "Pocket Aces facing shove must call!");
+
+    /* 3. Overpair JJ on a 4-to-straight Turn board (4d 6d 7c 3c) facing 35+ BB check-raise shove
+     * Board has 3, 4, 6, 7 (any 5 is straight). JJ is bare overpair (bucket 43).
+     * Must fold against shove on dangerous board! */
+    let hole_jj = [
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Jack, Suit::Clubs),
+    ];
+    let board_wet = [
+        card(Rank::Four, Suit::Diamonds),
+        card(Rank::Six, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    let raw_probs_jj = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
+    let chosen_jj_turn = tracker.select_action_purified_context(
+        &raw_probs_jj,
+        &legal,
+        43, /* Mid Overpair */
+        3,  /* Turn */
+        3661,
+        Some(&hole_jj),
+        Some(&board_wet),
+        &mut rng,
+    );
+    assert_eq!(
+        chosen_jj_turn, FOLD,
+        "Overpair JJ on a 4-to-straight Turn board facing all-in raise must fold!"
+    );
+
+    /* 4. Fourth Pair JJ on Q-K-3-A-6 River board facing heavy bet / all-in
+     * (bucket 35, to_call = 3254, cannot raise). Must fold! */
+    let board_overcards = [
+        card(Rank::Queen, Suit::Clubs),
+        card(Rank::King, Suit::Spades),
+        card(Rank::Three, Suit::Hearts),
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::Six, Suit::Diamonds),
+    ];
+    let chosen_jj_river = tracker.select_action_purified_context(
+        &raw_probs_jj,
+        &legal,
+        35, /* Middle Pair under multiple overcards */
+        4,  /* River */
+        3254,
+        Some(&hole_jj),
+        Some(&board_overcards),
+        &mut rng,
+    );
+    assert_eq!(
+        chosen_jj_river, FOLD,
+        "Fourth pair on Q-K-3-A-6 River board facing heavy all-in call must fold!"
+    );
+}
+
+#[test]
+fn test_opponent_showdown_hand_tier_tracking() {
+    let mut tracker = OpponentTracker::new();
+    let card = |rank, suit| Card { rank, suit };
+
+    let board = [
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Eight, Suit::Diamonds),
+        card(Rank::Two, Suit::Clubs),
+        card(Rank::Four, Suit::Spades),
+        card(Rank::Nine, Suit::Diamonds),
+    ];
+
+    /* 1. Opponent shows down AKo (offsuit monster, index 91).
+     * Must NOT be counted as loose trash!
+     * Must be counted as a slowplay/trap. */
+    let opp_ako = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    tracker.record_showdown_hand_detailed(opp_ako, &board, false, 0, 100);
+
+    assert_eq!(
+        tracker.showdown_loose_count, 0,
+        "AKo is a Tier 1 hand and must NEVER increment showdown_loose_count"
+    );
+    assert_eq!(
+        tracker.showdown_trap_count, 1,
+        "AKo is a Tier 1 premium hand and should increment showdown_trap_count"
+    );
+
+    /* 2. Opponent shows down 72o (Tier 5 pure trash).
+     * Must be counted as loose trash! */
+    let opp_72o = [
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    tracker.record_showdown_hand_detailed(opp_72o, &board, false, 0, 100);
+
+    assert_eq!(
+        tracker.showdown_loose_count, 1,
+        "72o is Tier 5 trash and must increment showdown_loose_count"
+    );
+}
+
+#[test]
+fn test_preflop_button_steal_requires_unraised_pot() {
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(999);
+
+    /* When facing fold-heavy blueprint [0.98, 0.0, 0.02] */
+    let raw_probs = [0.98, 0.0, 0.02, 0.0, 0.0, 0.0];
+    let legal = [FOLD, CALL_CHECK, RAISE_MIN];
+
+    /* 1. Unraised pot on button: to_call = SMALL_BLIND (50 chips).
+     * Playable hand (tier <= 4, e.g. bucket 20).
+     * Folds should be shifted into raises (steal)!
+     * 0.98 * 0.85 = +0.833 to RAISE_MIN, making raise overwhelmingly dominant. */
+    let action_steal = tracker.select_action_purified_context(
+        &raw_probs,
+        &legal,
+        20,
+        1,           /* Preflop */
+        SMALL_BLIND, /* Small blind to call in unraised pot */
+        None,
+        None,
+        &mut rng,
+    );
+    assert_eq!(
+        action_steal, RAISE_MIN,
+        "Unraised pot on button should steal-raise"
+    );
+
+    /* 2. Facing a raise: to_call = BIG_BLIND (100 chips).
+     * The bot is in the Big Blind facing a min-raise.
+     * This is NOT a button steal situation! Folds should NOT be converted into 3-bets!
+     * 0.02 raise noise gets clamped to 0, leaving 100% FOLD. */
+    let action_defend = tracker.select_action_purified_context(
+        &raw_probs, &legal, 20, 1,         /* Preflop */
+        BIG_BLIND, /* Facing a min-raise (BIG_BLIND to call) */
+        None, None, &mut rng,
+    );
+    assert_eq!(
+        action_defend, FOLD,
+        "Facing a raise (to_call = BIG_BLIND) must NOT trigger button steal redistribution into raises"
     );
 }

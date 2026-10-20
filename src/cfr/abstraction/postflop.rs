@@ -240,7 +240,7 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     46 /* Board Two Pair with low kicker */
                 }
             } else if is_pocket_pair {
-                if hole[0].rank as usize > top_pair {
+                if hole[0].rank as usize >= top_pair {
                     54 /* Pocket pair above board pair */
                 } else {
                     48 /* Pocket pair below board pair */

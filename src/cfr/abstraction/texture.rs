@@ -102,3 +102,35 @@ pub fn board_texture_byte(board: &[Card]) -> u8 {
     let paired_idx = if tex.is_paired { 1u8 } else { 0u8 };
     (flush_idx << 1) | paired_idx
 }
+
+/* Detects if community cards form a dangerous, highly coordinated board
+ * (e.g. 4 cards to a straight, 4 cards to a flush, or monotone 3-flush with connectivity).
+ */
+pub fn is_dangerous_board(board: &[Card]) -> bool {
+    if board.len() < 3 {
+        return false;
+    }
+    let mut suit_counts = [0u8; 4];
+    let mut rank_counts = [false; 13];
+    for &c in board {
+        suit_counts[c.suit as usize] += 1;
+        rank_counts[c.rank as usize] = true;
+    }
+    /* 4 or more to a flush */
+    if suit_counts.iter().any(|&cnt| cnt >= 4) {
+        return true;
+    }
+    /* 4 or more to a straight (4 ranks in any 5-card span) */
+    for start in 0..=8 {
+        let count = (start..start + 5).filter(|&r| rank_counts[r]).count();
+        if count >= 4 {
+            return true;
+        }
+    }
+    /* Ace-low straight span (A, 2, 3, 4, 5) */
+    let ace_low = [12, 0, 1, 2, 3];
+    if ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4 {
+        return true;
+    }
+    false
+}

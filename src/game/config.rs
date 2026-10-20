@@ -91,8 +91,8 @@ pub const THIRD_POT_RAISE_THRESHOLD: i32 = BIG_BLIND * 4;
 /// to_call above this triggers all-in defense (heavy bet = 35× BB).
 pub const ALLIN_GUARD_THRESHOLD: i32 = BIG_BLIND * 35;
 
-/// Preflop to_call at/below which Button steal redistribution fires (= 1× BB).
-pub const PREFLOP_STEAL_MAX_TO_CALL: i32 = BIG_BLIND;
+/// Preflop to_call at/below which Button steal redistribution fires (= 1x SB = 0.5x BB)
+pub const PREFLOP_STEAL_MAX_TO_CALL: i32 = SMALL_BLIND;
 
 /* ── Fallback Strategy to_call Tiers (preflop) ───────────── */
 

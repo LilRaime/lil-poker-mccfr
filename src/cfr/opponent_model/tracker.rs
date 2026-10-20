@@ -1,6 +1,6 @@
 /* Opponent Action Tracking and Statistical Metrics */
 use super::classifier::OpponentStyle;
-use crate::cfr::abstraction::preflop_bucket;
+use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::{evaluate_7cards, Card};
 
@@ -390,11 +390,11 @@ impl OpponentTracker {
             self.showdown_bluff_count += 1;
         }
         /* 2. Did opponent slowplay / trap with monster preflop hand? */
-        if pf_idx <= 5 {
+        if preflop_strength_tier(pf_idx) == 1 {
             self.showdown_trap_count += 1;
         }
         /* 3. Did opponent enter pot with trash cards? */
-        if pf_idx > 90 {
+        if preflop_strength_tier(pf_idx) >= 5 {
             self.showdown_loose_count += 1;
         }
         /* 4. Sizing tells inference */

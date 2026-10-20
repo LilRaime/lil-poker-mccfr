@@ -1,6 +1,8 @@
 /* Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::{find_strategy_or_fallback, HoldemStrategy};
-use crate::cfr::abstraction::{detect_draws, postflop_equity_bucket, preflop_bucket};
+use crate::cfr::abstraction::{
+    detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+};
 use crate::cfr::fallback::get_holdem_fallback_strategy;
 use crate::game::config::BIG_BLIND;
 use crate::game::holdem::{
@@ -62,13 +64,14 @@ pub fn sample_opponent_action(
         "tag" | "tight_aggressive" => {
             if game.round == 1 {
                 let (idx, _) = preflop_bucket(hole[0], hole[1]);
-                if idx <= 20 {
+                let tier = preflop_strength_tier(idx);
+                if tier <= 2 {
                     pick_preferred_action(
                         &legal,
                         &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
                         rng,
                     )
-                } else if idx <= 55 {
+                } else if tier == 3 {
                     if opp_to_call == 0 {
                         pick_preferred_action(
                             &legal,
@@ -80,7 +83,7 @@ pub fn sample_opponent_action(
                     } else {
                         pick_preferred_action(&legal, &[CALL_CHECK, H_FOLD], rng)
                     }
-                } else if idx <= 90 {
+                } else if tier == 4 {
                     if opp_to_call == 0 {
                         CALL_CHECK
                     } else if opp_to_call <= BIG_BLIND {
@@ -191,9 +194,10 @@ pub fn sample_opponent_action(
         "rock" | "nit" | "tight_passive" => {
             if game.round == 1 {
                 let (idx, _) = preflop_bucket(hole[0], hole[1]);
-                if idx <= 15 {
+                let tier = preflop_strength_tier(idx);
+                if tier == 1 {
                     pick_preferred_action(&legal, &[RAISE_MIN, RAISE_THIRD_POT, CALL_CHECK], rng)
-                } else if idx <= 30 && opp_to_call <= BIG_BLIND {
+                } else if tier == 2 && opp_to_call <= BIG_BLIND {
                     CALL_CHECK
                 } else {
                     if opp_to_call == 0 {

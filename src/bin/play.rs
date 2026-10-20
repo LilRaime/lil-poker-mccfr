@@ -60,10 +60,10 @@ fn main() {
     if args.game == "holdem" {
         /* Default holdem strategy path if the user didn't override it. */
         let holdem_strategy_path = if args.strategy == "models/leduc_strategy.json" {
-            if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
-                "models/holdem_strategy_distilled.bin".to_string()
-            } else if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
+            if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
                 "models/holdem_abstract_strategy.bin".to_string()
+            } else if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
+                "models/holdem_strategy_distilled.bin".to_string()
             } else {
                 "models/holdem_abstract_strategy.json".to_string()
             }

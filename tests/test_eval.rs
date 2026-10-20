@@ -1,5 +1,6 @@
 use lil_poker_mccfr::cfr::abstraction::{
-    detect_board_texture, detect_draws, postflop_equity_bucket, BoardFlushTexture,
+    detect_board_texture, detect_draws, detect_draws_detailed, postflop_equity_bucket,
+    BoardFlushTexture,
 };
 use lil_poker_mccfr::game::holdem::{evaluate_7cards, Card, Rank, Suit};
 
@@ -547,5 +548,172 @@ fn test_kicker_aware_flush_and_straight_abstraction() {
     assert_eq!(
         b_board_st, 62,
         "Playing the board straight must map to bucket 62"
+    );
+}
+
+#[test]
+fn test_dangerous_board_detection() {
+    use lil_poker_mccfr::cfr::abstraction::is_dangerous_board;
+
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. 4-to-straight board: 4d 6d 7c 3c (any 5 makes straight) */
+    let board_wet_straight = [
+        card(Rank::Four, Suit::Diamonds),
+        card(Rank::Six, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    assert!(
+        is_dangerous_board(&board_wet_straight),
+        "4-to-straight board must be detected as dangerous"
+    );
+
+    /* 2. 4-to-flush board */
+    let board_wet_flush = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Six, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::King, Suit::Clubs),
+    ];
+    assert!(
+        is_dangerous_board(&board_wet_flush),
+        "4-to-flush board must be detected as dangerous"
+    );
+
+    /* 3. Dry, disconnected board: K♠ 8♦ 2♣ */
+    let board_dry = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Eight, Suit::Diamonds),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    assert!(
+        !is_dangerous_board(&board_dry),
+        "Dry rainbow disconnected board must NOT be dangerous"
+    );
+}
+
+#[test]
+fn test_wheel_and_broadway_gutshot_vs_open_ended_draws() {
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. Wheel Draw: A-2 on 3-4-K board.
+     * Only 5 completes the straight (4 outs).
+     * Must be is_gutshot = true, is_straight_draw = false. */
+    let hole_wheel = [card(Rank::Ace, Suit::Spades), card(Rank::Two, Suit::Hearts)];
+    let board_wheel = [
+        card(Rank::Three, Suit::Clubs),
+        card(Rank::Four, Suit::Diamonds),
+        card(Rank::King, Suit::Spades),
+    ];
+    let draw_wheel = detect_draws_detailed(&hole_wheel, &board_wheel);
+    assert!(
+        draw_wheel.is_gutshot,
+        "A-2 on 3-4-K is a 4-out gutshot to the wheel straight"
+    );
+    assert!(
+        !draw_wheel.is_straight_draw,
+        "A-2 on 3-4-K must NOT be classified as an 8-out open-ended straight draw"
+    );
+
+    /* 2. Broadway Gutshot: A-J on K-Q-2 board.
+     * Only 10 completes the straight (4 outs).
+     * Must be is_gutshot = true, is_straight_draw = false. */
+    let hole_broadway = [
+        card(Rank::Ace, Suit::Clubs),
+        card(Rank::Jack, Suit::Diamonds),
+    ];
+    let board_broadway = [
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    let draw_broadway = detect_draws_detailed(&hole_broadway, &board_broadway);
+    assert!(draw_broadway.is_gutshot, "A-J on K-Q-2 is a 4-out gutshot");
+    assert!(
+        !draw_broadway.is_straight_draw,
+        "A-J on K-Q-2 must NOT be classified as an 8-out open-ended straight draw"
+    );
+
+    /* 3. True Open-Ended Straight Draw: 6-7 on 8-9-2 board.
+     * Both 5 and 10 complete the straight (8 outs).
+     * Must be is_straight_draw = true. */
+    let hole_oesd = [
+        card(Rank::Six, Suit::Clubs),
+        card(Rank::Seven, Suit::Diamonds),
+    ];
+    let board_oesd = [
+        card(Rank::Eight, Suit::Hearts),
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    let draw_oesd = detect_draws_detailed(&hole_oesd, &board_oesd);
+    assert!(
+        draw_oesd.is_straight_draw,
+        "6-7 on 8-9-2 is an 8-out open-ended straight draw"
+    );
+
+    /* 4. Low Open-Ended Straight Draw: 2-3 on 4-5-K board.
+     * Both Ace and 6 complete the straight (8 outs).
+     * Must be is_straight_draw = true. */
+    let hole_low_oesd = [
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Three, Suit::Diamonds),
+    ];
+    let board_low_oesd = [
+        card(Rank::Four, Suit::Clubs),
+        card(Rank::Five, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    let draw_low_oesd = detect_draws_detailed(&hole_low_oesd, &board_low_oesd);
+    assert!(
+        draw_low_oesd.is_straight_draw,
+        "2-3 on 4-5-K has 8 outs (Ace or 6) and is open-ended"
+    );
+}
+
+#[test]
+fn test_pocket_pair_above_and_below_board_pair_buckets() {
+    let card = |rank, suit| Card { rank, suit };
+
+    /* Board has a pair of 8s: 8-8-2 */
+    let board_paired = [
+        card(Rank::Eight, Suit::Diamonds),
+        card(Rank::Eight, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+    ];
+
+    /* Overpair to board pair: AA on 8-8-2 */
+    let hole_aa = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
+    let bucket_aa = postflop_equity_bucket(&hole_aa, &board_paired);
+    assert_eq!(
+        bucket_aa, 54,
+        "AA on 8-8-2 must be bucket 54 (Pocket pair above board pair), got {}",
+        bucket_aa
+    );
+
+    /* Underpair to board pair: 55 on 8-8-2 */
+    let hole_55 = [
+        card(Rank::Five, Suit::Spades),
+        card(Rank::Five, Suit::Hearts),
+    ];
+    let bucket_55 = postflop_equity_bucket(&hole_55, &board_paired);
+    assert_eq!(
+        bucket_55, 48,
+        "55 on 8-8-2 must be bucket 48 (Pocket pair below board pair), got {}",
+        bucket_55
+    );
+
+    /* Overpair KK on 8-8-2 */
+    let hole_kk = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    let bucket_kk = postflop_equity_bucket(&hole_kk, &board_paired);
+    assert_eq!(
+        bucket_kk, 54,
+        "KK on 8-8-2 must be bucket 54 (Pocket pair above board pair), got {}",
+        bucket_kk
     );
 }

@@ -1,6 +1,8 @@
 /* Exploitative Strategy Adjustment and Purified Action Sampling */
 use super::tracker::OpponentTracker;
-use crate::cfr::abstraction::detect_river_nut_blocker;
+use crate::cfr::abstraction::{
+    detect_river_nut_blocker, is_dangerous_board, preflop_strength_tier,
+};
 use crate::game::config::*;
 use crate::game::holdem::Card;
 use rand::Rng;
@@ -395,32 +397,52 @@ impl OpponentTracker {
             .collect();
 
         /* 1. Heavy Bet / All-In Defense Guard:
-         * When facing a massive bet (to_call >= 350 chips),
+         * When facing a massive bet or all-in situation (to_call >= ALLIN_GUARD_THRESHOLD, or all-in call),
          * never call off stack with trash/weak hands due to mixed-strategy noise!
-         * Conversely, monster hands (bucket <= 12 preflop) must never fold to shoves!
+         * Conversely, monster hands (Tier 1 & Tier 2: AA-99, AK, AQ) must never fold preflop to normal shoves!
          */
-        if to_call >= ALLIN_GUARD_THRESHOLD {
-            if is_preflop && bucket <= 12 {
-                /* Premium pocket pairs never fold preflop to a shove */
-                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                    probs[f_i] = 0.0;
+        let can_raise = legal_actions
+            .iter()
+            .any(|&a| (RAISE_MIN..=ALL_IN).contains(&a));
+        let is_shove_faced = to_call >= ALLIN_GUARD_THRESHOLD
+            || (!can_raise && to_call > 0)
+            || (round == 4 && to_call >= BIG_BLIND * 10)
+            || (round == 3 && to_call >= BIG_BLIND * 20);
+
+        if is_shove_faced {
+            if is_preflop {
+                let pf_tier = preflop_strength_tier(bucket);
+                if pf_tier <= 2 && to_call < ALLIN_GUARD_THRESHOLD * 2 {
+                    /* Premium pocket pairs & monster hands (AA-99, AK, AQ) never fold preflop to normal shoves */
+                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                        probs[f_i] = 0.0;
+                    }
                 }
             }
 
             let is_trash = if is_preflop {
-                if bucket <= 12 {
-                    false /* Pocket pairs (AA - 22) */
-                } else if bucket <= 90 {
-                    bucket > 75 /* Weakest suited hands */
+                let pf_tier = preflop_strength_tier(bucket);
+                if to_call >= ALLIN_GUARD_THRESHOLD {
+                    /* Facing massive 35+ BB shove/5-bet: only Tier 1 & 2 can call; Tier 3 (88, 77, 66) and below fold! */
+                    pf_tier >= 3
                 } else {
-                    bucket > 120 /* Weakest offsuited hands (72o, 83o, etc.) */
+                    /* Facing standard shove: Tier 4 & 5 (small pairs 22-55, unsuited rags, weak suited) fold */
+                    pf_tier >= 4
                 }
             } else if round == 4 {
-                /* On River facing massive overbet/shove (35+ BB): only Two Pair+ (>= 48) or strong TPTK can call */
+                /* On River facing massive overbet/shove: only Two Pair+ (>= 48) can comfortably call */
                 bucket < 48
             } else {
                 /* Flop/Turn facing massive shove: need strong made hand (>= 38) or monster combo draw (>= 24) */
-                bucket < 38 && bucket != 24 && bucket != 25
+                let is_wet = board.map(is_dangerous_board).unwrap_or(false);
+                if bucket < 38 && bucket != 24 && bucket != 25 {
+                    true
+                } else if round == 3 && (42..=44).contains(&bucket) && is_wet {
+                    /* Bare mid/low overpair on a 4-to-straight or monotone board is trash against a massive shove */
+                    true
+                } else {
+                    false
+                }
             };
 
             if is_trash {
@@ -439,9 +461,10 @@ impl OpponentTracker {
 
         /* 2. Preflop Button Steal Exploitation:
          * In Heads-Up, Button opens 80-85% of hands profitably.
-         * For playable hands (bucket <= 120), shift fold probabilities into raises to steal blinds.
+         * For playable hands (tiers 1-4), shift fold probabilities into raises to steal blinds.
          */
-        if is_preflop && to_call <= PREFLOP_STEAL_MAX_TO_CALL && bucket <= 120 {
+        if is_preflop && to_call <= PREFLOP_STEAL_MAX_TO_CALL && preflop_strength_tier(bucket) <= 4
+        {
             let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
             let raise_idx = legal_actions
                 .iter()

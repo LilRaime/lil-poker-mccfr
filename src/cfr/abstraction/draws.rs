@@ -54,7 +54,7 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     let h0 = hole[0].rank as usize;
     let h1 = hole[1].rank as usize;
     let mut is_straight_draw = false;
-    for r in 0..10 {
+    for r in 0..9 {
         if ranks[r]
             && ranks[r + 1]
             && ranks[r + 2]
@@ -63,12 +63,6 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
         {
             is_straight_draw = true;
             break;
-        }
-    }
-    if !is_straight_draw && ranks[12] {
-        let low_count = (ranks[0] as u8) + (ranks[1] as u8) + (ranks[2] as u8) + (ranks[3] as u8);
-        if low_count >= 3 && (h0 == 12 || h0 <= 3 || h1 == 12 || h1 <= 3) {
-            is_straight_draw = true;
         }
     }
 

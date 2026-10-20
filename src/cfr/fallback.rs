@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::{
     Card, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
@@ -61,80 +61,89 @@ pub fn get_holdem_fallback_strategy(
 /* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers */
 fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
     let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
+    let tier = preflop_strength_tier(idx);
 
-    if idx <= 15 {
-        /* Tier 1: Premium (AA, KK, QQ, JJ, TT, 99, AKs, AQs, AJs, AKo, AQo) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.05;
-            s[RAISE_MIN as usize] = 0.15;
-            s[RAISE_THIRD_POT as usize] = 0.35;
-            s[RAISE_HALF_POT as usize] = 0.40;
-            s[ALL_IN as usize] = 0.05;
-        } else if to_call <= PF_TIER1_CALL_MAX {
-            s[CALL_CHECK as usize] = 0.30;
-            s[RAISE_MIN as usize] = 0.15;
-            s[RAISE_THIRD_POT as usize] = 0.20;
-            s[RAISE_HALF_POT as usize] = 0.25;
-            s[ALL_IN as usize] = 0.10;
-        } else {
-            /* Facing 3-bet/4-bet shove: Call or All-in */
-            s[CALL_CHECK as usize] = 0.40;
-            s[ALL_IN as usize] = 0.60;
+    match tier {
+        1 => {
+            /* Tier 1: Premium / Monsters (AA, KK, QQ, AKs, AKo) */
+            if to_call == 0 {
+                s[CALL_CHECK as usize] = 0.05;
+                s[RAISE_MIN as usize] = 0.15;
+                s[RAISE_THIRD_POT as usize] = 0.35;
+                s[RAISE_HALF_POT as usize] = 0.40;
+                s[ALL_IN as usize] = 0.05;
+            } else if to_call <= PF_TIER1_CALL_MAX {
+                s[CALL_CHECK as usize] = 0.30;
+                s[RAISE_MIN as usize] = 0.15;
+                s[RAISE_THIRD_POT as usize] = 0.20;
+                s[RAISE_HALF_POT as usize] = 0.25;
+                s[ALL_IN as usize] = 0.10;
+            } else {
+                /* Facing 3-bet/4-bet shove: Call or All-in */
+                s[CALL_CHECK as usize] = 0.40;
+                s[ALL_IN as usize] = 0.60;
+            }
         }
-    } else if idx <= 45 {
-        /* Tier 2: Strong (88, 77, 66, ATs-A8s, KQs-KTs, QJs, QTs, JTs, AJo, KQo) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.20;
-            s[RAISE_MIN as usize] = 0.25;
-            s[RAISE_THIRD_POT as usize] = 0.35;
-            s[RAISE_HALF_POT as usize] = 0.20;
-        } else if to_call <= PF_TIER2_CALL_MAX {
-            s[CALL_CHECK as usize] = 0.65;
-            s[RAISE_MIN as usize] = 0.15;
-            s[RAISE_THIRD_POT as usize] = 0.15;
-            s[RAISE_HALF_POT as usize] = 0.05;
-        } else {
-            s[FOLD as usize] = 0.25;
-            s[CALL_CHECK as usize] = 0.60;
-            s[RAISE_HALF_POT as usize] = 0.10;
-            s[ALL_IN as usize] = 0.05;
+        2 => {
+            /* Tier 2: Very Strong (JJ, TT, 99, AQs-ATs, KQs, AQo, KQo) */
+            if to_call == 0 {
+                s[CALL_CHECK as usize] = 0.15;
+                s[RAISE_MIN as usize] = 0.25;
+                s[RAISE_THIRD_POT as usize] = 0.35;
+                s[RAISE_HALF_POT as usize] = 0.25;
+            } else if to_call <= PF_TIER2_CALL_MAX {
+                s[CALL_CHECK as usize] = 0.65;
+                s[RAISE_MIN as usize] = 0.15;
+                s[RAISE_THIRD_POT as usize] = 0.15;
+                s[RAISE_HALF_POT as usize] = 0.05;
+            } else {
+                s[FOLD as usize] = 0.35;
+                s[CALL_CHECK as usize] = 0.50;
+                s[ALL_IN as usize] = 0.15;
+            }
         }
-    } else if idx <= 85 {
-        /* Tier 3: Playable / Speculative (55-22, suited connectors, suited Aces, broadways) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.75;
-            s[RAISE_THIRD_POT as usize] = 0.15;
-            s[RAISE_MIN as usize] = 0.10;
-        } else if to_call <= PF_TIER3_CHEAP_CALL_MAX {
-            s[CALL_CHECK as usize] = 0.80;
-            s[RAISE_THIRD_POT as usize] = 0.10;
-            s[FOLD as usize] = 0.10;
-        } else if to_call <= PF_TIER3_FOLD_BOUNDARY {
-            s[CALL_CHECK as usize] = 0.45;
-            s[FOLD as usize] = 0.55;
-        } else {
-            s[FOLD as usize] = 0.90;
-            s[CALL_CHECK as usize] = 0.10;
+        3 => {
+            /* Tier 3: Strong / Playable (88, 77, 66, A9s-A2s, suited broadways, suited connectors) */
+            if to_call == 0 {
+                s[CALL_CHECK as usize] = 0.45;
+                s[RAISE_MIN as usize] = 0.25;
+                s[RAISE_THIRD_POT as usize] = 0.25;
+                s[RAISE_HALF_POT as usize] = 0.05;
+            } else if to_call <= PF_TIER3_CHEAP_CALL_MAX {
+                s[CALL_CHECK as usize] = 0.70;
+                s[RAISE_MIN as usize] = 0.10;
+                s[RAISE_THIRD_POT as usize] = 0.05;
+                s[FOLD as usize] = 0.15;
+            } else if to_call <= PF_TIER3_FOLD_BOUNDARY {
+                s[CALL_CHECK as usize] = 0.40;
+                s[FOLD as usize] = 0.60;
+            } else {
+                /* Facing 3-bet/4-bet shove: Fold mid pairs & suited cards against massive shoves */
+                s[FOLD as usize] = 0.85;
+                s[CALL_CHECK as usize] = 0.15;
+            }
         }
-    } else if idx <= 125 {
-        /* Tier 4: Marginal (unsuited broadways, weak suited, low offsuit connectors) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.95;
-            s[RAISE_MIN as usize] = 0.05;
-        } else if to_call <= PF_TIER4_CALL_MAX {
-            s[CALL_CHECK as usize] = 0.35;
-            s[FOLD as usize] = 0.65;
-        } else {
-            s[FOLD as usize] = 0.96;
-            s[RAISE_THIRD_POT as usize] = 0.04;
+        4 => {
+            /* Tier 4: Marginal (55-22, weak suited, low unsuited broadway / connectors) */
+            if to_call == 0 {
+                s[CALL_CHECK as usize] = 0.90;
+                s[RAISE_MIN as usize] = 0.10;
+            } else if to_call <= PF_TIER4_CALL_MAX {
+                s[CALL_CHECK as usize] = 0.35;
+                s[FOLD as usize] = 0.65;
+            } else {
+                s[FOLD as usize] = 0.96;
+                s[RAISE_THIRD_POT as usize] = 0.04;
+            }
         }
-    } else {
-        /* Tier 5: Trash (unsuited rag hands: 72o, 83o, etc.) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 1.0;
-        } else {
-            s[FOLD as usize] = 0.98;
-            s[RAISE_THIRD_POT as usize] = 0.02;
+        _ => {
+            /* Tier 5: Trash (unsuited rag hands: 72o, 83o, etc.) */
+            if to_call == 0 {
+                s[CALL_CHECK as usize] = 1.0;
+            } else {
+                s[FOLD as usize] = 0.98;
+                s[RAISE_THIRD_POT as usize] = 0.02;
+            }
         }
     }
 
@@ -196,19 +205,19 @@ fn postflop_fallback(
     } else if bucket >= 28 {
         /* Marginal / Bluff Catcher (One Pair: middle pair, bottom pair, weak kicker) */
         if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.80;
-            s[RAISE_THIRD_POT as usize] = 0.15; /* Probe bet */
-            s[RAISE_MIN as usize] = 0.05;
-        } else if pot_odds <= 0.20 {
-            /* Cheap call / good pot odds */
-            s[CALL_CHECK as usize] = 0.70;
-            s[FOLD as usize] = 0.30;
-        } else if pot_odds <= 0.30 {
-            s[CALL_CHECK as usize] = 0.45;
-            s[FOLD as usize] = 0.55;
+            s[CALL_CHECK as usize] = 0.95;
+            s[RAISE_THIRD_POT as usize] = 0.05; /* Rare small probe bet */
+        } else if pot_odds <= 0.15 {
+            /* Very cheap call / exceptional pot odds */
+            s[CALL_CHECK as usize] = 0.65;
+            s[FOLD as usize] = 0.35;
+        } else if pot_odds <= 0.25 {
+            s[CALL_CHECK as usize] = 0.35;
+            s[FOLD as usize] = 0.65;
         } else {
-            s[CALL_CHECK as usize] = 0.20;
-            s[FOLD as usize] = 0.80;
+            /* Facing significant bet/raise: fold weak one-pair hands */
+            s[CALL_CHECK as usize] = 0.10;
+            s[FOLD as usize] = 0.90;
         }
     } else if round < 4 && bucket >= 15 {
         /* Strong Draws on Flop & Turn (Flush draw, Open-ended straight draw, combo draw) */

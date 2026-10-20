@@ -456,3 +456,74 @@ fn test_opponent_reach_distribution_monotone_texture() {
         dist.weights[idx_no_spade]
     );
 }
+
+#[test]
+fn test_opponent_reach_distribution_raiser_ako_weight() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Two, Suit::Diamonds),
+        card(Rank::Three, Suit::Clubs),
+    ];
+    let board = [
+        card(Rank::Jack, Suit::Hearts),
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    /* Preflop action: Opponent (Player 0) raises (2), Bot (Player 1) calls (1) */
+    let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
+
+    let dist_opp_raised =
+        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(1));
+
+    /* AKo combo: A♠ K♥ */
+    let ako_combo = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    let idx_ako = dist_opp_raised
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == ako_combo[0] && c[1] == ako_combo[1])
+                || (c[0] == ako_combo[1] && c[1] == ako_combo[0])
+        })
+        .expect("AKo combo must exist in remaining deck");
+
+    /* 72o junk combo: 7♠ 2♥ (Wait, 2c is on board, so 7s 2h is valid) */
+    let junk_72 = [
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    let idx_72 = dist_opp_raised
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == junk_72[0] && c[1] == junk_72[1]) || (c[0] == junk_72[1] && c[1] == junk_72[0])
+        })
+        .expect("72o combo must exist in remaining deck");
+
+    let w_ako = dist_opp_raised.weights[idx_ako];
+    let w_72 = dist_opp_raised.weights[idx_72];
+
+    /* AKo is Tier 1, so for raiser it must have weight 1.0 (not 0.25 as in buggy index matching!) */
+    assert_eq!(
+        w_ako, 1.0,
+        "AKo for preflop raiser must have full 1.0 weight, got {}",
+        w_ako
+    );
+    assert_eq!(
+        w_72, 0.04,
+        "72o for preflop raiser must have trash 0.04 weight, got {}",
+        w_72
+    );
+}

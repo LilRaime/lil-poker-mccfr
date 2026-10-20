@@ -47,6 +47,59 @@ pub fn preflop_bucket(c1: Card, c2: Card) -> (usize, &'static str) {
     }
 }
 
+/* Canonical preflop hand strength tier (1..=5) based on Sklansky-Chubukov / HU cash equity:
+ * - 1: Monster (AA, KK, QQ, AKs, AKo)
+ * - 2: Very Strong (JJ, TT, 99, AQs-ATs, KQs, AQo, KQo)
+ * - 3: Strong / Playable (88, 77, 66, A9s-A2s, suited broadways, suited connectors 76s+, AJo-A9o, KJo-KTo, QJo)
+ * - 4: Marginal / Speculative (55-22, weak suited, low unsuited broadway / connectors)
+ * - 5: Trash (unsuited rags: 72o, 83o, etc.)
+ */
+pub fn preflop_strength_tier(idx: usize) -> u8 {
+    match idx {
+        /* Tier 1: Monsters */
+        0..=2 | 13 | 91 => 1,
+
+        /* Tier 2: Very Strong */
+        3..=5 | 14..=16 | 25 | 92 | 103 => 2,
+
+        /* Tier 3: Strong / Playable */
+        6..=8
+        | 17..=24
+        | 26..=28
+        | 36..=38
+        | 46..=47
+        | 55
+        | 63
+        | 70
+        | 76
+        | 93..=95
+        | 104..=105
+        | 114 => 3,
+
+        /* Tier 4: Marginal */
+        9..=12
+        | 29..=35
+        | 39..=45
+        | 48
+        | 56
+        | 64
+        | 71
+        | 77
+        | 81
+        | 85
+        | 96..=102
+        | 106
+        | 115
+        | 124
+        | 133
+        | 141
+        | 148 => 4,
+
+        /* Tier 5: Trash */
+        _ => 5,
+    }
+}
+
 #[allow(dead_code)]
 fn rank_char(r: Rank) -> &'static str {
     match r {
