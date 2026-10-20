@@ -79,6 +79,33 @@ pub fn calculate_ehs_equity(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> f6
     wins / (num_trials as f64)
 }
 
+/* Checks if the board contains 4-to-a-straight for a higher straight than st_high,
+ * and the player does not hold any higher straight card. */
+fn is_idiot_end_straight(hole: &[Card; NUM_HOLE_CARDS], board: &[Card], st_high: usize) -> bool {
+    if board.len() < 4 || st_high >= 12 {
+        return false;
+    }
+    let mut ranks_present = [false; 13];
+    for c in board {
+        ranks_present[c.rank as usize] = true;
+    }
+    let player_has = |rank: usize| hole[0].rank as usize == rank || hole[1].rank as usize == rank;
+
+    /* Check each potential higher straight end from st_high + 1 to 12 */
+    for hr in (st_high + 1)..=12 {
+        if hr >= 4 {
+            let start = hr - 4;
+            /* Check how many of the 5 cards needed for the straight ending at hr are on board */
+            let board_cards = (start..=hr).filter(|&r| ranks_present[r]).count();
+            if board_cards >= 4 && !player_has(hr) {
+                /* Board offers a higher straight that we do not have the high card for */
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /* Fast high-resolution draw-aware and texture-aware postflop equity bucketing (0..76).
  * Differentiates:
  * - Monster Combos (FD + OESD, FD + Gutshot)
@@ -169,7 +196,8 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
         }
         4 => {
             /* Kicker-aware Straight Abstraction:
-             * Accurately detects when player holds higher straight card vs playing the board straight. */
+             * Accurately detects when player holds higher straight card vs playing the board straight,
+             * and detects idiot-end straights on 4-to-straight boards. */
             let st_high = (score & 0xF) as usize;
 
             let is_board_straight = if board.len() >= 5 {
@@ -179,9 +207,10 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                 false
             };
 
-            if is_board_straight {
-                /* Player does not hold a higher card than the board straight */
-                62 /* Board Straight */
+            if is_board_straight || is_idiot_end_straight(hole, board, st_high) {
+                /* Player does not hold a higher card than the board straight,
+                 * or holds the dummy / idiot end on a 4-to-straight board */
+                62 /* Board Straight / Dummy Straight */
             } else {
                 match st_high {
                     12 => 66,      /* Broadway A-high straight */
@@ -260,7 +289,44 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     base
                 }
             } else {
-                50 /* Top and Bottom Pair */
+                /* Board has a pair, player has ONE pair with the board */
+                let (hit_rank, kicker) = if hit_top {
+                    let k = if hole[0].rank as usize == top_pair {
+                        hole[1].rank as usize
+                    } else {
+                        hole[0].rank as usize
+                    };
+                    (top_pair, k)
+                } else {
+                    let k = if hole[0].rank as usize == bottom_pair {
+                        hole[1].rank as usize
+                    } else {
+                        hole[0].rank as usize
+                    };
+                    (bottom_pair, k)
+                };
+
+                if hit_rank == top_pair {
+                    /* Player holds top pair on a paired board */
+                    /* Check if hole kicker actually plays over board cards */
+                    let max_unpaired_board = board
+                        .iter()
+                        .map(|c| c.rank as usize)
+                        .filter(|&r| r != top_pair && r != bottom_pair)
+                        .max()
+                        .unwrap_or(0);
+
+                    if kicker > max_unpaired_board && kicker >= 11 {
+                        50 /* Top Pair on paired board with Ace/King kicker */
+                    } else if kicker > max_unpaired_board && kicker >= 8 {
+                        48 /* Top Pair on paired board with decent kicker */
+                    } else {
+                        47 /* Counterfeited kicker on paired board (kicker does not play) */
+                    }
+                } else {
+                    /* Player holds bottom pair on a paired board */
+                    46 /* Bottom pair on paired board (weak two pair) */
+                }
             }
         }
         1 => {

@@ -178,7 +178,14 @@ impl OpponentTracker {
             for &a in legal_actions {
                 let idx = a as usize;
                 if is_strong {
-                    if a == RAISE_HALF_POT {
+                    if round == 4 && bucket == 62 {
+                        /* Board straight / idiot end on River is chop/bluff-catch, do not blast overbets */
+                        if a == CALL_CHECK {
+                            adjusted[idx] *= 1.80;
+                        } else if a == RAISE_HALF_POT || a == ALL_IN {
+                            adjusted[idx] *= 0.10;
+                        }
+                    } else if a == RAISE_HALF_POT {
                         adjusted[idx] *= 2.50;
                     } else if a == ALL_IN {
                         adjusted[idx] *= 2.30;
@@ -362,13 +369,14 @@ impl OpponentTracker {
             bucket,
             round,
             to_call,
+            to_call.max(BIG_BLIND) * 2,
             None,
             None,
             rng,
         )
     }
 
-    /* Full contextual purified action sampling with hole and board awareness for blocker effects */
+    /* Full contextual purified action sampling with hole and board awareness for blocker effects and pot odds */
     #[allow(clippy::too_many_arguments)]
     pub fn select_action_purified_context<R: Rng>(
         &self,
@@ -377,6 +385,7 @@ impl OpponentTracker {
         bucket: usize,
         round: u8,
         to_call: i32,
+        pot: i32,
         hole: Option<&[Card; 2]>,
         board: Option<&[Card]>,
         rng: &mut R,
@@ -396,18 +405,43 @@ impl OpponentTracker {
             })
             .collect();
 
-        /* 1. Heavy Bet / All-In Defense Guard:
-         * When facing a massive bet or all-in situation (to_call >= ALLIN_GUARD_THRESHOLD, or all-in call),
-         * never call off stack with trash/weak hands due to mixed-strategy noise!
-         * Conversely, monster hands (Tier 1 & Tier 2: AA-99, AK, AQ) must never fold preflop to normal shoves!
+        /* 1. Pot-Odds Aware All-In Defense and Heavy Bet Guard:
+         * Never call off stack with trash hands to massive bets due to mixed-strategy noise!
+         * Conversely:
+         * - If to_call is tiny or pot odds are overwhelming (pot_odds <= 0.15), NEVER fold (pot-committed)!
+         * - Strong draws (OESD, Flush Draws, Combo Draws) on Flop/Turn have direct equity and must not fold to reasonable bets.
+         * - Monster hands (Tier 1 & Tier 2: AA-99, AK, AQ) must never fold preflop to normal shoves!
          */
         let can_raise = legal_actions
             .iter()
             .any(|&a| (RAISE_MIN..=ALL_IN).contains(&a));
-        let is_shove_faced = to_call >= ALLIN_GUARD_THRESHOLD
-            || (!can_raise && to_call > 0)
-            || (round == 4 && to_call >= BIG_BLIND * 10)
-            || (round == 3 && to_call >= BIG_BLIND * 20);
+
+        let total_pot = pot + to_call;
+        let pot_odds = if total_pot > 0 {
+            to_call as f64 / total_pot as f64
+        } else {
+            1.0
+        };
+
+        /* If pot odds are dirt cheap (pot_odds <= 0.15), never fold! Shift fold mass into CALL_CHECK */
+        if to_call > 0 && pot_odds <= 0.15 {
+            if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                let f_prob = probs[f_i];
+                probs[f_i] = 0.0;
+                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] += f_prob.max(0.50);
+                }
+            }
+        }
+
+        /* A situation is only a dangerous shove if to_call is substantial (>= 4 BB) and pot odds are meaningful (> 0.18) */
+        let is_substantial_bet = to_call >= BIG_BLIND * 4;
+        let is_shove_faced = is_substantial_bet
+            && pot_odds > 0.18
+            && (to_call >= ALLIN_GUARD_THRESHOLD
+                || !can_raise
+                || (round == 4 && to_call >= BIG_BLIND * 10)
+                || (round == 3 && to_call >= BIG_BLIND * 20));
 
         if is_shove_faced {
             if is_preflop {
@@ -430,12 +464,17 @@ impl OpponentTracker {
                     pf_tier >= 4
                 }
             } else if round == 4 {
-                /* On River facing massive overbet/shove: only Two Pair+ (>= 48) can comfortably call */
-                bucket < 48
+                /* On River facing massive overbet/shove: only genuine Two Pair+ (>= 49) can comfortably call */
+                bucket < 49
             } else {
-                /* Flop/Turn facing massive shove: need strong made hand (>= 38) or monster combo draw (>= 24) */
+                /* Flop/Turn facing massive shove:
+                 * Strong draws (OESD, Flush Draws, Combo Draws) have 32-50% equity.
+                 * With reasonable pot odds (<= 0.35), they are profitable calls and not trash! */
                 let is_wet = board.map(is_dangerous_board).unwrap_or(false);
-                if bucket < 38 && bucket != 24 && bucket != 25 {
+                let is_strong_draw = (15..=17).contains(&bucket) || (19..=27).contains(&bucket);
+                if is_strong_draw && pot_odds <= 0.35 {
+                    false
+                } else if bucket < 38 && !is_strong_draw {
                     true
                 } else if round == 3 && (42..=44).contains(&bucket) && is_wet {
                     /* Bare mid/low overpair on a 4-to-straight or monotone board is trash against a massive shove */
@@ -503,7 +542,23 @@ impl OpponentTracker {
             }
         }
 
-        /* 4. Noise Clamping:
+        /* 4. Idiot-end / Board Straight safety on River:
+         * If we have bucket 62 (Board Straight or Idiot-End straight on 4-to-straight board),
+         * NEVER blast a 125% pot overbet or shove into a checked pot!
+         */
+        if round == 4 && bucket == 62 {
+            if let Some(r_hp) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
+                probs[r_hp] *= 0.10;
+            }
+            if let Some(r_ai) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                probs[r_ai] *= 0.05;
+            }
+            if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                probs[c_i] = probs[c_i].max(0.50);
+            }
+        }
+
+        /* 5. Noise Clamping:
          * Suppress tiny exploration noise (< 2.5%) if a dominant legal move exists.
          */
         let max_prob = probs.iter().copied().fold(0.0f64, f64::max);
@@ -538,6 +593,8 @@ impl OpponentTracker {
                 }
             }
             *legal_actions.last().unwrap()
+        } else if let Some(&c) = legal_actions.iter().find(|&&a| a == CALL_CHECK) {
+            c
         } else {
             *legal_actions.first().unwrap_or(&1)
         }

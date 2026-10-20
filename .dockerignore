@@ -1,6 +1,15 @@
 target/
 .git/
+.github/
 .gitignore
 *.txt
 *.bak
+*.md
 Dockerfile
+
+tests/
+
+models/*.bin
+!models/holdem_abstract_strategy.bin
+models/*.json
+!models/holdem_abstract_strategy.json

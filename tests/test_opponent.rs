@@ -415,6 +415,7 @@ fn test_river_blocker_detection_and_bluffing() {
             10,
             4,
             0,
+            1000,
             Some(&hole_with_nut_blocker),
             Some(&board),
             &mut rng,
@@ -429,6 +430,7 @@ fn test_river_blocker_detection_and_bluffing() {
             10,
             4,
             0,
+            1000,
             Some(&hole_no_blocker),
             Some(&board),
             &mut rng,
@@ -530,6 +532,7 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         6, /* 88 */
         1, /* Preflop */
         4000,
+        5000,
         None,
         None,
         &mut rng,
@@ -545,6 +548,7 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         0, /* AA */
         1, /* Preflop */
         4000,
+        5000,
         None,
         None,
         &mut rng,
@@ -571,6 +575,7 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         43, /* Mid Overpair */
         3,  /* Turn */
         3661,
+        4500,
         Some(&hole_jj),
         Some(&board_wet),
         &mut rng,
@@ -595,6 +600,7 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         35, /* Middle Pair under multiple overcards */
         4,  /* River */
         3254,
+        4000,
         Some(&hole_jj),
         Some(&board_overcards),
         &mut rng,
@@ -669,6 +675,7 @@ fn test_preflop_button_steal_requires_unraised_pot() {
         20,
         1,           /* Preflop */
         SMALL_BLIND, /* Small blind to call in unraised pot */
+        BIG_BLIND + SMALL_BLIND,
         None,
         None,
         &mut rng,
@@ -683,12 +690,93 @@ fn test_preflop_button_steal_requires_unraised_pot() {
      * This is NOT a button steal situation! Folds should NOT be converted into 3-bets!
      * 0.02 raise noise gets clamped to 0, leaving 100% FOLD. */
     let action_defend = tracker.select_action_purified_context(
-        &raw_probs, &legal, 20, 1,         /* Preflop */
+        &raw_probs,
+        &legal,
+        20,
+        1,         /* Preflop */
         BIG_BLIND, /* Facing a min-raise (BIG_BLIND to call) */
-        None, None, &mut rng,
+        BIG_BLIND * 2,
+        None,
+        None,
+        &mut rng,
     );
     assert_eq!(
         action_defend, FOLD,
         "Facing a raise (to_call = BIG_BLIND) must NOT trigger button steal redistribution into raises"
+    );
+}
+
+#[test]
+fn test_pot_committed_defense_never_folds() {
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::thread_rng();
+    let legal = [FOLD, CALL_CHECK];
+
+    /* Regression test for Match 4 & 5 bug:
+     * Bot faced an all-in where cannot raise (!can_raise), but to_call was tiny (139 into 14,099 pot).
+     * Even with a draw (OESD, bucket 15) and raw probs wanting to fold 100%,
+     * pot odds <= 0.15 MUST forbid folding (probs[FOLD] = 0.0), forcing a CALL! */
+    let raw_probs_fold = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let chosen = tracker.select_action_purified_context(
+        &raw_probs_fold,
+        &legal,
+        15, /* OESD */
+        2,  /* Flop */
+        139,
+        14099,
+        None,
+        None,
+        &mut rng,
+    );
+    assert_eq!(
+        chosen, CALL_CHECK,
+        "Pot-committed draw getting 100:1 pot odds must NEVER fold!"
+    );
+}
+
+#[test]
+fn test_idiot_end_straight_and_counterfeit_two_pair() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. Idiot-end straight: 2d 2s on 5h 3s 9c 6c 4s (Kimiko match)
+     * Board has 3, 4, 5, 6 (any 7 has higher straight).
+     * Hand must be categorized as bucket 62 (Board/Dummy Straight), NOT 63! */
+    let hole_22 = [
+        card(Rank::Two, Suit::Diamonds),
+        card(Rank::Two, Suit::Spades),
+    ];
+    let board_straight = [
+        card(Rank::Five, Suit::Hearts),
+        card(Rank::Three, Suit::Spades),
+        card(Rank::Nine, Suit::Clubs),
+        card(Rank::Six, Suit::Clubs),
+        card(Rank::Four, Suit::Spades),
+    ];
+    let b_straight = postflop_equity_bucket(&hole_22, &board_straight);
+    assert_eq!(
+        b_straight, 62,
+        "Idiot-end straight on 4-to-straight board must map to bucket 62!"
+    );
+
+    /* 2. Counterfeited two pair: Kh 5d on Ts Kc 6d Qc 6c (glambot match)
+     * Board has pair of 6s, player pairs the King, but 5 kicker does not play.
+     * Hand must map to bucket 47, NOT bucket 50! */
+    let hole_k5 = [
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Five, Suit::Diamonds),
+    ];
+    let board_k5 = [
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::King, Suit::Clubs),
+        card(Rank::Six, Suit::Diamonds),
+        card(Rank::Queen, Suit::Clubs),
+        card(Rank::Six, Suit::Clubs),
+    ];
+    let b_k5 = postflop_equity_bucket(&hole_k5, &board_k5);
+    assert_eq!(
+        b_k5, 47,
+        "Counterfeit two pair on paired board must map to bucket 47, not 50!"
     );
 }

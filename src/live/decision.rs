@@ -121,6 +121,7 @@ pub fn decide_action(
         current_bucket,
         round,
         to_call,
+        pot,
         Some(hole),
         Some(board),
         &mut rng,
