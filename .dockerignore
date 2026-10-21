@@ -13,3 +13,4 @@ models/*.bin
 !models/holdem_abstract_strategy.bin
 models/*.json
 !models/holdem_abstract_strategy.json
+!models/opponent_profiles.json

@@ -780,3 +780,48 @@ fn test_idiot_end_straight_and_counterfeit_two_pair() {
         "Counterfeit two pair on paired board must map to bucket 47, not 50!"
     );
 }
+
+#[test]
+fn test_persistent_opponent_profile_and_bluff_spew_guard() {
+    let mut tracker = OpponentTracker::new();
+    for _ in 0..10 {
+        tracker.record_action_street_detailed(CALL_CHECK, 1, false, 100, 200);
+        /* Duplicate preflop action in same hand must not double-count vpip_hands */
+        tracker.record_action_street_detailed(CALL_CHECK, 1, false, 200, 400);
+        tracker.end_hand();
+    }
+    assert_eq!(tracker.total_hands, 10);
+    assert_eq!(tracker.vpip_hands, 10);
+    assert!((tracker.vpip_ratio() - 1.0).abs() < 1e-6);
+
+    let tmp_path = "/tmp/lil_poker_test_opp_profiles.json";
+    tracker
+        .save_profile(tmp_path, "test_villain")
+        .expect("save profile");
+    let loaded =
+        OpponentTracker::load_profile(tmp_path, "test_villain").expect("load saved profile");
+    assert_eq!(loaded.total_hands, 9); /* 10 * 0.90 session decay */
+    let _ = std::fs::remove_file(tmp_path);
+
+    /* Bluff-spew guard: facing a bet on Flop with pure air (bucket 6), never check-raise or shove */
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+    let legal = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let raw_probs = [0.05, 0.05, 0.20, 0.20, 0.20, 0.30];
+    let act = tracker.select_action_purified_context(
+        &raw_probs, &legal, 6, /* Queen-high pure air */
+        2, /* Flop */
+        250, 500, None, None, &mut rng,
+    );
+    assert!(
+        act < RAISE_MIN,
+        "Pure air facing a flop bet must not bluff-raise or shove, got {}",
+        act
+    );
+}

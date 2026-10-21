@@ -1,5 +1,7 @@
 /target
 *.txt
 *.json.bak
-models/
+models/*
 !models/.gitkeep
+*.md
+!README.md

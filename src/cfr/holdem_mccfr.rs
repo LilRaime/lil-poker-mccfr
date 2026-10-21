@@ -270,24 +270,24 @@ impl HoldemMCCFRSolver {
                 )
             };
             self.get_node(hash, || {
-                crate::cfr::abstraction::get_holdem_infoset_key_rich(
+                crate::cfr::abstraction::get_holdem_infoset_key_rich_with_bucket(
                     &game.hole[curr_player],
-                    &game.board,
+                    buckets[curr_player],
                     game.round,
                     &game.history,
                 )
             })
         } else {
-            let hash = crate::cfr::abstraction::hash_holdem_infoset_key(
+            let hash = crate::cfr::abstraction::hash_holdem_infoset_key_with_bucket(
                 &game.hole[curr_player],
-                &game.board,
+                buckets[curr_player],
                 game.round,
                 &game.history,
             );
             self.get_node(hash, || {
-                crate::cfr::abstraction::get_holdem_infoset_key(
+                crate::cfr::abstraction::get_holdem_infoset_key_with_bucket(
                     &game.hole[curr_player],
-                    &game.board,
+                    buckets[curr_player],
                     game.round,
                     &game.history,
                 )
@@ -329,7 +329,12 @@ impl HoldemMCCFRSolver {
 
                 if self.pruning {
                     let r = node.get_regret(act_idx);
-                    if r < r_thresh && rng.gen::<f64>() < p_prune {
+                    let should_prune = if self.dcfr {
+                        r < r_thresh
+                    } else {
+                        weight > 200.0 && r <= 0.0 && legal_probs[i] < 0.01
+                    };
+                    if should_prune && rng.gen::<f64>() < p_prune {
                         explored[i] = false;
                         continue;
                     }
@@ -438,7 +443,7 @@ impl HoldemMCCFRSolver {
                         2 => {
                             if key.starts_with("P:") {
                                 if let Some(end) = key.find('|') {
-                                    if key[2..end].len() > 3 {
+                                    if key[2..end].len() > 4 {
                                         return None;
                                     }
                                 }
@@ -447,7 +452,7 @@ impl HoldemMCCFRSolver {
                         3 => {
                             if key.starts_with("P:") {
                                 if let Some(end) = key.find('|') {
-                                    if key[2..end].len() > 3 {
+                                    if key[2..end].len() > 4 {
                                         return None;
                                     }
                                 }
@@ -574,6 +579,24 @@ impl HoldemMCCFRSolver {
         let strat: std::collections::HashMap<String, Vec<f64>> =
             serde_json::from_reader(reader_json)?;
         Ok(strat)
+    }
+
+    /* Warm-start solver nodes from an existing saved strategy file (for resuming/extending training) */
+    pub fn warm_start_from_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        let strat_map = Self::load_strategy_from_file(path)?;
+        let count = strat_map.len();
+        for (key, probs) in strat_map {
+            let mut h = 0xcbf29ce484222325u64;
+            for &b in key.as_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
+            node.accumulate_strategy(&probs, 100.0);
+            node.update_regrets_cfr_plus(&probs);
+            self.nodes.insert(h, InfosetEntry { key, node });
+        }
+        Ok(count)
     }
 }
 

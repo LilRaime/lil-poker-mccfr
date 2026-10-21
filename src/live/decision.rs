@@ -46,8 +46,9 @@ pub fn decide_action(
         legal_u8.push(RAISE_MIN);
         legal_u8.push(RAISE_THIRD_POT);
         legal_u8.push(RAISE_HALF_POT);
+        legal_u8.push(ALL_IN);
     }
-    if has("allin") || has("all_in") {
+    if (has("allin") || has("all_in")) && !legal_u8.contains(&ALL_IN) {
         legal_u8.push(ALL_IN);
     }
     if legal_u8.is_empty() {

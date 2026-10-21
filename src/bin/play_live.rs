@@ -27,7 +27,13 @@ struct Args {
     #[arg(short, long, default_value = "models/holdem_abstract_strategy.bin")]
     strategy: String,
 
-    #[arg(long, default_value_t = true)]
+    #[arg(
+        long,
+        default_value_t = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set
+    )]
     subgame_search: bool,
 }
 

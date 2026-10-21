@@ -116,40 +116,124 @@ impl OpponentReachDistribution {
             )
         };
 
-        let (opp_raised_flop, opp_called_flop) = if let Some(mp) = my_player {
+        let (opp_raised_flop, opp_called_flop, max_opp_raise_flop) = if let Some(mp) = my_player {
             let opp = 1 - mp;
             let actions = history.actions_in_round(1);
             let opp_actions: Vec<u8> = actions
                 .iter()
                 .enumerate()
-                .filter(|(idx, _)| idx % 2 == opp)
+                .filter(|&(idx, _)| {
+                    if round == 2 {
+                        /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
+                        (actions.len() - 1 - idx).is_multiple_of(2)
+                    } else {
+                        idx % 2 == opp || actions.len() == 1
+                    }
+                })
                 .map(|(_, &a)| a)
                 .collect();
-            (
-                opp_actions.iter().any(|&a| a >= 2),
-                opp_actions.contains(&1),
-            )
+            let max_r = opp_actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, opp_actions.contains(&1), max_r)
         } else {
             let actions = history.actions_in_round(1);
-            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+            let max_r = actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, actions.contains(&1), max_r)
         };
 
-        let (opp_raised_turn, opp_called_turn) = if let Some(mp) = my_player {
+        let (opp_raised_turn, opp_called_turn, max_opp_raise_turn) = if let Some(mp) = my_player {
             let opp = 1 - mp;
             let actions = history.actions_in_round(2);
             let opp_actions: Vec<u8> = actions
                 .iter()
                 .enumerate()
-                .filter(|(idx, _)| idx % 2 == opp)
+                .filter(|&(idx, _)| {
+                    if round == 3 {
+                        /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
+                        (actions.len() - 1 - idx).is_multiple_of(2)
+                    } else {
+                        idx % 2 == opp || actions.len() == 1
+                    }
+                })
                 .map(|(_, &a)| a)
                 .collect();
-            (
-                opp_actions.iter().any(|&a| a >= 2),
-                opp_actions.contains(&1),
-            )
+            let max_r = opp_actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, opp_actions.contains(&1), max_r)
         } else {
             let actions = history.actions_in_round(2);
-            (actions.iter().any(|&a| a >= 2), actions.contains(&1))
+            let max_r = actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, actions.contains(&1), max_r)
+        };
+
+        let (opp_raised_river, max_opp_raise_river) = if let Some(mp) = my_player {
+            let opp = 1 - mp;
+            let actions = history.actions_in_round(3);
+            let opp_actions: Vec<u8> = actions
+                .iter()
+                .enumerate()
+                .filter(|&(idx, _)| {
+                    if round == 4 && !actions.is_empty() {
+                        (actions.len() - 1 - idx).is_multiple_of(2)
+                    } else {
+                        idx % 2 == opp || actions.len() == 1
+                    }
+                })
+                .map(|(_, &a)| a)
+                .collect();
+            let max_r = opp_actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, max_r)
+        } else {
+            let actions = history.actions_in_round(3);
+            let max_r = actions
+                .iter()
+                .copied()
+                .filter(|&a| a >= 2)
+                .max()
+                .unwrap_or(0);
+            (max_r >= 2, max_r)
+        };
+
+        let flop_board_paired = board.len() >= 3
+            && (board[0].rank == board[1].rank
+                || board[0].rank == board[2].rank
+                || board[1].rank == board[2].rank);
+        let turn_board_paired = board.len() >= 4 && {
+            let mut rc = [0u8; 13];
+            for c in &board[..4] {
+                rc[c.rank as usize] += 1;
+            }
+            rc.iter().any(|&cnt| cnt >= 2)
+        };
+        let river_board_paired = board.len() >= 5 && {
+            let mut rc = [0u8; 13];
+            for c in &board[..5] {
+                rc[c.rank as usize] += 1;
+            }
+            rc.iter().any(|&cnt| cnt >= 2)
         };
 
         /* Check for monotone / 3-flush board texture across current community cards */
@@ -246,8 +330,16 @@ impl OpponentReachDistribution {
                 /* 1. Preflop Bayesian Prior (informed by blueprint strategy when provided) */
                 let pf_weight: f64 = if let Some(strat_map) = strategy_map {
                     let (_, pf_name) = preflop_bucket(cand[0], cand[1]);
-                    let pf_key = format!("P:{}/", pf_name);
-                    if let Some(probs) = strat_map.get(&pf_key) {
+                    let pf_key_facing_raise = format!("P:{}/r", pf_name);
+                    let pf_key_root = format!("P:{}/", pf_name);
+                    let probs_opt = if my_player == Some(0) && (opp_3bet_pf || opp_called_pf) {
+                        strat_map
+                            .get(&pf_key_facing_raise)
+                            .or_else(|| strat_map.get(&pf_key_root))
+                    } else {
+                        strat_map.get(&pf_key_root)
+                    };
+                    if let Some(probs) = probs_opt {
                         if opp_3bet_pf {
                             let r_prob: f64 = probs.iter().skip(RAISE_MIN as usize).sum();
                             r_prob.powi(2).max(0.01)
@@ -287,24 +379,46 @@ impl OpponentReachDistribution {
                     )
                 };
 
-                /* 2. Flop Bayesian Likelihood Update */
-                let flop_weight: f64 = if round >= 3 && board.len() >= 3 {
+                /* 2. Flop Bayesian Likelihood Update (active on Flop once opponent acts, and on Turn/River) */
+                let flop_weight: f64 = if board.len() >= 3
+                    && (round >= 3 || !history.actions_in_round(1).is_empty())
+                {
                     let f_score = evaluate_7cards(&cand, &board[..3]);
-                    let f_cat = f_score >> 32;
+                    let cand_hits_flop = cand[0].rank == cand[1].rank
+                        || board[..3]
+                            .iter()
+                            .any(|b| b.rank == cand[0].rank || b.rank == cand[1].rank);
+                    let f_cat = if flop_board_paired && !cand_hits_flop {
+                        0
+                    } else {
+                        f_score >> 32
+                    };
                     let (fd, sd) = detect_draws(&cand, &board[..3]);
 
                     if opp_raised_flop {
-                        /* Opponent bet or raised on flop: polarized to made hands or combo draws */
+                        /* Bet-size aware Flop likelihood: larger sizing polarizes range toward 2P+ and combo draws */
                         if f_cat >= 2 {
                             1.0 /* Two pair+ */
                         } else if f_cat == 1 {
-                            0.85 /* One pair */
+                            match max_opp_raise_flop {
+                                ALL_IN => 0.25,
+                                RAISE_HALF_POT => 0.55,
+                                _ => 0.85,
+                            }
                         } else if fd && sd {
                             0.95 /* Combo draw */
                         } else if fd || sd {
-                            0.75 /* Single draw */
+                            match max_opp_raise_flop {
+                                ALL_IN => 0.40,
+                                RAISE_HALF_POT => 0.65,
+                                _ => 0.75,
+                            }
                         } else {
-                            0.08 /* Pure air bluff */
+                            match max_opp_raise_flop {
+                                ALL_IN => 0.03,
+                                RAISE_HALF_POT => 0.06,
+                                _ => 0.08,
+                            }
                         }
                     } else if opp_called_flop {
                         /* Opponent check-called on flop: mostly draws, middle pairs, floaters */
@@ -331,22 +445,44 @@ impl OpponentReachDistribution {
                     1.0
                 };
 
-                /* 3. Turn Bayesian Likelihood Update */
-                let turn_weight: f64 = if round >= 4 && board.len() >= 4 {
+                /* 3. Turn Bayesian Likelihood Update (active on Turn once opponent acts, and on River) */
+                let turn_weight: f64 = if board.len() >= 4
+                    && (round >= 4 || !history.actions_in_round(2).is_empty())
+                {
                     let t_score = evaluate_7cards(&cand, &board[..4]);
-                    let t_cat = t_score >> 32;
+                    let cand_hits_turn = cand[0].rank == cand[1].rank
+                        || board[..4]
+                            .iter()
+                            .any(|b| b.rank == cand[0].rank || b.rank == cand[1].rank);
+                    let t_cat = if turn_board_paired && !cand_hits_turn {
+                        0
+                    } else {
+                        t_score >> 32
+                    };
                     let (fd, sd) = detect_draws(&cand, &board[..4]);
 
                     if opp_raised_turn {
-                        /* Double-barrel turn */
+                        /* Bet-size aware Turn barrel likelihood */
                         if t_cat >= 2 {
                             1.0
                         } else if t_cat == 1 {
-                            0.70
+                            match max_opp_raise_turn {
+                                ALL_IN => 0.15,
+                                RAISE_HALF_POT => 0.45,
+                                _ => 0.70,
+                            }
                         } else if fd || sd {
-                            0.65
+                            match max_opp_raise_turn {
+                                ALL_IN => 0.30,
+                                RAISE_HALF_POT => 0.55,
+                                _ => 0.65,
+                            }
                         } else {
-                            0.05
+                            match max_opp_raise_turn {
+                                ALL_IN => 0.02,
+                                RAISE_HALF_POT => 0.04,
+                                _ => 0.05,
+                            }
                         }
                     } else if opp_called_turn {
                         if t_cat >= 2 {
@@ -358,11 +494,40 @@ impl OpponentReachDistribution {
                         } else {
                             0.08
                         }
+                    } else if t_cat >= 2 {
+                        0.25
                     } else {
-                        if t_cat >= 2 {
-                            0.25
-                        } else {
-                            0.75
+                        0.75
+                    }
+                } else {
+                    1.0
+                };
+
+                /* 3b. River Bayesian Likelihood Update (active when facing a River bet/raise) */
+                let river_weight: f64 = if round >= 4 && board.len() >= 5 && opp_raised_river {
+                    let r_score = evaluate_7cards(&cand, &board[..5]);
+                    let cand_hits_river = cand[0].rank == cand[1].rank
+                        || board[..5]
+                            .iter()
+                            .any(|b| b.rank == cand[0].rank || b.rank == cand[1].rank);
+                    let r_cat = if river_board_paired && !cand_hits_river {
+                        0
+                    } else {
+                        r_score >> 32
+                    };
+                    if r_cat >= 2 {
+                        1.0
+                    } else if r_cat == 1 {
+                        match max_opp_raise_river {
+                            ALL_IN => 0.12,
+                            RAISE_HALF_POT => 0.30,
+                            _ => 0.60,
+                        }
+                    } else {
+                        match max_opp_raise_river {
+                            ALL_IN => 0.03,
+                            RAISE_HALF_POT => 0.06,
+                            _ => 0.08,
                         }
                     }
                 } else {
@@ -373,7 +538,7 @@ impl OpponentReachDistribution {
                 let texture_mult: f64 = if let Some(mono_suit) = monotone_suit {
                     let c0_mono = cand[0].suit == mono_suit;
                     let c1_mono = cand[1].suit == mono_suit;
-                    let opp_aggressive = opp_raised_flop || opp_raised_turn;
+                    let opp_aggressive = opp_raised_flop || opp_raised_turn || opp_raised_river;
 
                     if opp_aggressive {
                         if c0_mono && c1_mono {
@@ -404,7 +569,8 @@ impl OpponentReachDistribution {
                     1.00
                 };
 
-                let w: f64 = (pf_weight * flop_weight * turn_weight * texture_mult).max(1e-5f64);
+                let w: f64 = (pf_weight * flop_weight * turn_weight * river_weight * texture_mult)
+                    .max(1e-5f64);
                 combos.push(cand);
                 weights.push(w);
                 sum_w += w;

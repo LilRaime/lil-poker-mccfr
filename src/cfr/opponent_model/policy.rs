@@ -58,13 +58,14 @@ impl OpponentTracker {
         let call_rate = self.call_ratio();
         let raise_rate = self.raise_ratio();
 
+        let pf_tier = preflop_strength_tier(bucket);
         let is_strong = if is_preflop {
-            bucket <= 35
+            pf_tier <= 2
         } else {
             bucket >= 36
         };
         let is_weak = if is_preflop {
-            bucket >= 95
+            pf_tier >= 5
         } else {
             bucket <= 14
         };
@@ -111,7 +112,7 @@ impl OpponentTracker {
         /* Positional 3-bet exploit: If opponent folds to 3-bets heavily (> 60%), 3-bet bluff them with medium hands */
         if is_preflop && self.faced_3bet_count >= 3 {
             let f3b = self.fold_to_3bet_ratio();
-            if f3b > 0.60 && (36..=85).contains(&bucket) {
+            if f3b > 0.60 && (2..=3).contains(&pf_tier) {
                 for &a in legal_actions {
                     if a == RAISE_THIRD_POT || a == RAISE_MIN {
                         adjusted[a as usize] *= 1.40;
@@ -264,10 +265,10 @@ impl OpponentTracker {
         }
 
         /* Preflop Limp-Punishing (ISO-Raise):
-         * When opponent has high SB limp frequency (> 20%) and we are on BB with playable hand (bucket <= 110):
+         * When opponent has high SB limp frequency (> 20%) and we are on BB with playable hand (pf_tier <= 4):
          * Heavily punish limpers with ISO-raises to capture dead money.
          */
-        if is_preflop && self.sb_limp_ratio() > 0.20 && bucket <= 110 {
+        if is_preflop && self.sb_limp_ratio() > 0.20 && pf_tier <= 4 && bucket <= 110 {
             for &a in legal_actions {
                 if a == RAISE_MIN || a == RAISE_THIRD_POT {
                     adjusted[a as usize] *= 1.65;
@@ -423,8 +424,9 @@ impl OpponentTracker {
             1.0
         };
 
-        /* If pot odds are dirt cheap (pot_odds <= 0.15), never fold! Shift fold mass into CALL_CHECK */
-        if to_call > 0 && pot_odds <= 0.15 {
+        /* If pot odds are dirt cheap (pot_odds <= 0.15) and we hold at least a draw or pair (or preflop),
+         * never fold! Do not force calls with pure postflop air (bucket < 15). */
+        if to_call > 0 && pot_odds <= 0.15 && (is_preflop || bucket >= 15) {
             if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                 let f_prob = probs[f_i];
                 probs[f_i] = 0.0;
@@ -434,14 +436,25 @@ impl OpponentTracker {
             }
         }
 
-        /* A situation is only a dangerous shove if to_call is substantial (>= 4 BB) and pot odds are meaningful (> 0.18) */
+        let is_three_flush = board
+            .map(|b| {
+                let mut sc = [0u8; 4];
+                for c in b {
+                    sc[c.suit as usize] += 1;
+                }
+                sc.iter().any(|&cnt| cnt >= 3)
+            })
+            .unwrap_or(false);
+
+        /* A situation is a dangerous shove/heavy bet if to_call is substantial (>= 4 BB) and pot odds are meaningful (> 0.18) */
         let is_substantial_bet = to_call >= BIG_BLIND * 4;
         let is_shove_faced = is_substantial_bet
             && pot_odds > 0.18
             && (to_call >= ALLIN_GUARD_THRESHOLD
                 || !can_raise
                 || (round == 4 && to_call >= BIG_BLIND * 10)
-                || (round == 3 && to_call >= BIG_BLIND * 20));
+                || (round == 3 && to_call >= BIG_BLIND * 15)
+                || (round == 2 && to_call >= BIG_BLIND * 20));
 
         if is_shove_faced {
             if is_preflop {
@@ -472,12 +485,18 @@ impl OpponentTracker {
                  * With reasonable pot odds (<= 0.35), they are profitable calls and not trash! */
                 let is_wet = board.map(is_dangerous_board).unwrap_or(false);
                 let is_strong_draw = (15..=17).contains(&bucket) || (19..=27).contains(&bucket);
-                if is_strong_draw && pot_odds <= 0.35 {
+                if is_strong_draw && pot_odds <= 0.35 && !is_three_flush {
                     false
+                } else if (bucket == 22 || bucket == 23 || bucket == 25) && pot_odds <= 0.35 {
+                    /* Nut flush draw or monster combo draw can call reasonable pot odds even on 3-flush board */
+                    false
+                } else if is_three_flush && bucket <= 44 {
+                    /* Bare one pair or overpair without a made flush on a 3-flush board facing a massive shove */
+                    true
                 } else if bucket < 38 && !is_strong_draw {
                     true
-                } else if round == 3 && (42..=44).contains(&bucket) && is_wet {
-                    /* Bare mid/low overpair on a 4-to-straight or monotone board is trash against a massive shove */
+                } else if round == 3 && (38..=44).contains(&bucket) && is_wet {
+                    /* Bare one pair or mid/low overpair on a 4-to-straight or monotone turn is trash against a massive shove */
                     true
                 } else {
                     false
@@ -494,6 +513,28 @@ impl OpponentTracker {
                             probs[i] = 0.0;
                         }
                     }
+                }
+            }
+        }
+
+        /* 1b. Postflop Bluff-Spew Guard:
+         * Prevent suicidal all-in bluffs, check-raise bluffs with pure air/board-pair,
+         * and massive turn donk-bluffs into bloated pots with trash. */
+        if !is_preflop && (bucket < 15 || bucket == 28 || bucket == 29) {
+            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                probs[ai_i] = 0.0;
+            }
+            if to_call > 0 && (bucket < 15 || bucket == 28) {
+                /* Facing a bet with pure air or weak board-pair: never bluff-raise / check-raise */
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a >= RAISE_MIN {
+                        probs[i] = 0.0;
+                    }
+                }
+            } else if round >= 3 && to_call == 0 && pot >= BIG_BLIND * 12 && bucket < 11 {
+                /* In a large turn/river pot with pure air, suppress huge overbet/pot-sized bluffs */
+                if let Some(hp_i) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
+                    probs[hp_i] = 0.0;
                 }
             }
         }
@@ -517,11 +558,11 @@ impl OpponentTracker {
         }
 
         /* 3. Blocker-aware River Bluffing:
-         * On the River (round == 4) with weak hands / bluff-catchers (bucket < 28):
+         * On the River (round == 4) when not facing a bet (to_call == 0) with weak hands (bucket < 28):
          * If we hold the Nut Blocker (Ace of flush suit or Broadway straight blocker),
          * boost aggressive bluffing on RAISE_HALF_POT (125% overbet) or RAISE_THIRD_POT.
          */
-        if round == 4 && bucket < 28 {
+        if round == 4 && to_call == 0 && bucket < 28 {
             if let (Some(h), Some(b)) = (hole, board) {
                 if detect_river_nut_blocker(h, b) {
                     let raise_overbet = legal_actions.iter().position(|&a| a == RAISE_HALF_POT);

@@ -275,16 +275,17 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
             RAISE_HALF_POT
         }
     } else {
-        let s_pot = pot.max(s_half + 100);
-        if bet_amt < s_pot {
-            let p_half = pseudo_harmonic_prob(bet_amt, s_half, s_pot, pot);
+        let s_overbet = (pot * 3 / 2).max(s_half + 100);
+        if bet_amt <= s_overbet {
+            RAISE_HALF_POT
+        } else {
+            let s_cap = allin_threshold.max(s_overbet + 100);
+            let p_half = pseudo_harmonic_prob(bet_amt, s_overbet, s_cap, pot);
             if rng.gen::<f64>() <= p_half {
                 RAISE_HALF_POT
             } else {
                 ALL_IN
             }
-        } else {
-            ALL_IN
         }
     }
 }

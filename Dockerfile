@@ -11,12 +11,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 RUN cargo build --release --bin play_live
+COPY models /app/models
+RUN chmod -R 777 /app/models
 
 FROM gcr.io/distroless/cc-debian12
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/play_live /usr/local/bin/play_live
-COPY models ./models
+COPY --from=builder /app/models ./models
 
 ENTRYPOINT ["/usr/local/bin/play_live"]

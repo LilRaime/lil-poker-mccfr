@@ -125,7 +125,29 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
         6 => {
             /* Full House */
             let trips_rank = ((score >> 16) & 0xF) as usize;
-            if trips_rank >= 10 {
+            let pair_rank = ((score >> 12) & 0xF) as usize;
+            let is_board_fh = if board.len() >= 5 {
+                let b_score = evaluate_7cards(&[board[0], board[1]], &board[2..]);
+                (b_score >> 32) == 6 && b_score >= score
+            } else {
+                false
+            };
+            let board_trips_count = board
+                .iter()
+                .filter(|c| c.rank as usize == trips_rank)
+                .count();
+            let max_other_board = board
+                .iter()
+                .map(|c| c.rank as usize)
+                .filter(|&r| r != trips_rank)
+                .max()
+                .unwrap_or(0);
+
+            if is_board_fh {
+                62 /* Pure board Full House (playing the board chop) */
+            } else if board_trips_count >= 3 && pair_rank < max_other_board {
+                72 /* Vulnerable underfull on 3-of-a-kind board */
+            } else if trips_rank >= 10 {
                 74 /* Aces full / Kings full / Queens full */
             } else if trips_rank >= 5 {
                 73 /* Mid full house */
@@ -222,31 +244,56 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
             }
         }
         3 => {
-            /* Three of a Kind (Trips vs Set) */
+            /* Three of a Kind (Trips vs Set vs Board Trips) */
             let trips_rank = ((score >> 16) & 0xF) as usize;
-            let is_pocket_pair = hole[0].rank == hole[1].rank;
+            let is_pocket_pair =
+                hole[0].rank == hole[1].rank && hole[0].rank as usize == trips_rank;
+            let hole_hit_trips =
+                (hole[0].rank as usize == trips_rank) || (hole[1].rank as usize == trips_rank);
+            let draws = detect_draws_detailed(hole, board);
+
             if is_pocket_pair {
                 /* Disguised Monster Set */
-                if trips_rank >= 10 {
+                if board.len() < 5 && draws.is_flush_draw {
+                    61 /* Monster Set + Flush Redraw */
+                } else if trips_rank >= 10 {
                     60 /* Top Set (AA, KK, QQ) */
                 } else if trips_rank >= 6 {
                     59 /* Mid Set (JJ, TT, 99, 88) */
                 } else {
                     58 /* Low Set */
                 }
-            } else {
-                /* Visible Trips (board paired) */
+            } else if hole_hit_trips {
+                /* Visible Trips (player holds one trips card) */
                 let kicker = if hole[0].rank as usize == trips_rank {
                     hole[1].rank as usize
                 } else {
                     hole[0].rank as usize
                 };
-                if kicker >= 11 {
+                if board.len() < 5 && draws.is_flush_draw {
+                    61 /* Trips + Flush Redraw */
+                } else if kicker >= 11 {
                     57 /* Trips Top Kicker (Ace, King) */
                 } else if kicker >= 7 {
                     56 /* Trips Mid Kicker */
                 } else {
                     55 /* Trips Weak Kicker */
+                }
+            } else {
+                /* All three trips cards are on the board; player only has a kicker */
+                let high_kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
+                let max_other_board = board
+                    .iter()
+                    .map(|c| c.rank as usize)
+                    .filter(|&r| r != trips_rank)
+                    .max()
+                    .unwrap_or(0);
+                if high_kicker > max_other_board && high_kicker == 12 {
+                    29 /* Board trips with Ace kicker */
+                } else if high_kicker > max_other_board && high_kicker == 11 {
+                    28 /* Board trips with King kicker */
+                } else {
+                    high_kicker.min(9) /* Board trips with weak/counterfeited kicker (pure air) */
                 }
             }
         }
@@ -261,12 +308,20 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                 (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
 
             if !is_pocket_pair && !hit_top && !hit_bottom {
-                /* Both pairs are on board */
+                /* Both pairs are on board; player only plays kicker */
                 let high_kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
-                if high_kicker >= 11 {
-                    47 /* Board Two Pair with Ace/King kicker */
+                let max_unpaired_board = board
+                    .iter()
+                    .map(|c| c.rank as usize)
+                    .filter(|&r| r != top_pair && r != bottom_pair)
+                    .max()
+                    .unwrap_or(0);
+                if high_kicker > max_unpaired_board && high_kicker >= 11 {
+                    29 /* Board Two Pair with Ace/King kicker playing over board */
+                } else if high_kicker > max_unpaired_board && high_kicker == 10 {
+                    28 /* Board Two Pair with Queen kicker */
                 } else {
-                    46 /* Board Two Pair with low kicker */
+                    high_kicker.min(8) /* Counterfeited/weak kicker on double-paired board */
                 }
             } else if is_pocket_pair {
                 if hole[0].rank as usize >= top_pair {
@@ -335,29 +390,50 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
             let is_pocket_pair = hole[0].rank == hole[1].rank;
             let hole_hit_pair =
                 (hole[0].rank as usize == pair_rank) || (hole[1].rank as usize == pair_rank);
+            let draws = detect_draws_detailed(hole, board);
 
             if !is_pocket_pair && !hole_hit_pair {
-                /* Pair is on board; player only has kicker */
+                /* Pair is on board; player only has high-card kicker or draw */
                 let high_kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
-                if high_kicker >= 11 {
-                    29 /* Board pair with high kicker (Ace/King) */
+                let low_kicker = (hole[0].rank as usize).min(hole[1].rank as usize);
+                if board.len() < 5 && draws.is_flush_draw && draws.is_straight_draw {
+                    25 /* Combo draw on paired board */
+                } else if board.len() < 5 && draws.is_nut_flush_draw {
+                    22 /* Nut Flush Draw on paired board */
+                } else if board.len() < 5 && draws.is_flush_draw {
+                    20 /* Flush Draw on paired board */
+                } else if board.len() < 5 && draws.is_straight_draw {
+                    16 /* OESD on paired board */
+                } else if high_kicker == 12 && low_kicker >= 9 {
+                    29 /* Board pair with strong Ace-Broadway kicker (AK, AQ, AJ) */
+                } else if high_kicker >= 11 {
+                    28 /* Board pair with Ace-rag or King kicker (weak bluff-catcher) */
                 } else {
-                    28 /* Board pair with low kicker */
+                    high_kicker.min(9) /* Board pair with Queen-high or worse (pure air) */
                 }
             } else {
                 let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
-                let draws = detect_draws_detailed(hole, board);
+                let min_board_rank = board.iter().map(|c| c.rank as usize).min().unwrap_or(0);
+                let dangerous_turn_river =
+                    board.len() >= 4 && super::texture::is_dangerous_board(board);
 
                 if is_pocket_pair && pair_rank > max_board_rank {
                     /* Overpair */
                     if draws.is_flush_draw || draws.is_straight_draw {
                         45 /* Overpair + Flush/Straight Draw */
-                    } else if pair_rank >= 11 {
-                        44 /* High Overpair: AA, KK */
-                    } else if pair_rank >= 9 {
-                        43 /* Mid Overpair: QQ, JJ */
                     } else {
-                        42 /* Low Overpair: TT, 99, 88 */
+                        let base = if pair_rank >= 11 {
+                            44 /* High Overpair: AA, KK */
+                        } else if pair_rank >= 9 {
+                            43 /* Mid Overpair: QQ, JJ */
+                        } else {
+                            42 /* Low Overpair: TT, 99, 88 */
+                        };
+                        if dangerous_turn_river {
+                            base - 2 /* Vulnerable Overpair on 4-flush / 4-straight board */
+                        } else {
+                            base
+                        }
                     }
                 } else if hole_hit_pair && pair_rank >= max_board_rank {
                     /* Top Pair */
@@ -370,23 +446,36 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                         41 /* Top Pair + Flush Draw */
                     } else if draws.is_straight_draw || draws.is_gutshot {
                         40 /* Top Pair + Straight/Gutshot Draw */
-                    } else if kicker >= 11 {
-                        39 /* Top Pair Top Kicker (TPTK: AK, AQ) */
-                    } else if kicker >= 8 {
-                        38 /* Top Pair Good Kicker */
-                    } else if kicker >= 5 {
-                        37 /* Top Pair Mid Kicker */
                     } else {
-                        36 /* Top Pair Weak Kicker */
+                        let base = if kicker >= 11 {
+                            39 /* Top Pair Top Kicker (TPTK: AK, AQ) */
+                        } else if kicker >= 8 {
+                            38 /* Top Pair Good Kicker */
+                        } else if kicker >= 5 {
+                            37 /* Top Pair Mid Kicker */
+                        } else {
+                            36 /* Top Pair Weak Kicker */
+                        };
+                        if dangerous_turn_river {
+                            base - 2 /* Vulnerable Top Pair on 4-flush / 4-straight board */
+                        } else {
+                            base
+                        }
                     }
-                } else if pair_rank > 6 {
-                    /* Middle Pair */
-                    if draws.is_flush_draw || draws.is_straight_draw {
+                } else if pair_rank > min_board_rank {
+                    /* Middle Pair (relative to board ranks) */
+                    if draws.is_nut_flush_draw {
+                        26 /* Middle/Bottom Pair + Nut Flush Draw */
+                    } else if draws.is_flush_draw || draws.is_straight_draw {
                         34 /* Middle Pair + Draw */
                     } else if is_pocket_pair {
                         35 /* Pocket pair between board cards */
                     } else {
-                        let kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
+                        let kicker = if hole[0].rank as usize == pair_rank {
+                            hole[1].rank as usize
+                        } else {
+                            hole[0].rank as usize
+                        };
                         if kicker >= 10 {
                             33 /* Middle Pair, high kicker */
                         } else {
@@ -394,8 +483,10 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                         }
                     }
                 } else {
-                    /* Low / Bottom Pair */
-                    if draws.is_flush_draw || draws.is_straight_draw {
+                    /* Low / Bottom Pair or Underpair */
+                    if draws.is_nut_flush_draw {
+                        26 /* Bottom Pair + Nut Flush Draw */
+                    } else if draws.is_flush_draw || draws.is_straight_draw {
                         31 /* Bottom Pair + Draw */
                     } else if is_pocket_pair {
                         30 /* Underpair */
@@ -406,52 +497,67 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
             }
         }
         _ => {
-            /* High Card or Draws on Flop/Turn vs River */
-            let high_rank = ((score >> 16) & 0xF) as usize;
+            /* High Card or Draws on Flop/Turn vs River (using player's own hole card ranks) */
+            let hole_high = (hole[0].rank as usize).max(hole[1].rank as usize);
+            let hole_low = (hole[0].rank as usize).min(hole[1].rank as usize);
+            let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
+            let overcards = (hole[0].rank as usize > max_board_rank) as usize
+                + (hole[1].rank as usize > max_board_rank) as usize;
+            let has_backdoor_fd = board.len() == 3
+                && hole[0].suit == hole[1].suit
+                && board.iter().any(|c| c.suit == hole[0].suit);
+
             if board.len() < 5 {
                 let draws = detect_draws_detailed(hole, board);
-                if draws.is_flush_draw && draws.is_straight_draw {
+                if draws.is_nut_flush_draw && draws.is_straight_draw {
+                    27 /* Nut Flush Draw + OESD (monster 15 nut outs combo draw) */
+                } else if draws.is_nut_flush_draw && draws.is_gutshot {
+                    26 /* Nut Flush Draw + Gutshot (12 nut outs combo draw) */
+                } else if draws.is_flush_draw && draws.is_straight_draw {
                     25 /* Flush Draw + OESD (15 outs combo draw) */
                 } else if draws.is_flush_draw && draws.is_gutshot {
                     24 /* Flush Draw + Gutshot (12 outs combo draw) */
                 } else if draws.is_nut_flush_draw {
-                    if high_rank == 12 {
+                    if hole_high == 12 {
                         23 /* Nut Flush Draw with Ace */
                     } else {
                         22 /* Nut Flush Draw */
                     }
                 } else if draws.is_flush_draw {
-                    if high_rank >= 10 {
+                    if hole_high >= 10 {
                         21 /* High Flush Draw (KQ high) */
-                    } else if high_rank >= 7 {
+                    } else if hole_high >= 7 {
                         20 /* Mid Flush Draw */
                     } else {
                         19 /* Low Flush Draw */
                     }
                 } else if draws.is_straight_draw {
-                    if high_rank >= 11 {
+                    if has_backdoor_fd && overcards >= 1 {
+                        18 /* OESD + Backdoor Flush Draw + Overcard */
+                    } else if overcards == 2 || hole_high >= 11 {
                         17 /* OESD with Two Overcards / Broadway */
-                    } else if high_rank >= 9 {
+                    } else if overcards == 1 || hole_high >= 9 {
                         16 /* OESD with One Overcard */
                     } else {
                         15 /* Low/Mid OESD */
                     }
                 } else if draws.is_gutshot {
-                    if high_rank >= 11 {
+                    if overcards == 2 || hole_high >= 11 {
                         13 /* Gutshot with Two Overcards */
-                    } else if high_rank >= 9 {
+                    } else if overcards == 1 || hole_high >= 9 {
                         12 /* Gutshot with One Overcard */
                     } else {
                         11 /* Weak Gutshot */
                     }
+                } else if overcards == 2 && has_backdoor_fd && hole_high >= 11 {
+                    14 /* Two Broadway Overcards + Backdoor Flush Draw */
                 } else {
                     /* Pure High Card without draw on Flop/Turn */
-                    match high_rank {
+                    match hole_high {
                         12 => {
-                            let kicker = ((score >> 12) & 0xF) as usize;
-                            if kicker >= 9 {
+                            if hole_low >= 9 {
                                 10
-                            } else if kicker >= 5 {
+                            } else if hole_low >= 5 {
                                 9
                             } else {
                                 8
@@ -468,8 +574,8 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     }
                 }
             } else {
-                /* River (No draws possible, pure showdown high card value) */
-                match high_rank {
+                /* River (No draws possible, pure showdown high card value from hole cards) */
+                match hole_high {
                     12 => 10,
                     11 => 8,
                     10 => 6,

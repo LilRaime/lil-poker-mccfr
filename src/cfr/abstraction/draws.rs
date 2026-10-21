@@ -34,18 +34,34 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     for (s, &b_count) in board_suit_counts.iter().enumerate() {
         let hole_has = (hole[0].suit as usize == s) as u8 + (hole[1].suit as usize == s) as u8;
         if hole_has >= 1 && (b_count + hole_has == 4) {
-            is_flush_draw = true;
-            if (hole[0].rank == Rank::Ace && hole[0].suit as usize == s)
-                || (hole[1].rank == Rank::Ace && hole[1].suit as usize == s)
-            {
-                is_nut_flush_draw = true;
+            let max_hole_suit_rank = hole
+                .iter()
+                .filter(|c| c.suit as usize == s)
+                .map(|c| c.rank as usize)
+                .max()
+                .unwrap_or(0);
+            let ace_on_board = board
+                .iter()
+                .any(|c| c.suit as usize == s && c.rank == Rank::Ace);
+            let is_nut_card = max_hole_suit_rank == (Rank::Ace as usize)
+                || (ace_on_board && max_hole_suit_rank == (Rank::King as usize));
+
+            /* On a 3-flush board with only 1 suited hole card, only count Ace/King-high
+             * redraws as real flush draws to avoid treating weak 1-card draws as monsters. */
+            if hole_has == 2 || max_hole_suit_rank >= (Rank::King as usize) {
+                is_flush_draw = true;
+                if is_nut_card {
+                    is_nut_flush_draw = true;
+                }
             }
             break;
         }
     }
 
+    let mut board_ranks = [false; NUM_RANKS];
     let mut ranks = [false; NUM_RANKS];
     for &b in board {
+        board_ranks[b.rank as usize] = true;
         ranks[b.rank as usize] = true;
     }
     ranks[hole[0].rank as usize] = true;
@@ -59,7 +75,8 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
             && ranks[r + 1]
             && ranks[r + 2]
             && ranks[r + 3]
-            && ((h0 >= r && h0 <= r + 3) || (h1 >= r && h1 <= r + 3))
+            && ((h0 >= r && h0 <= r + 3 && !board_ranks[h0])
+                || (h1 >= r && h1 <= r + 3 && !board_ranks[h1]))
         {
             is_straight_draw = true;
             break;
@@ -74,7 +91,10 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
                 + (ranks[r + 2] as u8)
                 + (ranks[r + 3] as u8)
                 + (ranks[r + 4] as u8);
-            if count == 4 && ((h0 >= r && h0 <= r + 4) || (h1 >= r && h1 <= r + 4)) {
+            if count == 4
+                && ((h0 >= r && h0 <= r + 4 && !board_ranks[h0])
+                    || (h1 >= r && h1 <= r + 4 && !board_ranks[h1]))
+            {
                 is_gutshot = true;
                 break;
             }
@@ -82,7 +102,10 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
         if !is_gutshot && ranks[12] {
             let count =
                 1 + (ranks[0] as u8) + (ranks[1] as u8) + (ranks[2] as u8) + (ranks[3] as u8);
-            if count == 4 && (h0 == 12 || h0 <= 3 || h1 == 12 || h1 <= 3) {
+            if count == 4
+                && (((h0 == 12 || h0 <= 3) && !board_ranks[h0])
+                    || ((h1 == 12 || h1 <= 3) && !board_ranks[h1]))
+            {
                 is_gutshot = true;
             }
         }
@@ -125,11 +148,10 @@ pub fn detect_river_nut_blocker(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -
         }
     }
     let broadway_count = board.iter().filter(|c| c.rank as usize >= 8).count();
+    let ace_on_board = board.iter().any(|c| c.rank == Rank::Ace);
     if broadway_count >= 3
-        && (hole[0].rank == Rank::Ace
-            || hole[1].rank == Rank::Ace
-            || hole[0].rank == Rank::King
-            || hole[1].rank == Rank::King)
+        && !ace_on_board
+        && (hole[0].rank == Rank::Ace || hole[1].rank == Rank::Ace)
     {
         return true;
     }

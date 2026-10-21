@@ -527,3 +527,65 @@ fn test_opponent_reach_distribution_raiser_ako_weight() {
         w_72
     );
 }
+
+#[test]
+fn test_bet_size_aware_reach_and_depth_limited_subgame() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
+
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
+    /* Paired board: 7d 7c 3s */
+    let board = [
+        card(Rank::Seven, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Three, Suit::Spades),
+    ];
+    let remaining: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
+        .collect();
+
+    /* Opponent shoves ALL_IN (5) on Flop vs min-bets RAISE_MIN (2) */
+    let hist_min = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
+    let hist_shove = [vec![2u8, 1u8], vec![5u8], vec![], vec![]];
+
+    let dist_min =
+        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &hist_min, None, Some(1));
+    let dist_shove = OpponentReachDistribution::build_detailed(
+        &remaining,
+        &board,
+        2,
+        &hist_shove,
+        None,
+        Some(1),
+    );
+
+    /* Unimproved King-Ten offsuit on 7-7-3 board must be treated as air (not One Pair),
+     * and weighted even lower against an ALL_IN shove than against a min-bet */
+    let kt_air = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Ten, Suit::Hearts),
+    ];
+    let idx_kt = dist_min
+        .combos
+        .iter()
+        .position(|&c| {
+            (c[0] == kt_air[0] && c[1] == kt_air[1]) || (c[0] == kt_air[1] && c[1] == kt_air[0])
+        })
+        .expect("KT combo exists");
+    assert!(
+        dist_shove.weights[idx_kt] < dist_min.weights[idx_kt],
+        "All-in shove must polarize air weight lower ({}) than min-bet ({})",
+        dist_shove.weights[idx_kt],
+        dist_min.weights[idx_kt]
+    );
+
+    /* Depth-limited subgame solver with max_depth_streets = 1 */
+    let solver = SubgameSolver::new(200).with_max_depth_streets(1);
+    assert_eq!(solver.max_depth_streets, 1);
+    let probs = solver.solve_with_state(&hole, &board, 2, &hist_min, 1, [300, 200], 1);
+    let sum: f64 = probs.iter().sum();
+    assert!((sum - 1.0).abs() < 1e-4);
+}

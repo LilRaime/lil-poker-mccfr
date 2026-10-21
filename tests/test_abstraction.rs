@@ -147,3 +147,74 @@ fn test_two_pair_bottom_pair_on_board_abstraction() {
     /* Should be bucket 50 (Top and Bottom Pair where bottom pair is on board), NOT bucket 52 */
     assert_eq!(river_key, "R:B50/t");
 }
+
+#[test]
+fn test_v8_board_trips_paired_boards_and_draws() {
+    use lil_poker_mccfr::cfr::abstraction::{detect_draws_detailed, postflop_equity_bucket};
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. Hand 3 bug: 9h 5c on Jd Js Jc 3s 2c (Board Trips) must NOT be bucket 56! */
+    let hole_95 = [
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Five, Suit::Clubs),
+    ];
+    let board_jjj = [
+        card(Rank::Jack, Suit::Diamonds),
+        card(Rank::Jack, Suit::Spades),
+        card(Rank::Jack, Suit::Clubs),
+        card(Rank::Three, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    let b_95 = postflop_equity_bucket(&hole_95, &board_jjj);
+    assert!(
+        b_95 <= 9,
+        "95o on J-J-J-3-2 board trips must be pure air bucket <= 9, got {}",
+        b_95
+    );
+
+    /* 2. Hand 2 bug: Jd Qc on Qh 8c 3c Kc (3-club board with 1-card Qc draw) must NOT be bucket 41 */
+    let hole_jq = [
+        card(Rank::Jack, Suit::Diamonds),
+        card(Rank::Queen, Suit::Clubs),
+    ];
+    let board_3club = [
+        card(Rank::Queen, Suit::Hearts),
+        card(Rank::Eight, Suit::Clubs),
+        card(Rank::Three, Suit::Clubs),
+        card(Rank::King, Suit::Clubs),
+    ];
+    let draws_jq = detect_draws_detailed(&hole_jq, &board_3club);
+    assert!(
+        !draws_jq.is_flush_draw,
+        "Weak 1-card Qc flush draw on 3-club board should not trigger immortal flush draw"
+    );
+
+    /* 3. Bug #18: 4-to-a-straight on board (5-6-7-8) where player holds duplicated 7 must NOT be OESD */
+    let hole_72 = [
+        card(Rank::Seven, Suit::Hearts),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    let board_5678 = [
+        card(Rank::Five, Suit::Diamonds),
+        card(Rank::Six, Suit::Spades),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Eight, Suit::Hearts),
+    ];
+    let draws_72 = detect_draws_detailed(&hole_72, &board_5678);
+    assert!(
+        !draws_72.is_straight_draw,
+        "Duplicated board rank on 4-to-straight board must not be OESD"
+    );
+
+    /* 4. Bug #20: Q8o on A-9-3 flop must use hole card high rank (Queen -> 6), not board Ace (10) */
+    let hole_q8 = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Eight, Suit::Diamonds),
+    ];
+    let board_a93 = [
+        card(Rank::Ace, Suit::Clubs),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Three, Suit::Spades),
+    ];
+    assert_eq!(postflop_equity_bucket(&hole_q8, &board_a93), 6);
+}

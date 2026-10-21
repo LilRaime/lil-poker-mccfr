@@ -161,8 +161,16 @@ pub async fn run_live_bot(
 
     let (_, mut read) = ws_stream.split();
     let mut tracker = OpponentTracker::new();
+    let mut current_opp_name = String::new();
+    let profiles_path = "models/opponent_profiles.json";
     let mut last_action_key = String::new();
+    let mut last_hole: Option<[crate::game::holdem::Card; 2]> = None;
+    let mut last_board_len: usize = 0;
+    let mut hand_active = false;
     let subgame_solver = Arc::new(SubgameSolver::default());
+    let strategy_index = Arc::new(crate::cfr::fallback::StrategyLookupIndex::build_from_map(
+        &strategy_map,
+    ));
     let strategy_arc = Arc::new(strategy_map);
 
     let mut round_tracker = LiveRoundTracker::new();
@@ -189,18 +197,38 @@ pub async fn run_live_bot(
 
         let phase = state.get("phase").and_then(|v| v.as_str()).unwrap_or("");
         if phase.eq_ignore_ascii_case("Showdown") || phase.eq_ignore_ascii_case("Waiting") {
-            if phase.eq_ignore_ascii_case("Showdown") {
-                process_showdown(
-                    &state,
-                    &player_id,
-                    &mut tracker,
-                    &round_tracker.live_history[3],
-                    round_tracker.last_opp_bet,
-                );
+            if hand_active {
+                if phase.eq_ignore_ascii_case("Showdown") {
+                    process_showdown(
+                        &state,
+                        &player_id,
+                        &mut tracker,
+                        &round_tracker.live_history[3],
+                        round_tracker.last_opp_bet,
+                    );
+                } else if let Some(&last_act) =
+                    round_tracker.live_history[round_tracker.current_round_idx].last()
+                {
+                    if last_act >= crate::game::config::RAISE_MIN {
+                        /* Hand ended without Showdown after bot bet/raise -> opponent folded */
+                        let r_num = (round_tracker.current_round_idx + 1) as u8;
+                        tracker.record_action_street_detailed(
+                            crate::game::config::FOLD,
+                            r_num,
+                            r_num >= 2,
+                            0,
+                            0,
+                        );
+                    }
+                }
+                tracker.end_hand();
+                let _ = tracker.save_profile(profiles_path, &current_opp_name);
+                round_tracker.reset_hand(0);
+                last_action_key.clear();
+                last_hole = None;
+                last_board_len = 0;
+                hand_active = false;
             }
-            tracker.end_hand();
-            round_tracker.reset_hand(0);
-            last_action_key.clear();
 
             if phase.eq_ignore_ascii_case("Waiting") {
                 if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
@@ -219,23 +247,66 @@ pub async fn run_live_bot(
             None => continue,
         };
 
+        /* Load persistent opponent profile if new opponent sits down */
+        if !snapshot.opp_name.is_empty() && snapshot.opp_name != current_opp_name {
+            if !current_opp_name.is_empty() {
+                let _ = tracker.save_profile(profiles_path, &current_opp_name);
+            }
+            current_opp_name = snapshot.opp_name.clone();
+            if let Some(loaded) = OpponentTracker::load_profile(profiles_path, &current_opp_name) {
+                println!(
+                    "Loaded persistent profile for opponent '{}' ({} prior hands).",
+                    current_opp_name, loaded.total_hands
+                );
+                tracker = loaded;
+            } else {
+                tracker = OpponentTracker::new();
+            }
+        }
+
         /* Prevent duplicate action execution on identical state updates */
         if snapshot.action_seq_key == last_action_key {
             continue;
         }
 
-        /* Detect hand or street transitions for round history */
-        if snapshot.hand_id != round_tracker.current_hand_id {
+        /* Detect hand or street transitions for round history (works even when server hand_id == 0) */
+        let is_new_hand = snapshot.hand_id != round_tracker.current_hand_id
+            || (last_hole.is_some() && last_hole != Some(snapshot.hole))
+            || snapshot.board.len() < last_board_len;
+
+        if is_new_hand {
+            if hand_active {
+                if let Some(&last_act) =
+                    round_tracker.live_history[round_tracker.current_round_idx].last()
+                {
+                    if last_act >= crate::game::config::RAISE_MIN {
+                        let r_num = (round_tracker.current_round_idx + 1) as u8;
+                        tracker.record_action_street_detailed(
+                            crate::game::config::FOLD,
+                            r_num,
+                            r_num >= 2,
+                            0,
+                            0,
+                        );
+                    }
+                }
+                tracker.end_hand();
+                let _ = tracker.save_profile(profiles_path, &current_opp_name);
+            }
             round_tracker.reset_hand(snapshot.hand_id);
         }
+        last_hole = Some(snapshot.hole);
+        last_board_len = snapshot.board.len();
+        hand_active = true;
 
-        round_tracker.update_street(snapshot.board.len());
+        round_tracker.update_street_with_tracker(snapshot.board.len(), Some(&mut tracker));
         round_tracker.infer_and_record_opponent_action(&snapshot, &mut tracker);
 
         let (engine_contributions, raises_this_round) =
-            round_tracker.compute_engine_contributions(&snapshot);
+            round_tracker.compute_scaled_subgame_contributions(&snapshot);
 
         let strat_clone = Arc::clone(&strategy_arc);
+        let index_clone = Arc::clone(&strategy_index);
         let solver_arc = Arc::clone(&subgame_solver);
         let subgame = subgame_search;
         let tracker_clone = tracker.clone();
@@ -247,7 +318,7 @@ pub async fn run_live_bot(
         let pot = snapshot.pot;
         let my_player = snapshot.my_player;
 
-        let (chosen_action, amount) = tokio::task::spawn_blocking(move || {
+        let (chosen_action, raw_amount) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
             decide_action(
                 &hole,
@@ -262,15 +333,19 @@ pub async fn run_live_bot(
                 my_player,
                 engine_contributions,
                 raises_this_round,
-                None,
+                Some(&index_clone),
                 Some(&solver_arc),
                 Some(&mut ctx),
             )
         })
         .await?;
 
-        /* Record bot's own action into live history */
-        round_tracker.record_bot_action(&chosen_action, amount, snapshot.pot);
+        let amount =
+            if (chosen_action == "raise" || chosen_action == "bet") && snapshot.my_chips > 0 {
+                raw_amount.min(snapshot.my_chips + snapshot.my_bet)
+            } else {
+                raw_amount
+            };
 
         let hole_str = format!(
             "[{} {}]",
@@ -311,7 +386,15 @@ pub async fn run_live_bot(
             .await;
 
         if let Ok(r) = resp {
-            if !r.status().is_success() {
+            if r.status().is_success() {
+                /* Record bot's own action into live history only after server accepts it */
+                round_tracker.record_bot_action(&chosen_action, amount, snapshot.pot);
+                if chosen_action == "fold" && hand_active {
+                    tracker.end_hand();
+                    let _ = tracker.save_profile(profiles_path, &current_opp_name);
+                    hand_active = false;
+                }
+            } else {
                 let status = r.status();
                 let err_text = r.text().await.unwrap_or_default();
                 eprintln!(
@@ -325,7 +408,7 @@ pub async fn run_live_bot(
                     && (err_text.contains("cannot check") || err_text.contains("call"))
                 {
                     println!("-> Auto-fallback: Retrying action CALL (amt: 0)");
-                    let _ = client
+                    if let Ok(r_retry) = client
                         .post(&act_url)
                         .json(&ActPayload {
                             player_id: player_id.clone(),
@@ -333,13 +416,23 @@ pub async fn run_live_bot(
                             amount: 0,
                         })
                         .send()
-                        .await;
+                        .await
+                    {
+                        if r_retry.status().is_success() {
+                            round_tracker.record_bot_action("call", 0, snapshot.pot);
+                        }
+                    }
                 }
             }
         } else if let Err(e) = resp {
             eprintln!("Act HTTP network error: {}", e);
             last_action_key.clear();
         }
+    }
+
+    if hand_active {
+        tracker.end_hand();
+        let _ = tracker.save_profile(profiles_path, &current_opp_name);
     }
 
     Ok(())

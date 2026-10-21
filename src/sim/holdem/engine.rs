@@ -133,12 +133,15 @@ pub fn simulate_holdem_hand(
             };
 
             /* 3. Sample action with Purification, Opponent Exploitation, and All-in Defense */
-            let act = opp_tracker.select_action_purified(
+            let act = opp_tracker.select_action_purified_context(
                 &raw_probs,
                 &legal,
                 current_bucket,
-                game.round == 1,
+                game.round,
                 to_call,
+                pot,
+                Some(&game.hole[my_player]),
+                Some(&game.board),
                 rng,
             );
 
@@ -195,7 +198,10 @@ pub fn simulate_holdem_hand(
     opp_tracker.end_hand();
     if !game.board.is_empty() && game.history.iter().all(|rh| !rh.contains(&H_FOLD)) {
         let opp_player = 1 - my_player;
-        let opp_raised_river = game.history[3].iter().any(|&a| a >= 2);
+        let opp_raised_river = game.history[3]
+            .iter()
+            .enumerate()
+            .any(|(idx, &a)| idx % 2 == opp_player && a >= 2);
         opp_tracker.record_showdown_hand(game.hole[opp_player], &game.board, opp_raised_river);
     }
 

@@ -3,8 +3,10 @@ use super::classifier::OpponentStyle;
 use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::{evaluate_7cards, Card};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpponentTracker {
     pub total_hands: u64,
     pub vpip_hands: u64,
@@ -54,6 +56,11 @@ pub struct OpponentTracker {
     /* Exploitation guardrails & configuration */
     pub exploit_enabled: bool,
     pub exploit_factor: f64,
+
+    /* Per-hand deduplication flags */
+    pub hand_vpip_recorded: bool,
+    pub hand_pfr_recorded: bool,
+    pub hand_saw_flop_recorded: bool,
 }
 
 impl Default for OpponentTracker {
@@ -101,6 +108,9 @@ impl OpponentTracker {
             fold_to_3bet_count: 0,
             exploit_enabled: true,
             exploit_factor: 0.70,
+            hand_vpip_recorded: false,
+            hand_pfr_recorded: false,
+            hand_saw_flop_recorded: false,
         }
     }
 
@@ -140,14 +150,26 @@ impl OpponentTracker {
             1 => {
                 self.preflop_actions[act_cat] += 1;
                 if action == CALL_CHECK {
-                    self.vpip_hands += 1;
+                    if !self.hand_vpip_recorded {
+                        self.vpip_hands += 1;
+                        self.hand_vpip_recorded = true;
+                    }
                 } else if action >= RAISE_MIN {
-                    self.vpip_hands += 1;
-                    self.pfr_hands += 1;
+                    if !self.hand_vpip_recorded {
+                        self.vpip_hands += 1;
+                        self.hand_vpip_recorded = true;
+                    }
+                    if !self.hand_pfr_recorded {
+                        self.pfr_hands += 1;
+                        self.hand_pfr_recorded = true;
+                    }
                 }
             }
             2 => {
-                self.saw_flop += 1;
+                if !self.hand_saw_flop_recorded {
+                    self.saw_flop += 1;
+                    self.hand_saw_flop_recorded = true;
+                }
                 self.flop_actions[act_cat] += 1;
                 if facing_bet {
                     self.flop_cbet_faced += 1;
@@ -198,9 +220,16 @@ impl OpponentTracker {
 
     pub fn end_hand(&mut self) {
         self.total_hands += 1;
+        self.hand_vpip_recorded = false;
+        self.hand_pfr_recorded = false;
+        self.hand_saw_flop_recorded = false;
     }
 
     pub fn record_showdown(&mut self) {
+        if !self.hand_saw_flop_recorded {
+            self.saw_flop += 1;
+            self.hand_saw_flop_recorded = true;
+        }
         self.went_to_showdown += 1;
     }
 
@@ -347,9 +376,10 @@ impl OpponentTracker {
             if is_vpip {
                 self.bb_vpip_hands += 1;
             }
-            if is_pfr {
+            if is_pfr && !self.hand_pfr_recorded {
                 /* BB 3-bet / raise */
                 self.pfr_hands += 1;
+                self.hand_pfr_recorded = true;
             }
         }
     }
@@ -380,6 +410,10 @@ impl OpponentTracker {
         pot: i32,
     ) {
         self.showdown_hands += 1;
+        if !self.hand_saw_flop_recorded {
+            self.saw_flop += 1;
+            self.hand_saw_flop_recorded = true;
+        }
         self.went_to_showdown += 1;
         let score = evaluate_7cards(&opp_hole, board);
         let cat = score >> 32;
@@ -452,12 +486,161 @@ impl OpponentTracker {
             (OpponentStyle::Maniac, conf)
         } else if vpip < 0.22 && fold > 0.45 {
             (OpponentStyle::Rock, conf)
-        } else if (0.18..=0.35).contains(&vpip) && pfr >= 0.14 {
+        } else if (0.18..=0.35).contains(&vpip) && (pfr >= 0.14 || raise >= 0.15) {
             (OpponentStyle::Tag, conf)
+        } else if vpip <= 0.35 && fold >= 0.40 {
+            (OpponentStyle::Rock, conf * 0.85)
         } else if (0.35..=0.65).contains(&vpip) {
             (OpponentStyle::Lag, conf)
         } else {
             (OpponentStyle::CallingStation, conf * 0.7)
         }
+    }
+
+    /* Applies exponential session decay to historical counters so recent hands adapt faster */
+    pub fn apply_session_decay(&mut self, factor: f64) {
+        let f = factor.clamp(0.1, 1.0);
+        let scale = |v: &mut u64| *v = (*v as f64 * f).round() as u64;
+        scale(&mut self.total_hands);
+        scale(&mut self.vpip_hands);
+        scale(&mut self.pfr_hands);
+        scale(&mut self.fold_count);
+        scale(&mut self.call_count);
+        scale(&mut self.raise_count);
+        for a in &mut self.preflop_actions {
+            scale(a);
+        }
+        for a in &mut self.flop_actions {
+            scale(a);
+        }
+        for a in &mut self.turn_actions {
+            scale(a);
+        }
+        for a in &mut self.river_actions {
+            scale(a);
+        }
+        scale(&mut self.flop_cbet_faced);
+        scale(&mut self.flop_fold_to_cbet);
+        scale(&mut self.turn_cbet_faced);
+        scale(&mut self.turn_fold_to_cbet);
+        scale(&mut self.river_bet_faced);
+        scale(&mut self.river_fold_to_bet);
+        scale(&mut self.went_to_showdown);
+        scale(&mut self.saw_flop);
+        scale(&mut self.sizing_small_bets);
+        scale(&mut self.sizing_mid_bets);
+        scale(&mut self.sizing_large_bets);
+        scale(&mut self.showdown_small_bluff_count);
+        scale(&mut self.showdown_large_monster_count);
+        scale(&mut self.showdown_hands);
+        scale(&mut self.showdown_bluff_count);
+        scale(&mut self.showdown_trap_count);
+        scale(&mut self.showdown_loose_count);
+        scale(&mut self.sb_vpip_hands);
+        scale(&mut self.sb_pfr_hands);
+        scale(&mut self.sb_total_hands);
+        scale(&mut self.bb_vpip_hands);
+        scale(&mut self.bb_total_hands);
+        scale(&mut self.faced_3bet_count);
+        scale(&mut self.fold_to_3bet_count);
+    }
+
+    /* Persist opponent profile to disk JSON database keyed by opponent identifier,
+     * with automatic fallback to /tmp/opponent_profiles.json on read-only container roots */
+    pub fn save_profile(
+        &self,
+        path: &str,
+        opp_key: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if opp_key.is_empty() {
+            return Ok(());
+        }
+        let tmp_fallback = "/tmp/opponent_profiles.json";
+        let mut map: HashMap<String, OpponentTracker> = if std::path::Path::new(path).exists() {
+            let file = std::fs::File::open(path)?;
+            let reader = std::io::BufReader::new(file);
+            serde_json::from_reader(reader).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        if path == "models/opponent_profiles.json" && std::path::Path::new(tmp_fallback).exists() {
+            if let Ok(file) = std::fs::File::open(tmp_fallback) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(tmp_map) =
+                    serde_json::from_reader::<_, HashMap<String, OpponentTracker>>(reader)
+                {
+                    for (k, v) in tmp_map {
+                        map.insert(k, v);
+                    }
+                }
+            }
+        }
+        map.insert(opp_key.to_string(), self.clone());
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let tmp_write_path = format!("{}.tmp", path);
+        if let Ok(file) = std::fs::File::create(&tmp_write_path) {
+            let mut writer = std::io::BufWriter::new(file);
+            if serde_json::to_writer_pretty(&mut writer, &map).is_ok()
+                && std::io::Write::flush(&mut writer).is_ok()
+            {
+                drop(writer);
+                if std::fs::rename(&tmp_write_path, path).is_ok() {
+                    return Ok(());
+                }
+            }
+            let _ = std::fs::remove_file(&tmp_write_path);
+        }
+        /* Atomic fallback to /tmp if container root or models/ directory is read-only */
+        let tmp_fallback_write = format!("{}.tmp", tmp_fallback);
+        let file = std::fs::File::create(&tmp_fallback_write)?;
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &map)?;
+        std::io::Write::flush(&mut writer)?;
+        drop(writer);
+        std::fs::rename(&tmp_fallback_write, tmp_fallback)?;
+        Ok(())
+    }
+
+    /* Load opponent profile from disk JSON database (checking /tmp runtime fallback first)
+     * and apply mild session decay */
+    pub fn load_profile(path: &str, opp_key: &str) -> Option<Self> {
+        if opp_key.is_empty() {
+            return None;
+        }
+        let tmp_fallback = "/tmp/opponent_profiles.json";
+        let mut loaded_tracker: Option<OpponentTracker> = None;
+
+        if path == "models/opponent_profiles.json" && std::path::Path::new(tmp_fallback).exists() {
+            if let Ok(file) = std::fs::File::open(tmp_fallback) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(mut map) =
+                    serde_json::from_reader::<_, HashMap<String, OpponentTracker>>(reader)
+                {
+                    loaded_tracker = map.remove(opp_key);
+                }
+            }
+        }
+
+        if loaded_tracker.is_none() && std::path::Path::new(path).exists() {
+            if let Ok(file) = std::fs::File::open(path) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(mut map) =
+                    serde_json::from_reader::<_, HashMap<String, OpponentTracker>>(reader)
+                {
+                    loaded_tracker = map.remove(opp_key);
+                }
+            }
+        }
+
+        let mut tracker = loaded_tracker?;
+        tracker.hand_vpip_recorded = false;
+        tracker.hand_pfr_recorded = false;
+        tracker.hand_saw_flop_recorded = false;
+        tracker.apply_session_decay(0.90);
+        Some(tracker)
     }
 }

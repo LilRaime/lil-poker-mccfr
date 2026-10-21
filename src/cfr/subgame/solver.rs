@@ -18,6 +18,7 @@ pub struct SubgameSolver {
     pub num_iterations: usize,
     pub adaptive: bool,
     pub threads: usize,
+    pub max_depth_streets: u8,
 }
 
 /* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
@@ -55,6 +56,7 @@ impl SubgameSolver {
             num_iterations,
             adaptive: true,
             threads: default_threads,
+            max_depth_streets: 2,
         }
     }
 
@@ -65,6 +67,11 @@ impl SubgameSolver {
 
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.threads = threads.max(1);
+        self
+    }
+
+    pub fn with_max_depth_streets(mut self, max_depth_streets: u8) -> Self {
+        self.max_depth_streets = max_depth_streets.max(1);
         self
     }
 
@@ -242,6 +249,20 @@ impl SubgameSolver {
             Some(my_player),
         );
 
+        /* Construct Hero's own Bayesian reach distribution for Range-vs-Range Continual Resolving */
+        let hero_reach_opt = if effective_iterations >= 150 {
+            Some(OpponentReachDistribution::build_detailed(
+                &remaining_deck,
+                board,
+                round,
+                history,
+                strategy_map,
+                Some(1 - my_player),
+            ))
+        } else {
+            None
+        };
+
         /* Extract root infoset key */
         let root_key = get_holdem_infoset_key(hole, board, round, history);
 
@@ -274,17 +295,39 @@ impl SubgameSolver {
 
                     for iter_idx in 0..iters_per_thread {
                         let opp_hole = reach_dist.sample(&mut t_rng);
+                        let updating_player = iter_idx % 2;
+
+                        /* Range-vs-Range sampling: when opponent is updating_player on every 4th iteration,
+                         * sample hero's hand from hero_reach so opponent optimizes against our full range */
+                        let hero_hole = if updating_player != my_player && iter_idx % 4 == 1 {
+                            if let Some(ref hr) = hero_reach_opt {
+                                let cand = hr.sample(&mut t_rng);
+                                if !cand.contains(&opp_hole[0]) && !cand.contains(&opp_hole[1]) {
+                                    cand
+                                } else {
+                                    *hole
+                                }
+                            } else {
+                                *hole
+                            }
+                        } else {
+                            *hole
+                        };
 
                         let (p0_hole, p1_hole) = if my_player == 0 {
-                            (*hole, opp_hole)
+                            (hero_hole, opp_hole)
                         } else {
-                            (opp_hole, *hole)
+                            (opp_hole, hero_hole)
                         };
 
                         let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
                         let mut rem_count = 0;
                         for &c in &remaining_deck {
-                            if c != opp_hole[0] && c != opp_hole[1] {
+                            if c != opp_hole[0]
+                                && c != opp_hole[1]
+                                && c != hero_hole[0]
+                                && c != hero_hole[1]
+                            {
                                 deck_rem_cards[rem_count] = c;
                                 rem_count += 1;
                             }
@@ -310,9 +353,9 @@ impl SubgameSolver {
                             returns: [0.0, 0.0],
                         };
 
-                        let updating_player = iter_idx % 2;
                         self.cfr(
                             &game,
+                            round,
                             updating_player,
                             iter_idx as f64,
                             &mut local_nodes,
@@ -344,17 +387,37 @@ impl SubgameSolver {
         } else {
             for iter_idx in 0..effective_iterations {
                 let opp_hole = reach_dist.sample(&mut rng);
+                let updating_player = iter_idx % 2;
+
+                let hero_hole = if updating_player != my_player && iter_idx % 4 == 1 {
+                    if let Some(ref hr) = hero_reach_opt {
+                        let cand = hr.sample(&mut rng);
+                        if !cand.contains(&opp_hole[0]) && !cand.contains(&opp_hole[1]) {
+                            cand
+                        } else {
+                            *hole
+                        }
+                    } else {
+                        *hole
+                    }
+                } else {
+                    *hole
+                };
 
                 let (p0_hole, p1_hole) = if my_player == 0 {
-                    (*hole, opp_hole)
+                    (hero_hole, opp_hole)
                 } else {
-                    (opp_hole, *hole)
+                    (opp_hole, hero_hole)
                 };
 
                 let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
                 let mut rem_count = 0;
                 for &c in &remaining_deck {
-                    if c != opp_hole[0] && c != opp_hole[1] {
+                    if c != opp_hole[0]
+                        && c != opp_hole[1]
+                        && c != hero_hole[0]
+                        && c != hero_hole[1]
+                    {
                         deck_rem_cards[rem_count] = c;
                         rem_count += 1;
                     }
@@ -380,8 +443,14 @@ impl SubgameSolver {
                     returns: [0.0, 0.0],
                 };
 
-                let updating_player = iter_idx % 2;
-                self.cfr(&game, updating_player, iter_idx as f64, nodes, &mut rng);
+                self.cfr(
+                    &game,
+                    round,
+                    updating_player,
+                    iter_idx as f64,
+                    nodes,
+                    &mut rng,
+                );
             }
             nodes.get(&root_key).map(|n| n.get_average_strategy())
         };
@@ -412,15 +481,31 @@ impl SubgameSolver {
             hole, board, round, to_call, pot, &legal,
         );
 
-        if let Some(solved) = solved_strategy {
+        if let Some(mut solved) = solved_strategy {
             /* Safe Resolving (Burch et al. 2014):
-             * Blend real-time solved subgame policy with robust GTO fallback bounds (85% solved / 15% fallback)
-             * to guarantee gift-proofing and prevent opponent out-of-distribution exploitation. */
+             * Blend real-time solved subgame policy with robust GTO fallback bounds
+             * to guarantee gift-proofing and prevent out-of-distribution bluff spew. */
+            let current_bucket = crate::cfr::abstraction::postflop_equity_bucket(hole, board);
+            let is_air_or_board_pair =
+                current_bucket < 15 || current_bucket == 28 || current_bucket == 29;
+            if is_air_or_board_pair {
+                solved[ALL_IN as usize] = 0.0;
+                if to_call > 0 && (current_bucket < 15 || current_bucket == 28) {
+                    for r_act in RAISE_MIN..=ALL_IN {
+                        solved[r_act as usize] = 0.0;
+                    }
+                }
+            }
+            let (solved_w, fb_w) = if is_air_or_board_pair {
+                (0.35, 0.65)
+            } else {
+                (0.85, 0.15)
+            };
             let mut resolved = vec![0.0f64; HOLDEM_NUM_ACTIONS];
             let mut sum = 0.0f64;
             for &a in &legal {
                 let idx = a as usize;
-                let val = (0.85 * solved[idx] + 0.15 * fallback[idx]).max(0.0);
+                let val = (solved_w * solved[idx] + fb_w * fallback[idx]).max(0.0);
                 resolved[idx] = val;
                 sum += val;
             }
@@ -439,6 +524,7 @@ impl SubgameSolver {
     fn cfr(
         &self,
         game: &TexasHoldemGame,
+        start_round: u8,
         updating_player: usize,
         weight: f64,
         nodes: &mut HashMap<String, InfosetNode>,
@@ -446,6 +532,15 @@ impl SubgameSolver {
     ) -> f64 {
         if game.is_terminal() {
             return game.get_returns()[updating_player];
+        }
+
+        /* Depth-limited leaf evaluation: when street depth reaches max_depth_streets,
+         * evaluate the leaf directly via fast 7-card rollout showdown without expanding river trees. */
+        if game.round > start_round
+            && (game.round - start_round) >= self.max_depth_streets
+            && game.history[(game.round - 1) as usize].is_empty()
+        {
+            return evaluate_leaf_rollout(game, updating_player);
         }
 
         let cur_p = game.current_player();
@@ -469,7 +564,8 @@ impl SubgameSolver {
 
             for &a in &legal {
                 let next_game = game.apply_action(a);
-                let action_util = self.cfr(&next_game, updating_player, weight, nodes, rng);
+                let action_util =
+                    self.cfr(&next_game, start_round, updating_player, weight, nodes, rng);
                 util[a as usize] = action_util;
                 node_util += strategy[a as usize] * action_util;
             }
@@ -489,8 +585,33 @@ impl SubgameSolver {
             /* Sample opponent action */
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
-            self.cfr(&next_game, updating_player, weight, nodes, rng)
+            self.cfr(&next_game, start_round, updating_player, weight, nodes, rng)
         }
+    }
+}
+
+#[inline]
+fn evaluate_leaf_rollout(game: &TexasHoldemGame, updating_player: usize) -> f64 {
+    use crate::game::holdem::evaluate_7cards;
+    let mut full_board = game.board;
+    let mut deck_rem = game.deck_remaining;
+    while full_board.len() < NUM_COMMUNITY_CARDS && !deck_rem.is_empty() {
+        full_board.push(deck_rem.deal_one());
+    }
+    let s0 = evaluate_7cards(&game.hole[0], &full_board);
+    let s1 = evaluate_7cards(&game.hole[1], &full_board);
+    let pot = game.contributions[0] + game.contributions[1];
+    let ret0 = if s0 > s1 {
+        (pot - game.contributions[0]) as f64
+    } else if s1 > s0 {
+        -(game.contributions[0] as f64)
+    } else {
+        0.0
+    };
+    if updating_player == 0 {
+        ret0
+    } else {
+        -ret0
     }
 }
 

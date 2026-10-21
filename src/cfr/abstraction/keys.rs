@@ -97,6 +97,42 @@ pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     s
 }
 
+/* Generates compact Infoset key using a precomputed postflop bucket */
+#[inline]
+pub fn get_holdem_infoset_key_with_bucket<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> String {
+    let mut out = String::with_capacity(16);
+    if round == 1 {
+        let (_, name) = preflop_bucket(hole[0], hole[1]);
+        out.push_str("P:");
+        out.push_str(name);
+        out.push('/');
+    } else {
+        let round_code = match round {
+            2 => "F:B",
+            3 => "T:B",
+            4 => "R:B",
+            _ => "X:B",
+        };
+        out.push_str(round_code);
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+    }
+    let r_idx = (round.saturating_sub(1)) as usize;
+    for &a in history.actions_in_round(r_idx) {
+        out.push(action_to_char(a));
+    }
+    out
+}
+
 #[inline(always)]
 pub fn action_to_char_coarse(a: u8) -> char {
     match a {
@@ -187,6 +223,69 @@ pub fn get_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     s
 }
 
+/* Generates Rich Infoset key using a precomputed postflop bucket */
+#[inline]
+pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> String {
+    let mut out = String::with_capacity(36);
+    if round == 1 {
+        let (_, name) = preflop_bucket(hole[0], hole[1]);
+        out.push_str("P:");
+        out.push_str(name);
+        out.push('/');
+        for &a in history.actions_in_round(0) {
+            out.push(action_to_char(a));
+        }
+    } else if round == 4 {
+        out.push_str("R:B");
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+        for &a in history.actions_in_round(3) {
+            out.push(action_to_char(a));
+        }
+    } else {
+        let pf_actions = history.actions_in_round(0);
+        if !pf_actions.is_empty() {
+            out.push_str("P:");
+            for &a in pf_actions {
+                out.push(action_to_char_coarse(a));
+            }
+            out.push('|');
+        }
+        if round >= 3 {
+            let f_actions = history.actions_in_round(1);
+            if !f_actions.is_empty() {
+                out.push_str("F:");
+                for &a in f_actions {
+                    out.push(action_to_char_coarse(a));
+                }
+                out.push('|');
+            }
+        }
+        let round_code = if round == 2 { "F:B" } else { "T:B" };
+        out.push_str(round_code);
+        if bucket < 10 {
+            out.push('0');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", bucket);
+        out.push('/');
+        let r_idx = (round.saturating_sub(1)) as usize;
+        for &a in history.actions_in_round(r_idx) {
+            out.push(action_to_char(a));
+        }
+    }
+    out
+}
+
 /* ── Fast 64-bit Hash Infoset Keys (Zero-allocation FNV-1a) ───────────────── */
 
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -232,6 +331,31 @@ pub fn hash_holdem_infoset_key<H: HistoryActions + ?Sized>(
 ) -> u64 {
     let r_idx = (round.saturating_sub(1)) as usize;
     hash_holdem_infoset_key_slice(hole, board, round, history.actions_in_round(r_idx))
+}
+
+#[inline]
+pub fn hash_holdem_infoset_key_with_bucket<H: HistoryActions + ?Sized>(
+    hole: &[Card; 2],
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    h = fnv1a_combine(h, round);
+    h = fnv1a_combine(h, b':');
+    if round == 1 {
+        let (idx, _) = preflop_bucket(hole[0], hole[1]);
+        h = fnv1a_combine(h, (idx & 0xff) as u8);
+        h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
+    } else {
+        h = fnv1a_combine(h, bucket);
+    }
+    h = fnv1a_combine(h, b'/');
+    let r_idx = (round.saturating_sub(1)) as usize;
+    for &a in history.actions_in_round(r_idx) {
+        h = fnv1a_combine(h, a);
+    }
+    h
 }
 
 #[inline]

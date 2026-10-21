@@ -47,6 +47,10 @@ struct Args {
     /* Maximum actions retained on Turn upon saving (0 = unlimited) */
     #[arg(long, default_value_t = 3)]
     max_turn_actions: usize,
+
+    /* Optional path to existing strategy file to warm-start / resume training */
+    #[arg(long)]
+    resume: Option<String>,
 }
 
 fn get_checkpoint_path(save_path: &str, done: u64) -> String {
@@ -126,6 +130,15 @@ fn main() {
         capacity,
         shards,
     );
+    if let Some(ref resume_path) = args.resume {
+        match solver.warm_start_from_file(resume_path) {
+            Ok(loaded) => println!(
+                "Warm-started solver from {} ({} infosets).",
+                resume_path, loaded
+            ),
+            Err(e) => eprintln!("WARNING: Failed to warm-start from {}: {}", resume_path, e),
+        }
+    }
     let start = std::time::Instant::now();
 
     let save_path = args.save_path.clone();
