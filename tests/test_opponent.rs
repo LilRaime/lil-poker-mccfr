@@ -825,3 +825,137 @@ fn test_persistent_opponent_profile_and_bluff_spew_guard() {
         act
     );
 }
+
+#[test]
+fn test_v8a_live_game_regressions() {
+    use lil_poker_mccfr::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+    let card = |rank, suit| Card { rank, suit };
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(777);
+
+    /* Hand 1 (photo_1..4): Set 9s 9c on Turn Js 9h 2h 6h (3-heart board) facing a lead (to_call = 574, pot = 1723).
+     * Must NOT raise or shove into the 3-flush board! */
+    let hole_99 = [
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Nine, Suit::Clubs),
+    ];
+    let board_3heart = [
+        card(Rank::Jack, Suit::Spades),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Six, Suit::Hearts),
+    ];
+    let b_99 = postflop_equity_bucket(&hole_99, &board_3heart);
+    let legal_turn = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let raw_probs_aggr = [0.0, 0.20, 0.10, 0.10, 0.20, 0.40];
+    let tracker = OpponentTracker::new();
+    let act_99 = tracker.select_action_purified_context(
+        &raw_probs_aggr,
+        &legal_turn,
+        b_99,
+        3, /* Turn */
+        574,
+        1723,
+        Some(&hole_99),
+        Some(&board_3heart),
+        &mut rng,
+    );
+    assert_eq!(
+        act_99, CALL_CHECK,
+        "Set 99 without heart on 3-heart Turn facing a lead must call, not raise/shove"
+    );
+
+    /* Hand 2 (photo_5..8): Top Pair Ad Kh on River 4c Jc 2h Ks 5c (3-club board) with to_call = 0.
+     * Must NEVER overbet 125% pot (RAISE_HALF_POT) or ALL_IN! */
+    let hole_ak = [
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::King, Suit::Hearts),
+    ];
+    let board_3club_river = [
+        card(Rank::Four, Suit::Clubs),
+        card(Rank::Jack, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::King, Suit::Spades),
+        card(Rank::Five, Suit::Clubs),
+    ];
+    let b_ak = postflop_equity_bucket(&hole_ak, &board_3club_river);
+    let legal_river_open = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let raw_probs_overbet = [0.05, 0.05, 0.05, 0.80, 0.05, 0.05];
+    let act_ak = tracker.select_action_purified_context(
+        &raw_probs_overbet,
+        &legal_river_open,
+        b_ak,
+        4, /* River */
+        0,
+        2994,
+        Some(&hole_ak),
+        Some(&board_3club_river),
+        &mut rng,
+    );
+    assert!(
+        act_ak != RAISE_HALF_POT && act_ak != ALL_IN,
+        "Top pair AK on 3-flush river must never 125% overbet or shove, got {}",
+        act_ak
+    );
+
+    /* Hand 3 (photo_9..12):
+     * (a) Jc 3s on BB must NOT get ISO-raise boosted against a limper.
+     * (b) Two pair Jc 3s on River Jd 9s 3c Qs 6h facing 900 into 2700 pot must NOT auto-fold! */
+    let hole_j3o = [
+        card(Rank::Jack, Suit::Clubs),
+        card(Rank::Three, Suit::Spades),
+    ];
+    let (pf_b_j3o, _) = preflop_bucket(hole_j3o[0], hole_j3o[1]);
+    let mut limper_tracker = OpponentTracker::new();
+    for _ in 0..10 {
+        limper_tracker.record_preflop_positional(true, true, false);
+    }
+    let base_pf = [0.0, 0.50, 0.25, 0.25, 0.0, 0.0];
+    let adj_pf = limper_tracker.adjust_strategy_full(
+        &base_pf,
+        &[CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT],
+        pf_b_j3o,
+        1,
+    );
+    assert!(
+        adj_pf[CALL_CHECK as usize] >= 0.45,
+        "Trash J3o on BB must not have check crushed by ISO-raise exploit"
+    );
+
+    let board_j93q6 = [
+        card(Rank::Jack, Suit::Diamonds),
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Three, Suit::Clubs),
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Six, Suit::Hearts),
+    ];
+    let b_j3_river = postflop_equity_bucket(&hole_j3o, &board_j93q6);
+    let raw_probs_call = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
+    let act_j3_river = tracker.select_action_purified_context(
+        &raw_probs_call,
+        &[FOLD, CALL_CHECK, RAISE_MIN],
+        b_j3_river,
+        4,   /* River */
+        900, /* Normal half-pot bet at 150/300 blinds */
+        2700,
+        Some(&hole_j3o),
+        Some(&board_j93q6),
+        &mut rng,
+    );
+    assert_eq!(
+        act_j3_river, CALL_CHECK,
+        "Two pair J3 on River facing half-pot bet must call, not auto-fold"
+    );
+}

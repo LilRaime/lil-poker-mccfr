@@ -286,7 +286,11 @@ pub fn lookup_strategy_hierarchical<'a, V>(
     round: u8,
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
 ) -> Option<&'a V> {
-    use crate::cfr::abstraction::{get_holdem_infoset_key, get_holdem_infoset_key_rich};
+    use crate::cfr::abstraction::{
+        get_holdem_infoset_key, get_holdem_infoset_key_rich,
+        get_holdem_infoset_key_rich_with_bucket, get_holdem_infoset_key_with_bucket,
+        postflop_equity_bucket,
+    };
 
     /* 1. Exact rich key (e.g. "P:rc|F:B36/c") */
     let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
@@ -300,41 +304,61 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         return Some(v);
     }
 
-    /* 3. For postflop (round >= 2), test canonical preflop lines with current street action */
-    if round == 2 {
-        let rc_key = format!("P:rc|{}", exact_key);
-        if let Some(v) = get_fn(&rc_key) {
-            return Some(v);
-        }
-        let cc_key = format!("P:cc|{}", exact_key);
-        if let Some(v) = get_fn(&cc_key) {
-            return Some(v);
-        }
-    } else if round == 3 {
-        let rc_f_c = format!("P:rc|F:c|{}", exact_key);
-        if let Some(v) = get_fn(&rc_f_c) {
-            return Some(v);
-        }
-        let cc_f_c = format!("P:cc|F:c|{}", exact_key);
-        if let Some(v) = get_fn(&cc_f_c) {
-            return Some(v);
-        }
-        let rc_key = format!("P:rc|{}", exact_key);
-        if let Some(v) = get_fn(&rc_key) {
-            return Some(v);
-        }
-    }
-
     if round >= 2 {
-        /* 4. Street action prefix truncation */
+        let bucket = postflop_equity_bucket(hole, board) as i32;
+
+        /* 3. Adjacent bucket search (+1, -1, +2, -2) preserving exact street history and active player */
+        for delta in [1i32, -1, 2, -2] {
+            let nb = bucket + delta;
+            if (0..77).contains(&nb) {
+                let adj_rich =
+                    get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
+                if let Some(v) = get_fn(&adj_rich) {
+                    return Some(v);
+                }
+                let adj_exact = get_holdem_infoset_key_with_bucket(hole, nb as u8, round, history);
+                if let Some(v) = get_fn(&adj_exact) {
+                    return Some(v);
+                }
+            }
+        }
+
+        /* 4. Canonical preflop line with exact current street action (same player turn) */
+        if round == 2 {
+            let rc_key = format!("P:rc|{}", exact_key);
+            if let Some(v) = get_fn(&rc_key) {
+                return Some(v);
+            }
+            let cc_key = format!("P:cc|{}", exact_key);
+            if let Some(v) = get_fn(&cc_key) {
+                return Some(v);
+            }
+        } else if round == 3 {
+            let rc_f_c = format!("P:rc|F:cc|{}", exact_key);
+            if let Some(v) = get_fn(&rc_f_c) {
+                return Some(v);
+            }
+            let rc_f_rc = format!("P:rc|F:rc|{}", exact_key);
+            if let Some(v) = get_fn(&rc_f_rc) {
+                return Some(v);
+            }
+            let cc_f_c = format!("P:cc|F:cc|{}", exact_key);
+            if let Some(v) = get_fn(&cc_f_c) {
+                return Some(v);
+            }
+        }
+
+        /* 5. Even-step street action truncation (steps of 2 ONLY so active player identity and legal actions match!) */
         if let Some(slash_idx) = exact_key.find('/') {
             let street_prefix = &exact_key[..slash_idx];
             let acts = &exact_key[slash_idx + 1..];
-            for end in (0..acts.len()).rev() {
+            let mut end = acts.len();
+            while end >= 2 {
+                end -= 2;
                 let sub_acts = &acts[..end];
                 let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
                 if round == 3 {
-                    let t_rc_f_c = format!("P:rc|F:c|{}", truncated_exact);
+                    let t_rc_f_c = format!("P:rc|F:cc|{}", truncated_exact);
                     if let Some(v) = get_fn(&t_rc_f_c) {
                         return Some(v);
                     }
@@ -364,7 +388,11 @@ pub fn lookup_strategy_hierarchical_owned<V>(
     round: u8,
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
 ) -> Option<V> {
-    use crate::cfr::abstraction::{get_holdem_infoset_key, get_holdem_infoset_key_rich};
+    use crate::cfr::abstraction::{
+        get_holdem_infoset_key, get_holdem_infoset_key_rich,
+        get_holdem_infoset_key_rich_with_bucket, get_holdem_infoset_key_with_bucket,
+        postflop_equity_bucket,
+    };
 
     let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
     if let Some(v) = get_fn(&rich_key) {
@@ -377,6 +405,22 @@ pub fn lookup_strategy_hierarchical_owned<V>(
     }
 
     if round >= 2 {
+        let bucket = postflop_equity_bucket(hole, board) as i32;
+        for delta in [1i32, -1, 2, -2] {
+            let nb = bucket + delta;
+            if (0..77).contains(&nb) {
+                let adj_rich =
+                    get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
+                if let Some(v) = get_fn(&adj_rich) {
+                    return Some(v);
+                }
+                let adj_exact = get_holdem_infoset_key_with_bucket(hole, nb as u8, round, history);
+                if let Some(v) = get_fn(&adj_exact) {
+                    return Some(v);
+                }
+            }
+        }
+
         let rc_key = format!("P:rc|{}", exact_key);
         if let Some(v) = get_fn(&rc_key) {
             return Some(v);
@@ -389,7 +433,9 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         if let Some(slash_idx) = exact_key.find('/') {
             let street_prefix = &exact_key[..slash_idx];
             let acts = &exact_key[slash_idx + 1..];
-            for end in (0..acts.len()).rev() {
+            let mut end = acts.len();
+            while end >= 2 {
+                end -= 2;
                 let sub_acts = &acts[..end];
                 let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
                 let t_rc = format!("P:rc|{}", truncated_exact);

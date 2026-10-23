@@ -251,17 +251,28 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
             let hole_hit_trips =
                 (hole[0].rank as usize == trips_rank) || (hole[1].rank as usize == trips_rank);
             let draws = detect_draws_detailed(hole, board);
+            let dangerous_board = board.len() >= 4 && super::texture::is_dangerous_board(board);
+            let four_flush_board = super::texture::is_four_flush_board(board);
 
             if is_pocket_pair {
                 /* Disguised Monster Set */
                 if board.len() < 5 && draws.is_flush_draw {
                     61 /* Monster Set + Flush Redraw */
-                } else if trips_rank >= 10 {
-                    60 /* Top Set (AA, KK, QQ) */
-                } else if trips_rank >= 6 {
-                    59 /* Mid Set (JJ, TT, 99, 88) */
                 } else {
-                    58 /* Low Set */
+                    let base = if trips_rank >= 10 {
+                        60 /* Top Set (AA, KK, QQ) */
+                    } else if trips_rank >= 6 {
+                        59 /* Mid Set (JJ, TT, 99, 88) */
+                    } else {
+                        58 /* Low Set */
+                    };
+                    if four_flush_board {
+                        43 /* Set on 4-flush board without flush is a bluff-catcher */
+                    } else if dangerous_board {
+                        base - 3 /* Vulnerable Set on 3-flush / 4-straight board */
+                    } else {
+                        base
+                    }
                 }
             } else if hole_hit_trips {
                 /* Visible Trips (player holds one trips card) */
@@ -272,12 +283,21 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                 };
                 if board.len() < 5 && draws.is_flush_draw {
                     61 /* Trips + Flush Redraw */
-                } else if kicker >= 11 {
-                    57 /* Trips Top Kicker (Ace, King) */
-                } else if kicker >= 7 {
-                    56 /* Trips Mid Kicker */
                 } else {
-                    55 /* Trips Weak Kicker */
+                    let base = if kicker >= 11 {
+                        57 /* Trips Top Kicker (Ace, King) */
+                    } else if kicker >= 7 {
+                        56 /* Trips Mid Kicker */
+                    } else {
+                        55 /* Trips Weak Kicker */
+                    };
+                    if four_flush_board {
+                        41 /* Trips on 4-flush board without flush */
+                    } else if dangerous_board {
+                        base - 3 /* Vulnerable Trips on 3-flush / 4-straight board (52..54) */
+                    } else {
+                        base
+                    }
                 }
             } else {
                 /* All three trips cards are on the board; player only has a kicker */
@@ -340,6 +360,8 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                 };
                 if draws.is_flush_draw {
                     53 /* Two Pair with Flush Redraw */
+                } else if super::texture::is_four_flush_board(board) {
+                    38 /* Two Pair on 4-flush board without flush */
                 } else {
                     base
                 }

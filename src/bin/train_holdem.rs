@@ -45,12 +45,16 @@ struct Args {
     prune_river: bool,
 
     /* Maximum actions retained on Turn upon saving (0 = unlimited) */
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 0)]
     max_turn_actions: usize,
 
     /* Optional path to existing strategy file to warm-start / resume training */
     #[arg(long)]
     resume: Option<String>,
+
+    /* Save lossless raw solver state (.ckpt) alongside the strategy file for resuming */
+    #[arg(long, default_value_t = false)]
+    save_raw_ckpt: bool,
 }
 
 fn get_checkpoint_path(save_path: &str, done: u64) -> String {
@@ -162,6 +166,13 @@ fn main() {
                     if keep_checkpoints && ckpt_path != save_path {
                         let _ = std::fs::copy(&ckpt_path, &save_path);
                     }
+                    if args.save_raw_ckpt {
+                        let raw_tmp = format!("{}.ckpt.{}.tmp", save_path, std::process::id());
+                        let raw_dst = format!("{}.ckpt", save_path);
+                        if s.save_raw_checkpoint(&raw_tmp).is_ok() {
+                            let _ = std::fs::rename(&raw_tmp, &raw_dst);
+                        }
+                    }
                     let ckpt_secs = ckpt_start.elapsed().as_secs_f64();
                     let done_label = if done >= 1_000_000 {
                         format!("{}M", done / 1_000_000)
@@ -191,6 +202,18 @@ fn main() {
         args.max_turn_actions,
     )
     .expect("Failed to save strategy file");
+
+    if args.save_raw_ckpt {
+        let raw_ckpt_path = format!("{}.ckpt", args.save_path);
+        if let Err(e) = solver.save_raw_checkpoint(&raw_ckpt_path) {
+            eprintln!(
+                "WARNING: Failed to save raw checkpoint to {}: {}",
+                raw_ckpt_path, e
+            );
+        } else {
+            println!("Saved lossless raw checkpoint to {}", raw_ckpt_path);
+        }
+    }
 
     if args.checkpoint_every > 0 && args.keep_checkpoints {
         let final_ckpt = get_checkpoint_path(&args.save_path, args.iterations);

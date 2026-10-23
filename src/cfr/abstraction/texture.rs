@@ -103,8 +103,34 @@ pub fn board_texture_byte(board: &[Card]) -> u8 {
     (flush_idx << 1) | paired_idx
 }
 
+/* Detects if community cards form a 3-flush or 4-flush board (3+ cards of the same suit). */
+#[inline(always)]
+pub fn is_three_flush_board(board: &[Card]) -> bool {
+    if board.len() < 3 {
+        return false;
+    }
+    let mut suit_counts = [0u8; 4];
+    for &c in board {
+        suit_counts[c.suit as usize] += 1;
+    }
+    suit_counts.iter().any(|&cnt| cnt >= 3)
+}
+
+/* Detects if community cards form a 4-flush board (4+ cards of the same suit). */
+#[inline(always)]
+pub fn is_four_flush_board(board: &[Card]) -> bool {
+    if board.len() < 4 {
+        return false;
+    }
+    let mut suit_counts = [0u8; 4];
+    for &c in board {
+        suit_counts[c.suit as usize] += 1;
+    }
+    suit_counts.iter().any(|&cnt| cnt >= 4)
+}
+
 /* Detects if community cards form a dangerous, highly coordinated board
- * (e.g. 4 cards to a straight, 4 cards to a flush, or monotone 3-flush with connectivity).
+ * (e.g. 3+ cards to a flush, 4 cards to a straight, or coordinated 3-to-straight on turn/river).
  */
 pub fn is_dangerous_board(board: &[Card]) -> bool {
     if board.len() < 3 {
@@ -116,8 +142,8 @@ pub fn is_dangerous_board(board: &[Card]) -> bool {
         suit_counts[c.suit as usize] += 1;
         rank_counts[c.rank as usize] = true;
     }
-    /* 4 or more to a flush */
-    if suit_counts.iter().any(|&cnt| cnt >= 4) {
+    /* 3 or more to a flush (any 2 suited cards or 1 card on 4-flush completes a flush) */
+    if suit_counts.iter().any(|&cnt| cnt >= 3) {
         return true;
     }
     /* 4 or more to a straight (4 ranks in any 5-card span) */

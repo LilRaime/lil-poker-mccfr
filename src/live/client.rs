@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use super::decision::decide_action;
+use super::decision::decide_action_multiway;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{parse_live_state, process_showdown, LiveRoundTracker};
 use crate::cfr::opponent_model::OpponentTracker;
@@ -317,10 +317,11 @@ pub async fn run_live_bot(
         let to_call = snapshot.to_call;
         let pot = snapshot.pot;
         let my_player = snapshot.my_player;
+        let active_opponents = snapshot.active_opponents;
 
         let (chosen_action, raw_amount) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
-            decide_action(
+            decide_action_multiway(
                 &hole,
                 &board_cards_clone,
                 &legal_actions,
@@ -336,16 +337,41 @@ pub async fn run_live_bot(
                 Some(&index_clone),
                 Some(&solver_arc),
                 Some(&mut ctx),
+                active_opponents,
             )
         })
         .await?;
 
-        let amount =
-            if (chosen_action == "raise" || chosen_action == "bet") && snapshot.my_chips > 0 {
-                raw_amount.min(snapshot.my_chips + snapshot.my_bet)
+        let (chosen_action, amount) = if (chosen_action == "raise" || chosen_action == "bet")
+            && snapshot.my_chips > 0
+        {
+            let max_total = snapshot.my_chips + snapshot.my_bet;
+            let capped = raw_amount.min(max_total);
+            let remaining_behind = max_total - capped;
+            let new_pot = snapshot.pot + (capped - snapshot.my_bet).max(0);
+            /* Avoid awkward raises that leave < 25% of the new pot behind: commit cleanly as all-in */
+            if remaining_behind > 0 && remaining_behind * 4 <= new_pot {
+                if snapshot
+                    .legal_actions
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case("all_in"))
+                {
+                    ("all_in".to_string(), 0)
+                } else if snapshot
+                    .legal_actions
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case("allin"))
+                {
+                    ("allin".to_string(), 0)
+                } else {
+                    (chosen_action, max_total)
+                }
             } else {
-                raw_amount
-            };
+                (chosen_action, capped)
+            }
+        } else {
+            (chosen_action, raw_amount)
+        };
 
         let hole_str = format!(
             "[{} {}]",

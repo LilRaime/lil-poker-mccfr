@@ -4,10 +4,13 @@
  */
 
 use super::reach::OpponentReachDistribution;
-use crate::cfr::abstraction::get_holdem_infoset_key;
+use crate::cfr::abstraction::{
+    hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket, postflop_equity_bucket,
+};
 use crate::cfr::node::InfosetNode;
 use crate::game::config::*;
 use crate::game::holdem::{Card, TexasHoldemGame, ALL_52_CARDS};
+use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -24,7 +27,7 @@ pub struct SubgameSolver {
 /* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
 #[derive(Default)]
 pub struct SubgameContext {
-    pub nodes: HashMap<String, InfosetNode>,
+    pub nodes: HashMap<u64, InfosetNode>,
 }
 
 impl SubgameContext {
@@ -263,8 +266,19 @@ impl SubgameSolver {
             None
         };
 
-        /* Extract root infoset key */
-        let root_key = get_holdem_infoset_key(hole, board, round, history);
+        /* Extract root infoset hash */
+        let root_hash = hash_holdem_infoset_key(hole, board, round, history);
+
+        /* Warm-start root node from blueprint strategy if available */
+        let blueprint_root_opt = strategy_map.and_then(|smap| {
+            crate::cfr::fallback::lookup_strategy_hierarchical_owned(
+                |k| smap.get(k).cloned(),
+                hole,
+                board,
+                round,
+                history,
+            )
+        });
 
         let hist_rounds = [
             crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
@@ -278,113 +292,135 @@ impl SubgameSolver {
             .unwrap_or(1);
         let eff_threads = self.threads.min(available_threads);
 
-        /* Run local CFR+ iterations with O(log K) Bayesian reach sampling (parallel or sequential) */
+        /* Run local CFR+ iterations with O(log K) Bayesian reach sampling (shared table across threads) */
         let solved_strategy: Option<Vec<f64>> = if eff_threads > 1 && effective_iterations >= 200 {
             use rayon::prelude::*;
             let num_threads = eff_threads.min(8);
             let iters_per_thread = effective_iterations.div_ceil(num_threads);
+            let shared_nodes: DashMap<u64, InfosetNode> =
+                DashMap::with_capacity_and_shard_amount(512, 64);
 
-            let thread_results: Vec<Option<Vec<f64>>> = (0..num_threads)
-                .into_par_iter()
-                .map(|t_id| {
-                    let t_seed = seed
-                        .wrapping_add((t_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
-                        .wrapping_add(0x517c_c1b7_2722_0a95);
-                    let mut t_rng = SmallRng::seed_from_u64(t_seed);
-                    let mut local_nodes: HashMap<String, InfosetNode> = HashMap::with_capacity(256);
+            if let Some(ref bp_probs) = blueprint_root_opt {
+                let root_node = InfosetNode::new(HOLDEM_NUM_ACTIONS);
+                root_node.accumulate_strategy(bp_probs, 25.0);
+                let init_regrets: Vec<f64> = bp_probs.iter().map(|&p| p * 50.0).collect();
+                root_node.update_regrets_cfr_plus(&init_regrets);
+                shared_nodes.insert(root_hash, root_node);
+            }
 
-                    for iter_idx in 0..iters_per_thread {
-                        let opp_hole = reach_dist.sample(&mut t_rng);
-                        let updating_player = iter_idx % 2;
+            (0..num_threads).into_par_iter().for_each(|t_id| {
+                let t_seed = seed
+                    .wrapping_add((t_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+                    .wrapping_add(0x517c_c1b7_2722_0a95);
+                let mut t_rng = SmallRng::seed_from_u64(t_seed);
 
-                        /* Range-vs-Range sampling: when opponent is updating_player on every 4th iteration,
-                         * sample hero's hand from hero_reach so opponent optimizes against our full range */
-                        let hero_hole = if updating_player != my_player && iter_idx % 4 == 1 {
-                            if let Some(ref hr) = hero_reach_opt {
-                                let cand = hr.sample(&mut t_rng);
-                                if !cand.contains(&opp_hole[0]) && !cand.contains(&opp_hole[1]) {
-                                    cand
-                                } else {
-                                    *hole
-                                }
+                for iter_idx in 0..iters_per_thread {
+                    let opp_hole = reach_dist.sample(&mut t_rng);
+                    let updating_player = (iter_idx + t_id) % 2;
+
+                    /* Range-vs-Range sampling: when opponent is updating_player on every 4th iteration,
+                     * sample hero's hand from hero_reach so opponent optimizes against our full range */
+                    let hero_hole = if updating_player != my_player && iter_idx % 4 == 1 {
+                        if let Some(ref hr) = hero_reach_opt {
+                            let cand = hr.sample(&mut t_rng);
+                            if !cand.contains(&opp_hole[0]) && !cand.contains(&opp_hole[1]) {
+                                cand
                             } else {
                                 *hole
                             }
                         } else {
                             *hole
-                        };
-
-                        let (p0_hole, p1_hole) = if my_player == 0 {
-                            (hero_hole, opp_hole)
-                        } else {
-                            (opp_hole, hero_hole)
-                        };
-
-                        let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
-                        let mut rem_count = 0;
-                        for &c in &remaining_deck {
-                            if c != opp_hole[0]
-                                && c != opp_hole[1]
-                                && c != hero_hole[0]
-                                && c != hero_hole[1]
-                            {
-                                deck_rem_cards[rem_count] = c;
-                                rem_count += 1;
-                            }
                         }
-                        let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
-                        for i in 0..num_board_missing.min(rem_count) {
-                            let j = t_rng.gen_range(i..rem_count);
-                            deck_rem_cards.swap(i, j);
+                    } else {
+                        *hole
+                    };
+
+                    let (p0_hole, p1_hole) = if my_player == 0 {
+                        (hero_hole, opp_hole)
+                    } else {
+                        (opp_hole, hero_hole)
+                    };
+
+                    let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
+                    let mut rem_count = 0;
+                    for &c in &remaining_deck {
+                        if c != opp_hole[0]
+                            && c != opp_hole[1]
+                            && c != hero_hole[0]
+                            && c != hero_hole[1]
+                        {
+                            deck_rem_cards[rem_count] = c;
+                            rem_count += 1;
                         }
-
-                        let game = TexasHoldemGame {
-                            hole: [p0_hole, p1_hole],
-                            board: crate::game::holdem::Board::from_slice(board),
-                            deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
-                                &deck_rem_cards[..rem_count],
-                            ),
-                            history: hist_rounds,
-                            contributions,
-                            current_player: my_player,
-                            round,
-                            raises_this_round,
-                            terminal: false,
-                            returns: [0.0, 0.0],
-                        };
-
-                        self.cfr(
-                            &game,
-                            round,
-                            updating_player,
-                            iter_idx as f64,
-                            &mut local_nodes,
-                            &mut t_rng,
-                        );
+                    }
+                    let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(board.len());
+                    for i in 0..num_board_missing.min(rem_count) {
+                        let j = t_rng.gen_range(i..rem_count);
+                        deck_rem_cards.swap(i, j);
                     }
 
-                    local_nodes.get(&root_key).map(|n| n.get_average_strategy())
-                })
-                .collect();
+                    let mut full_board_5 = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
+                    for (i, &c) in board.iter().take(NUM_COMMUNITY_CARDS).enumerate() {
+                        full_board_5[i] = c;
+                    }
+                    for i in 0..num_board_missing.min(rem_count) {
+                        full_board_5[board.len() + i] = deck_rem_cards[i];
+                    }
 
-            let mut avg_strat = vec![0.0f64; HOLDEM_NUM_ACTIONS];
-            let mut valid_count = 0;
-            for s in thread_results.into_iter().flatten() {
-                for (i, &v) in s.iter().enumerate() {
-                    avg_strat[i] += v;
+                    let precomputed_buckets = [
+                        [
+                            postflop_equity_bucket(&p0_hole, &full_board_5[..3]) as u8,
+                            postflop_equity_bucket(&p1_hole, &full_board_5[..3]) as u8,
+                        ],
+                        [
+                            postflop_equity_bucket(&p0_hole, &full_board_5[..4]) as u8,
+                            postflop_equity_bucket(&p1_hole, &full_board_5[..4]) as u8,
+                        ],
+                        [
+                            postflop_equity_bucket(&p0_hole, &full_board_5[..5]) as u8,
+                            postflop_equity_bucket(&p1_hole, &full_board_5[..5]) as u8,
+                        ],
+                    ];
+
+                    let game = TexasHoldemGame {
+                        hole: [p0_hole, p1_hole],
+                        board: crate::game::holdem::Board::from_slice(board),
+                        deck_remaining: crate::game::holdem::DeckRemaining::from_slice(
+                            &deck_rem_cards[..rem_count],
+                        ),
+                        history: hist_rounds,
+                        contributions,
+                        current_player: my_player,
+                        round,
+                        raises_this_round,
+                        terminal: false,
+                        returns: [0.0, 0.0],
+                    };
+
+                    self.cfr_shared(
+                        &game,
+                        round,
+                        updating_player,
+                        (iter_idx + 1) as f64,
+                        &precomputed_buckets,
+                        &shared_nodes,
+                        &mut t_rng,
+                    );
                 }
-                valid_count += 1;
-            }
-            if valid_count > 0 {
-                let inv = 1.0 / valid_count as f64;
-                for v in &mut avg_strat {
-                    *v *= inv;
-                }
-                Some(avg_strat)
-            } else {
-                None
-            }
+            });
+
+            shared_nodes
+                .get(&root_hash)
+                .map(|n| n.value().get_average_strategy())
         } else {
+            if let Some(ref bp_probs) = blueprint_root_opt {
+                let root_node = InfosetNode::new(HOLDEM_NUM_ACTIONS);
+                root_node.accumulate_strategy(bp_probs, 25.0);
+                let init_regrets: Vec<f64> = bp_probs.iter().map(|&p| p * 50.0).collect();
+                root_node.update_regrets_cfr_plus(&init_regrets);
+                nodes.insert(root_hash, root_node);
+            }
+
             for iter_idx in 0..effective_iterations {
                 let opp_hole = reach_dist.sample(&mut rng);
                 let updating_player = iter_idx % 2;
@@ -428,6 +464,29 @@ impl SubgameSolver {
                     deck_rem_cards.swap(i, j);
                 }
 
+                let mut full_board_5 = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
+                for (i, &c) in board.iter().take(NUM_COMMUNITY_CARDS).enumerate() {
+                    full_board_5[i] = c;
+                }
+                for i in 0..num_board_missing.min(rem_count) {
+                    full_board_5[board.len() + i] = deck_rem_cards[i];
+                }
+
+                let precomputed_buckets = [
+                    [
+                        postflop_equity_bucket(&p0_hole, &full_board_5[..3]) as u8,
+                        postflop_equity_bucket(&p1_hole, &full_board_5[..3]) as u8,
+                    ],
+                    [
+                        postflop_equity_bucket(&p0_hole, &full_board_5[..4]) as u8,
+                        postflop_equity_bucket(&p1_hole, &full_board_5[..4]) as u8,
+                    ],
+                    [
+                        postflop_equity_bucket(&p0_hole, &full_board_5[..5]) as u8,
+                        postflop_equity_bucket(&p1_hole, &full_board_5[..5]) as u8,
+                    ],
+                ];
+
                 let game = TexasHoldemGame {
                     hole: [p0_hole, p1_hole],
                     board: crate::game::holdem::Board::from_slice(board),
@@ -443,16 +502,17 @@ impl SubgameSolver {
                     returns: [0.0, 0.0],
                 };
 
-                self.cfr(
+                self.cfr_local(
                     &game,
                     round,
                     updating_player,
-                    iter_idx as f64,
+                    (iter_idx + 1) as f64,
+                    &precomputed_buckets,
                     nodes,
                     &mut rng,
                 );
             }
-            nodes.get(&root_key).map(|n| n.get_average_strategy())
+            nodes.get(&root_hash).map(|n| n.get_average_strategy())
         };
 
         /* Extract average strategy for root infoset */
@@ -477,9 +537,17 @@ impl SubgameSolver {
                 ALL_IN,
             ]
         };
-        let fallback = crate::cfr::fallback::get_holdem_fallback_strategy(
-            hole, board, round, to_call, pot, &legal,
-        );
+        let fallback = if let Some(ref bp) = blueprint_root_opt {
+            let mut arr = [0.0f64; HOLDEM_NUM_ACTIONS];
+            for (i, &v) in bp.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
+                arr[i] = v;
+            }
+            arr
+        } else {
+            crate::cfr::fallback::get_holdem_fallback_strategy(
+                hole, board, round, to_call, pot, &legal,
+            )
+        };
 
         if let Some(mut solved) = solved_strategy {
             /* Safe Resolving (Burch et al. 2014):
@@ -521,13 +589,15 @@ impl SubgameSolver {
         }
     }
 
-    fn cfr(
+    #[allow(clippy::too_many_arguments)]
+    fn cfr_shared(
         &self,
         game: &TexasHoldemGame,
         start_round: u8,
         updating_player: usize,
         weight: f64,
-        nodes: &mut HashMap<String, InfosetNode>,
+        precomputed_buckets: &[[u8; 2]; 3],
+        nodes: &DashMap<u64, InfosetNode>,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
@@ -549,11 +619,23 @@ impl SubgameSolver {
             return game.get_returns()[updating_player];
         }
 
-        let key = get_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history);
+        let key_hash = if game.round >= 2 && game.round <= 4 {
+            let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
+            hash_holdem_infoset_key_with_bucket(
+                &game.hole[cur_p],
+                bucket,
+                game.round,
+                &game.history,
+            )
+        } else {
+            hash_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history)
+        };
 
-        let strategy = {
+        let strategy = if let Some(node) = nodes.get(&key_hash) {
+            node.get_strategy()
+        } else {
             let node = nodes
-                .entry(key.clone())
+                .entry(key_hash)
                 .or_insert_with(|| InfosetNode::new(HOLDEM_NUM_ACTIONS));
             node.get_strategy()
         };
@@ -564,18 +646,25 @@ impl SubgameSolver {
 
             for &a in &legal {
                 let next_game = game.apply_action(a);
-                let action_util =
-                    self.cfr(&next_game, start_round, updating_player, weight, nodes, rng);
+                let action_util = self.cfr_shared(
+                    &next_game,
+                    start_round,
+                    updating_player,
+                    weight,
+                    precomputed_buckets,
+                    nodes,
+                    rng,
+                );
                 util[a as usize] = action_util;
                 node_util += strategy[a as usize] * action_util;
             }
 
-            let mut regrets = vec![0.0f64; HOLDEM_NUM_ACTIONS];
+            let mut regrets = [0.0f64; HOLDEM_NUM_ACTIONS];
             for &a in &legal {
                 regrets[a as usize] = util[a as usize] - node_util;
             }
 
-            if let Some(node) = nodes.get_mut(&key) {
+            if let Some(node) = nodes.get(&key_hash) {
                 node.update_regrets_cfr_plus(&regrets);
                 node.accumulate_strategy(&strategy, weight);
             }
@@ -585,7 +674,110 @@ impl SubgameSolver {
             /* Sample opponent action */
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
-            self.cfr(&next_game, start_round, updating_player, weight, nodes, rng)
+            self.cfr_shared(
+                &next_game,
+                start_round,
+                updating_player,
+                weight,
+                precomputed_buckets,
+                nodes,
+                rng,
+            )
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cfr_local(
+        &self,
+        game: &TexasHoldemGame,
+        start_round: u8,
+        updating_player: usize,
+        weight: f64,
+        precomputed_buckets: &[[u8; 2]; 3],
+        nodes: &mut HashMap<u64, InfosetNode>,
+        rng: &mut SmallRng,
+    ) -> f64 {
+        if game.is_terminal() {
+            return game.get_returns()[updating_player];
+        }
+
+        /* Depth-limited leaf evaluation: when street depth reaches max_depth_streets,
+         * evaluate the leaf directly via fast 7-card rollout showdown without expanding river trees. */
+        if game.round > start_round
+            && (game.round - start_round) >= self.max_depth_streets
+            && game.history[(game.round - 1) as usize].is_empty()
+        {
+            return evaluate_leaf_rollout(game, updating_player);
+        }
+
+        let cur_p = game.current_player();
+        let legal = game.legal_actions();
+        if legal.is_empty() {
+            return game.get_returns()[updating_player];
+        }
+
+        let key_hash = if game.round >= 2 && game.round <= 4 {
+            let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
+            hash_holdem_infoset_key_with_bucket(
+                &game.hole[cur_p],
+                bucket,
+                game.round,
+                &game.history,
+            )
+        } else {
+            hash_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history)
+        };
+
+        let strategy = {
+            let node = nodes
+                .entry(key_hash)
+                .or_insert_with(|| InfosetNode::new(HOLDEM_NUM_ACTIONS));
+            node.get_strategy()
+        };
+
+        if cur_p == updating_player {
+            let mut util = [0.0f64; HOLDEM_NUM_ACTIONS];
+            let mut node_util = 0.0f64;
+
+            for &a in &legal {
+                let next_game = game.apply_action(a);
+                let action_util = self.cfr_local(
+                    &next_game,
+                    start_round,
+                    updating_player,
+                    weight,
+                    precomputed_buckets,
+                    nodes,
+                    rng,
+                );
+                util[a as usize] = action_util;
+                node_util += strategy[a as usize] * action_util;
+            }
+
+            let mut regrets = [0.0f64; HOLDEM_NUM_ACTIONS];
+            for &a in &legal {
+                regrets[a as usize] = util[a as usize] - node_util;
+            }
+
+            if let Some(node) = nodes.get_mut(&key_hash) {
+                node.update_regrets_cfr_plus(&regrets);
+                node.accumulate_strategy(&strategy, weight);
+            }
+
+            node_util
+        } else {
+            /* Sample opponent action */
+            let sampled_a = sample_action(&strategy, &legal, rng);
+            let next_game = game.apply_action(sampled_a);
+            self.cfr_local(
+                &next_game,
+                start_round,
+                updating_player,
+                weight,
+                precomputed_buckets,
+                nodes,
+                rng,
+            )
         }
     }
 }

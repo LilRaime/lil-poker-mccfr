@@ -27,6 +27,46 @@ pub fn decide_action(
     solver: Option<&SubgameSolver>,
     solver_ctx: Option<&mut SubgameContext>,
 ) -> (String, i32) {
+    decide_action_multiway(
+        hole,
+        board,
+        legal,
+        to_call,
+        pot,
+        strategy_map,
+        subgame_search,
+        tracker,
+        history,
+        my_player,
+        contributions,
+        raises_this_round,
+        strategy_index,
+        solver,
+        solver_ctx,
+        1,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decide_action_multiway(
+    hole: &[Card; 2],
+    board: &[Card],
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    strategy_map: &HashMap<String, Vec<f64>>,
+    subgame_search: bool,
+    tracker: &OpponentTracker,
+    history: &[RoundHistory; 4],
+    my_player: usize,
+    contributions: [i32; 2],
+    raises_this_round: u8,
+    strategy_index: Option<&StrategyLookupIndex>,
+    solver: Option<&SubgameSolver>,
+    solver_ctx: Option<&mut SubgameContext>,
+    active_opponents: usize,
+) -> (String, i32) {
+    let active_opponents = active_opponents.max(1);
     let round = match board.len() {
         0 => 1,
         3 => 2,
@@ -67,56 +107,61 @@ pub fn decide_action(
         postflop_equity_bucket(hole, board)
     };
 
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots) */
-    let raw_probs =
-        if subgame_search && (round >= 3 || (round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT)) {
-            let default_solver = SubgameSolver::default();
-            let active_solver = solver.unwrap_or(&default_solver);
-            if let Some(ctx) = solver_ctx {
-                active_solver.solve_with_context_and_strategy(
-                    hole,
-                    board,
-                    round,
-                    history,
-                    my_player,
-                    contributions,
-                    raises_this_round,
-                    ctx,
-                    Some(strategy_map),
-                )
-            } else {
-                active_solver.solve_with_state(
-                    hole,
-                    board,
-                    round,
-                    history,
-                    my_player,
-                    contributions,
-                    raises_this_round,
-                )
-            }
-        } else {
-            /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
-            if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned(
-                |k| strategy_map.get(k).cloned(),
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots when Heads-Up 1v1):
+     * When multiple opponents are still active on Flop/Turn (active_opponents >= 2),
+     * use the Blueprint + Multi-way policy adaptation instead of a 1v1 tree. */
+    let use_subgame = subgame_search
+        && active_opponents == 1
+        && (round >= 3 || (round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
+
+    let raw_probs = if use_subgame {
+        let default_solver = SubgameSolver::default();
+        let active_solver = solver.unwrap_or(&default_solver);
+        if let Some(ctx) = solver_ctx {
+            active_solver.solve_with_context_and_strategy(
                 hole,
                 board,
                 round,
                 history,
-            ) {
-                p
-            } else if let Some(idx) = strategy_index {
-                idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
-            } else {
-                let fallback =
-                    get_holdem_fallback_strategy(hole, board, round, to_call, pot, &legal_u8);
-                fallback.to_vec()
-            }
-        };
+                my_player,
+                contributions,
+                raises_this_round,
+                ctx,
+                Some(strategy_map),
+            )
+        } else {
+            active_solver.solve_with_state(
+                hole,
+                board,
+                round,
+                history,
+                my_player,
+                contributions,
+                raises_this_round,
+            )
+        }
+    } else {
+        /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
+        if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned(
+            |k| strategy_map.get(k).cloned(),
+            hole,
+            board,
+            round,
+            history,
+        ) {
+            p
+        } else if let Some(idx) = strategy_index {
+            idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
+        } else {
+            let fallback =
+                get_holdem_fallback_strategy(hole, board, round, to_call, pot, &legal_u8);
+            fallback.to_vec()
+        }
+    };
 
-    /* 3. Action Selection via Purified Strategy Sampling with Opponent Exploitation and All-in Defense */
+    /* 3. Action Selection via Purified Strategy Sampling with Multi-way, Opponent Exploitation, and All-in Defense */
     let mut rng = rand::thread_rng();
-    let chosen_idx = tracker.select_action_purified_context(
+    let chosen_idx = tracker.select_action_purified_context_multiway(
         &raw_probs,
         &legal_u8,
         current_bucket,
@@ -125,6 +170,7 @@ pub fn decide_action(
         pot,
         Some(hole),
         Some(board),
+        active_opponents,
         &mut rng,
     ) as usize;
 

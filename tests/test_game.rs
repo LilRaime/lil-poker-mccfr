@@ -132,27 +132,42 @@ fn test_geometric_street_aware_bet_sizing() {
     game = game.apply_action(CALL_CHECK);
     game = game.apply_action(CALL_CHECK);
     assert_eq!(game.round, 2);
+    assert_eq!(
+        game.current_player(),
+        1,
+        "BB (player 1) must act first postflop"
+    );
     let flop_pot = game.contributions[0] + game.contributions[1];
     assert_eq!(flop_pot, BIG_BLIND * 2);
 
-    /* On Flop: P0 checks, P1 checks -> Turn (round 3). */
+    /* On Flop: P1 checks, P0 checks -> Turn (round 3). */
     game = game.apply_action(CALL_CHECK);
     game = game.apply_action(CALL_CHECK);
     assert_eq!(game.round, 3);
+    assert_eq!(
+        game.current_player(),
+        1,
+        "BB (player 1) must act first on Turn"
+    );
 
-    /* On Turn: P0 applies RAISE_HALF_POT (geometric 75% pot bet) */
+    /* On Turn: P1 applies RAISE_HALF_POT (geometric 75% pot bet) */
     let turn_g = game.apply_action(RAISE_HALF_POT);
-    assert!(turn_g.contributions[0] >= game.contributions[0] + RAISE_HALF_POT_FLOOR_TURN);
+    assert!(turn_g.contributions[1] >= game.contributions[1] + RAISE_HALF_POT_FLOOR_TURN);
 
-    /* P0 and P1 transition to River (round 4) */
+    /* P1 and P0 transition to River (round 4) */
     game = game.apply_action(CALL_CHECK);
     game = game.apply_action(CALL_CHECK);
     assert_eq!(game.round, 4);
+    assert_eq!(
+        game.current_player(),
+        1,
+        "BB (player 1) must act first on River"
+    );
     let river_pot = game.contributions[0] + game.contributions[1];
 
-    /* On River: P0 applies RAISE_HALF_POT (polarized 125% pot overbet!) */
+    /* On River: P1 applies RAISE_HALF_POT (polarized 125% pot overbet!) */
     let river_g = game.apply_action(RAISE_HALF_POT);
-    let river_bet = river_g.contributions[0] - game.contributions[0];
+    let river_bet = river_g.contributions[1] - game.contributions[1];
     assert_eq!(
         river_bet,
         (river_pot * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER),

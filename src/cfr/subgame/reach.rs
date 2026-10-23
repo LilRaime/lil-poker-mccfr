@@ -127,7 +127,8 @@ impl OpponentReachDistribution {
                         /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
                         (actions.len() - 1 - idx).is_multiple_of(2)
                     } else {
-                        idx % 2 == opp || actions.len() == 1
+                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
+                        (1 - idx % 2) == opp || actions.len() == 1
                     }
                 })
                 .map(|(_, &a)| a)
@@ -161,7 +162,8 @@ impl OpponentReachDistribution {
                         /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
                         (actions.len() - 1 - idx).is_multiple_of(2)
                     } else {
-                        idx % 2 == opp || actions.len() == 1
+                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
+                        (1 - idx % 2) == opp || actions.len() == 1
                     }
                 })
                 .map(|(_, &a)| a)
@@ -194,7 +196,8 @@ impl OpponentReachDistribution {
                     if round == 4 && !actions.is_empty() {
                         (actions.len() - 1 - idx).is_multiple_of(2)
                     } else {
-                        idx % 2 == opp || actions.len() == 1
+                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
+                        (1 - idx % 2) == opp || actions.len() == 1
                     }
                 })
                 .map(|(_, &a)| a)
@@ -486,7 +489,11 @@ impl OpponentReachDistribution {
                         }
                     } else if opp_called_turn {
                         if t_cat >= 2 {
-                            0.60
+                            if monotone_suit.is_some() && t_cat >= 5 {
+                                1.15 /* Made flush on 3-flush turn often flat-calls in position to trap! */
+                            } else {
+                                0.80
+                            }
                         } else if t_cat == 1 {
                             0.95
                         } else if fd || sd {

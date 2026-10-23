@@ -94,7 +94,7 @@ impl TexasHoldemGame {
         let my_contrib = self.contributions[self.current_player];
         let raise_capped = self.raises_this_round >= MAX_RAISES_PER_ROUND;
 
-        if my_contrib >= STACK_SIZE || self.contributions[opp] >= STACK_SIZE || raise_capped {
+        if my_contrib >= STACK_SIZE || self.contributions[opp] >= STACK_SIZE {
             if diff > 0 {
                 out[0] = FOLD;
                 out[1] = CALL_CHECK;
@@ -102,6 +102,17 @@ impl TexasHoldemGame {
             } else {
                 out[0] = CALL_CHECK;
                 1
+            }
+        } else if raise_capped {
+            if diff > 0 {
+                out[0] = FOLD;
+                out[1] = CALL_CHECK;
+                out[2] = ALL_IN;
+                3
+            } else {
+                out[0] = CALL_CHECK;
+                out[1] = ALL_IN;
+                2
             }
         } else if diff > 0 {
             out[0] = FOLD;
@@ -154,13 +165,21 @@ impl TexasHoldemGame {
             RAISE_MIN => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
+                let pot_with_call = pot + diff;
                 let raise_amt = if next.round == 1 && next.raises_this_round == 0 {
                     /* Preflop initial open-raise: 2.5x BB (250 chips total) */
                     PREFLOP_OPEN_MIN_TOTAL
                         .saturating_sub(next.contributions[next.current_player] + diff)
                         .max(BIG_BLIND)
-                } else {
+                } else if next.round == 1 {
                     RAISE_MIN_AMT
+                } else {
+                    /* Postflop small bet / min-raise: 25% pot (floored at BIG_BLIND, or RAISE_MIN_AMT on raises) */
+                    if diff > 0 {
+                        (pot_with_call / 4).max(RAISE_MIN_AMT)
+                    } else {
+                        (pot_with_call / 4).max(BIG_BLIND)
+                    }
                 };
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
@@ -169,7 +188,8 @@ impl TexasHoldemGame {
             RAISE_THIRD_POT => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let raise_amt = (pot / 3).max(RAISE_THIRD_POT_FLOOR);
+                let pot_with_call = pot + diff;
+                let raise_amt = (pot_with_call / 3).max(RAISE_THIRD_POT_FLOOR);
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
                 next.raises_this_round += 1;
@@ -228,22 +248,22 @@ impl TexasHoldemGame {
                 return next;
             }
             if next.round == 1 {
-                /* Deal Flop (3 cards) */
+                /* Deal Flop (3 cards). Postflop BB (player 1) acts first! */
                 next.round = 2;
                 next.board.push(next.deck_remaining.deal_one());
                 next.board.push(next.deck_remaining.deal_one());
                 next.board.push(next.deck_remaining.deal_one());
-                next.current_player = 0;
+                next.current_player = 1;
             } else if next.round == 2 {
-                /* Deal Turn (1 card) */
+                /* Deal Turn (1 card). Postflop BB (player 1) acts first! */
                 next.round = 3;
                 next.board.push(next.deck_remaining.deal_one());
-                next.current_player = 0;
+                next.current_player = 1;
             } else if next.round == 3 {
-                /* Deal River (1 card) */
+                /* Deal River (1 card). Postflop BB (player 1) acts first! */
                 next.round = 4;
                 next.board.push(next.deck_remaining.deal_one());
-                next.current_player = 0;
+                next.current_player = 1;
             } else {
                 next.resolve_showdown();
             }

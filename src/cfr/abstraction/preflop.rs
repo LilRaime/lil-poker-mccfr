@@ -100,6 +100,50 @@ pub fn preflop_strength_tier(idx: usize) -> u8 {
     }
 }
 
+/* Inverse lookup: canonical preflop hand name ("AA", "AKs", "72o") -> bucket index (0..168). */
+pub fn preflop_bucket_from_name(name: &str) -> Option<usize> {
+    use crate::game::holdem::Suit;
+    let bytes = name.as_bytes();
+    if bytes.len() < 2 {
+        return None;
+    }
+    let parse_rank = |b: u8| -> Option<Rank> {
+        match b {
+            b'A' => Some(Rank::Ace),
+            b'K' => Some(Rank::King),
+            b'Q' => Some(Rank::Queen),
+            b'J' => Some(Rank::Jack),
+            b'T' => Some(Rank::Ten),
+            b'9' => Some(Rank::Nine),
+            b'8' => Some(Rank::Eight),
+            b'7' => Some(Rank::Seven),
+            b'6' => Some(Rank::Six),
+            b'5' => Some(Rank::Five),
+            b'4' => Some(Rank::Four),
+            b'3' => Some(Rank::Three),
+            b'2' => Some(Rank::Two),
+            _ => None,
+        }
+    };
+    let r1 = parse_rank(bytes[0])?;
+    let r2 = parse_rank(bytes[1])?;
+    if bytes.len() == 2 {
+        let c1 = Card::new(r1, Suit::Spades);
+        let c2 = Card::new(r2, Suit::Hearts);
+        Some(preflop_bucket(c1, c2).0)
+    } else if bytes[2] == b's' {
+        let c1 = Card::new(r1, Suit::Spades);
+        let c2 = Card::new(r2, Suit::Spades);
+        Some(preflop_bucket(c1, c2).0)
+    } else if bytes[2] == b'o' {
+        let c1 = Card::new(r1, Suit::Spades);
+        let c2 = Card::new(r2, Suit::Hearts);
+        Some(preflop_bucket(c1, c2).0)
+    } else {
+        None
+    }
+}
+
 #[allow(dead_code)]
 fn rank_char(r: Rank) -> &'static str {
     match r {

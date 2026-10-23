@@ -493,3 +493,82 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     }
     h
 }
+
+#[inline(always)]
+pub fn char_to_action(c: u8) -> Option<u8> {
+    match c {
+        b'f' => Some(0),
+        b'c' => Some(1),
+        b'r' => Some(2),
+        b't' => Some(3),
+        b'h' => Some(4),
+        b'a' => Some(5),
+        _ => None,
+    }
+}
+
+/* Reconstructs the exact 64-bit FNV-1a infoset hash from a formatted infoset key string
+ * (both rich keys like "P:rc|F:B39/c" and compact keys like "P:AKo/rc" or "R:B50/t"),
+ * matching `hash_holdem_infoset_key_rich_with_bucket` / `hash_holdem_infoset_key_with_bucket`. */
+pub fn hash_from_infoset_key_str(key: &str) -> u64 {
+    use super::preflop::preflop_bucket_from_name;
+
+    let mut h = FNV_OFFSET_BASIS;
+    let parts: Vec<&str> = key.split('|').collect();
+    let main_part = match parts.last() {
+        Some(&s) => s,
+        None => return h,
+    };
+
+    for &prefix in &parts[..parts.len().saturating_sub(1)] {
+        if let Some(pf_acts) = prefix.strip_prefix("P:") {
+            h = fnv1a_combine(h, b'P');
+            for &b in pf_acts.as_bytes() {
+                h = fnv1a_combine(h, b);
+            }
+            h = fnv1a_combine(h, b'|');
+        } else if let Some(f_acts) = prefix.strip_prefix("F:") {
+            h = fnv1a_combine(h, b'F');
+            for &b in f_acts.as_bytes() {
+                h = fnv1a_combine(h, b);
+            }
+            h = fnv1a_combine(h, b'|');
+        }
+    }
+
+    let (head, acts_str) = match main_part.split_once('/') {
+        Some(pair) => pair,
+        None => return h,
+    };
+
+    if let Some(pf_name) = head.strip_prefix("P:") {
+        h = fnv1a_combine(h, 1);
+        h = fnv1a_combine(h, b':');
+        let idx = preflop_bucket_from_name(pf_name).unwrap_or(0);
+        h = fnv1a_combine(h, (idx & 0xff) as u8);
+        h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
+    } else {
+        let round = if head.starts_with("F:") {
+            2u8
+        } else if head.starts_with("T:") {
+            3u8
+        } else if head.starts_with("R:") {
+            4u8
+        } else {
+            0u8
+        };
+        h = fnv1a_combine(h, round);
+        h = fnv1a_combine(h, b':');
+        let b_str = head.split(":B").nth(1).unwrap_or("0");
+        let bucket = b_str.parse::<u8>().unwrap_or(0);
+        h = fnv1a_combine(h, bucket);
+    }
+
+    h = fnv1a_combine(h, b'/');
+    for &c in acts_str.as_bytes() {
+        if let Some(a) = char_to_action(c) {
+            h = fnv1a_combine(h, a);
+        }
+    }
+    h
+}

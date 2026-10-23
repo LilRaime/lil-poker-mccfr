@@ -22,6 +22,7 @@ pub struct HoldemMCCFRSolver {
     pub rich_history: bool,
     pub pruning: bool,
     pub dcfr: bool,
+    pub global_iterations: AtomicU64,
 }
 
 impl Default for HoldemMCCFRSolver {
@@ -54,6 +55,7 @@ impl HoldemMCCFRSolver {
             rich_history,
             pruning,
             dcfr,
+            global_iterations: AtomicU64::new(0),
         }
     }
 
@@ -98,19 +100,24 @@ impl HoldemMCCFRSolver {
             .unwrap_or(());
 
         let is_dcfr = self.dcfr;
+        let base_iters = self.global_iterations.load(AtomicOrdering::Relaxed);
+        let total_target = base_iters + iterations;
+        let dcfr_epoch = (iterations / 20).clamp(50_000, 10_000_000);
         let chunk_size = match (log_every, checkpoint_every) {
-            (0, 0) => iterations,
-            (0, c) => c,
-            (l, 0) => l,
-            (l, c) => l.min(c),
-        };
+            (0, 0) => iterations.min(dcfr_epoch),
+            (0, c) => c.min(dcfr_epoch),
+            (l, 0) => l.min(dcfr_epoch),
+            (l, c) => l.min(c).min(dcfr_epoch),
+        }
+        .max(1);
         let width = iterations.to_string().len();
         let mut done = 0u64;
         let mut last_checkpoint = 0u64;
         let mut last_log = 0u64;
+        let mut last_discount = 0u64;
         let train_start = std::time::Instant::now();
-        let warmup = (iterations / 10).min(500_000);
-        let train_iters_after_warmup = (iterations.saturating_sub(warmup).max(1)) as f64;
+        let warmup = (total_target / 20).clamp(1_000, 500_000);
+        let train_iters_after_warmup = (total_target.saturating_sub(warmup).max(1)) as f64;
 
         let entropy_base = Arc::new(AtomicU64::new(
             std::time::SystemTime::now()
@@ -128,32 +135,75 @@ impl HoldemMCCFRSolver {
             let batch_start = std::time::Instant::now();
 
             batch.into_par_iter().for_each(|iter_idx| {
+                let global_idx = base_iters + iter_idx;
                 let thread_entropy = entropy_ref.fetch_add(1, AtomicOrdering::Relaxed);
-                let seed = iter_idx.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread_entropy;
+                let seed = global_idx.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread_entropy;
                 let mut rng = SmallRng::seed_from_u64(seed);
-                let updating_player = (iter_idx % 2) as usize;
+                let updating_player = (global_idx % 2) as usize;
                 let game = TexasHoldemGame::new_random(&mut rng);
-                let (pos_disc, neg_disc, weight) = if is_dcfr {
-                    let t = (iter_idx + 1) as f64;
-                    let t_alpha = t.powf(1.5);
-                    let p_disc = t_alpha / (t_alpha + 1.0);
-                    let t_beta = t.powf(0.5);
-                    let n_disc = t_beta / (t_beta + 1.0);
-                    let w = (t / iterations as f64).powf(2.0);
-                    (p_disc, n_disc, w)
+
+                /* Precompute all 6 postflop equity buckets (Flop, Turn, River × 2 players) once per deal! */
+                let runout = game.deck_remaining.peek5();
+                let precomputed_buckets = [
+                    [
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[0], &runout[..3])
+                            as u8,
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[1], &runout[..3])
+                            as u8,
+                    ],
+                    [
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[0], &runout[..4])
+                            as u8,
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[1], &runout[..4])
+                            as u8,
+                    ],
+                    [
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[0], &runout[..5])
+                            as u8,
+                        crate::cfr::abstraction::postflop_equity_bucket(&game.hole[1], &runout[..5])
+                            as u8,
+                    ],
+                ];
+
+                let weight = if is_dcfr {
+                    /* In epoch-discounted DCFR, each iteration accumulates at unit scale (1.0)
+                     * to preserve full fixed-point precision (STRAT_SCALE = 10,000), while
+                     * `node.discount(..., strat_disc)` scales prior epochs by (t / (t + 1))^2. */
+                    1.0
+                } else if global_idx < warmup {
+                    /* During warmup: accumulate with tiny linear ramp to start building strategy without bias */
+                    (global_idx + 1) as f64 / (warmup as f64 * 100.0)
                 } else {
-                    let linear_weight = if iter_idx < warmup {
-                        /* During warmup: accumulate with tiny linear ramp to start building strategy without bias */
-                        (iter_idx + 1) as f64 / (warmup as f64 * 100.0)
-                    } else {
-                        (iter_idx - warmup + 1) as f64 / train_iters_after_warmup
-                    };
-                    (1.0, 0.0, linear_weight)
+                    (global_idx - warmup + 1) as f64 / train_iters_after_warmup
                 };
-                self.traverse(&game, updating_player, weight, pos_disc, neg_disc, &mut rng);
+
+                let allow_prune = self.pruning && global_idx >= warmup;
+                self.traverse_precomputed(
+                    &game,
+                    updating_player,
+                    weight,
+                    allow_prune,
+                    &precomputed_buckets,
+                    &mut rng,
+                );
             });
 
             done = batch_end;
+            self.global_iterations
+                .store(base_iters + done, AtomicOrdering::Relaxed);
+
+            /* Epoch-based DCFR discounting pass across all infoset nodes (Pluribus / Brown & Sandholm 2019) */
+            if is_dcfr && (done - last_discount >= dcfr_epoch || done == iterations) {
+                last_discount = done;
+                let epoch = ((base_iters + done) / dcfr_epoch.max(1)).max(1) as f64;
+                let e_alpha = epoch.powf(1.5);
+                let pos_disc = e_alpha / (e_alpha + 1.0);
+                let neg_disc = 0.5;
+                let strat_disc = (epoch / (epoch + 1.0)).powi(2);
+                self.nodes.iter().par_bridge().for_each(|entry| {
+                    entry.value().node.discount(pos_disc, neg_disc, strat_disc);
+                });
+            }
 
             if log_every > 0 && (done - last_log >= log_every || done == iterations) {
                 last_log = done;
@@ -199,38 +249,14 @@ impl HoldemMCCFRSolver {
     }
 
     #[inline(always)]
-    fn traverse(
+    fn traverse_precomputed(
         &self,
         game: &TexasHoldemGame,
         updating_player: usize,
         weight: f64,
-        pos_discount: f64,
-        neg_discount: f64,
+        allow_prune: bool,
+        precomputed_buckets: &[[u8; 2]; 3],
         rng: &mut SmallRng,
-    ) -> f64 {
-        self.traverse_internal(
-            game,
-            updating_player,
-            weight,
-            pos_discount,
-            neg_discount,
-            rng,
-            [0, 0],
-            0,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn traverse_internal(
-        &self,
-        game: &TexasHoldemGame,
-        updating_player: usize,
-        weight: f64,
-        pos_discount: f64,
-        neg_discount: f64,
-        rng: &mut SmallRng,
-        cached_buckets: [u8; 2],
-        cached_round: u8,
     ) -> f64 {
         if game.is_terminal() {
             return game.get_returns()[updating_player];
@@ -243,21 +269,17 @@ impl HoldemMCCFRSolver {
             return 0.0;
         }
 
-        let (buckets, buckets_round) = if game.round > 1 && game.round != cached_round {
-            let b0 =
-                crate::cfr::abstraction::postflop_equity_bucket(&game.hole[0], &game.board) as u8;
-            let b1 =
-                crate::cfr::abstraction::postflop_equity_bucket(&game.hole[1], &game.board) as u8;
-            ([b0, b1], game.round)
+        let bucket = if game.round > 1 {
+            precomputed_buckets[(game.round - 2) as usize][curr_player]
         } else {
-            (cached_buckets, cached_round)
+            0
         };
 
         let node = if self.rich_history {
             let hash = if game.round > 1 {
                 crate::cfr::abstraction::hash_holdem_infoset_key_rich_with_bucket(
                     &game.hole[curr_player],
-                    buckets[curr_player],
+                    bucket,
                     game.round,
                     &game.history,
                 )
@@ -272,7 +294,7 @@ impl HoldemMCCFRSolver {
             self.get_node(hash, || {
                 crate::cfr::abstraction::get_holdem_infoset_key_rich_with_bucket(
                     &game.hole[curr_player],
-                    buckets[curr_player],
+                    bucket,
                     game.round,
                     &game.history,
                 )
@@ -280,14 +302,14 @@ impl HoldemMCCFRSolver {
         } else {
             let hash = crate::cfr::abstraction::hash_holdem_infoset_key_with_bucket(
                 &game.hole[curr_player],
-                buckets[curr_player],
+                bucket,
                 game.round,
                 &game.history,
             );
             self.get_node(hash, || {
                 crate::cfr::abstraction::get_holdem_infoset_key_with_bucket(
                     &game.hole[curr_player],
-                    buckets[curr_player],
+                    bucket,
                     game.round,
                     &game.history,
                 )
@@ -320,36 +342,52 @@ impl HoldemMCCFRSolver {
             let mut node_util = 0.0f64;
             let mut explored = [true; HOLDEM_NUM_ACTIONS];
 
-            let r_thresh = -200.0;
+            /* Pluribus-style Regret-Based Pruning:
+             * - Only prune after warmup (`allow_prune`);
+             * - Threshold near regret floor (0.85 * REGRET_FLOOR_F64 = -8,500 chips);
+             * - Never prune FOLD or River actions (round 4) or actions that immediately terminate the hand. */
+            let r_thresh = crate::cfr::node::REGRET_FLOOR_F64 * 0.85;
             let p_prune = 0.95;
 
             for i in 0..n {
                 let act = actions[i];
                 let act_idx = act as usize;
 
-                if self.pruning {
+                if allow_prune && game.round < 4 && act != crate::game::config::FOLD {
                     let r = node.get_regret(act_idx);
                     let should_prune = if self.dcfr {
                         r < r_thresh
                     } else {
-                        weight > 200.0 && r <= 0.0 && legal_probs[i] < 0.01
+                        r <= 0.0 && legal_probs[i] < 0.005
                     };
                     if should_prune && rng.gen::<f64>() < p_prune {
-                        explored[i] = false;
+                        let child = game.apply_action(act);
+                        if !child.is_terminal() {
+                            explored[i] = false;
+                            continue;
+                        }
+                        let u = self.traverse_precomputed(
+                            &child,
+                            updating_player,
+                            weight,
+                            allow_prune,
+                            precomputed_buckets,
+                            rng,
+                        );
+                        action_utils[i] = u;
+                        node_util += legal_probs[i] * u;
                         continue;
                     }
                 }
 
                 let child = game.apply_action(act);
-                let u = self.traverse_internal(
+                let u = self.traverse_precomputed(
                     &child,
                     updating_player,
                     weight,
-                    pos_discount,
-                    neg_discount,
+                    allow_prune,
+                    precomputed_buckets,
                     rng,
-                    buckets,
-                    buckets_round,
                 );
                 action_utils[i] = u;
                 node_util += legal_probs[i] * u;
@@ -366,7 +404,7 @@ impl HoldemMCCFRSolver {
             }
 
             if self.dcfr {
-                node.update_regrets_dcfr(&regrets, pos_discount, neg_discount);
+                node.update_regrets_linear(&regrets);
             } else {
                 node.update_regrets_cfr_plus(&regrets);
             }
@@ -384,15 +422,13 @@ impl HoldemMCCFRSolver {
             }
 
             let child = game.apply_action(chosen_act);
-            self.traverse_internal(
+            self.traverse_precomputed(
                 &child,
                 updating_player,
                 weight,
-                pos_discount,
-                neg_discount,
+                allow_prune,
+                precomputed_buckets,
                 rng,
-                buckets,
-                buckets_round,
             )
         }
     }
@@ -440,23 +476,8 @@ impl HoldemMCCFRSolver {
 
                     match street {
                         1 => {}
-                        2 => {
-                            if key.starts_with("P:") {
-                                if let Some(end) = key.find('|') {
-                                    if key[2..end].len() > 4 {
-                                        return None;
-                                    }
-                                }
-                            }
-                        }
+                        2 => {}
                         3 => {
-                            if key.starts_with("P:") {
-                                if let Some(end) = key.find('|') {
-                                    if key[2..end].len() > 4 {
-                                        return None;
-                                    }
-                                }
-                            }
                             if max_turn_actions > 0 {
                                 if let Some(pos) = key.find("T:B") {
                                     let after = &key[pos..];
@@ -581,19 +602,83 @@ impl HoldemMCCFRSolver {
         Ok(strat)
     }
 
-    /* Warm-start solver nodes from an existing saved strategy file (for resuming/extending training) */
+    /* Save full raw checkpoint (hashes, keys, regret_sum, strategy_sum, global_iterations) for lossless resume */
+    pub fn save_raw_checkpoint(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let global_iters = self.global_iterations.load(AtomicOrdering::Relaxed);
+        let entries: Vec<(
+            u64,
+            String,
+            [i64; HOLDEM_NUM_ACTIONS],
+            [i64; HOLDEM_NUM_ACTIONS],
+        )> = self
+            .nodes
+            .iter()
+            .map(|e| {
+                let (r, s) = e.value().node.get_raw_state();
+                (*e.key(), e.value().key.clone(), r, s)
+            })
+            .collect();
+        let count = entries.len();
+        bincode::serialize_into(&mut writer, &(global_iters, entries))?;
+        use std::io::Write;
+        writer.flush()?;
+        Ok(count)
+    }
+
+    /* Warm-start solver nodes from a raw checkpoint or strategy file (for resuming/extending training) */
     pub fn warm_start_from_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        let raw_ckpt_path = format!("{}.ckpt", path);
+        let try_raw_path = if std::path::Path::new(&raw_ckpt_path).exists() {
+            Some(raw_ckpt_path.as_str())
+        } else if path.ends_with(".ckpt") {
+            Some(path)
+        } else {
+            None
+        };
+
+        if let Some(rp) = try_raw_path {
+            if let Ok(file) = std::fs::File::open(rp) {
+                let mut reader = std::io::BufReader::new(file);
+                type RawCkpt = (
+                    u64,
+                    Vec<(
+                        u64,
+                        String,
+                        [i64; HOLDEM_NUM_ACTIONS],
+                        [i64; HOLDEM_NUM_ACTIONS],
+                    )>,
+                );
+                if let Ok((saved_iters, entries)) =
+                    bincode::deserialize_from::<_, RawCkpt>(&mut reader)
+                {
+                    let count = entries.len();
+                    self.global_iterations
+                        .store(saved_iters, AtomicOrdering::Relaxed);
+                    for (h, key, r, s) in entries {
+                        let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
+                        node.set_raw_state(&r, &s);
+                        self.nodes.insert(h, InfosetEntry { key, node });
+                    }
+                    return Ok(count);
+                }
+            }
+        }
+
         let strat_map = Self::load_strategy_from_file(path)?;
         let count = strat_map.len();
         for (key, probs) in strat_map {
-            let mut h = 0xcbf29ce484222325u64;
-            for &b in key.as_bytes() {
-                h ^= b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
+            let h = crate::cfr::abstraction::hash_from_infoset_key_str(&key);
             let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
             node.accumulate_strategy(&probs, 100.0);
-            node.update_regrets_cfr_plus(&probs);
+            let scaled_regrets: Vec<f64> = probs.iter().map(|&p| p * 200.0).collect();
+            node.update_regrets_cfr_plus(&scaled_regrets);
             self.nodes.insert(h, InfosetEntry { key, node });
         }
         Ok(count)

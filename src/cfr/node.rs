@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /* Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
 const SCALE: f64 = 1_000_000.0;
 pub const MAX_ACTIONS: usize = crate::game::config::HOLDEM_NUM_ACTIONS;
+pub const REGRET_FLOOR_I64: i64 = -10_000_000_000;
+pub const REGRET_FLOOR_F64: f64 = REGRET_FLOOR_I64 as f64 / SCALE;
 
 pub struct InfosetNode {
     pub num_actions: usize,
@@ -106,11 +108,68 @@ impl InfosetNode {
         }
     }
 
+    /* Fast lock-free regret update via fetch_add (used in epoch-based DCFR / Linear CFR). */
+    #[inline(always)]
+    pub fn update_regrets_linear(&self, regrets: &[f64]) {
+        for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
+            let delta = (r * SCALE) as i64;
+            if delta != 0 {
+                self.regret_sum[i].fetch_add(delta, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /* Epoch-level DCFR / Linear CFR discount and floor clamping pass across all actions. */
+    #[inline]
+    pub fn discount(&self, pos_discount: f64, neg_discount: f64, strat_discount: f64) {
+        for i in 0..self.num_actions {
+            let r = self.regret_sum[i].load(Ordering::Relaxed);
+            if r != 0 {
+                let discounted = if r > 0 {
+                    (r as f64 * pos_discount) as i64
+                } else {
+                    (r as f64 * neg_discount) as i64
+                };
+                self.regret_sum[i].store(discounted.max(REGRET_FLOOR_I64), Ordering::Relaxed);
+            }
+            if (strat_discount - 1.0).abs() > 1e-9 {
+                let s = self.strategy_sum[i].load(Ordering::Relaxed);
+                if s != 0 {
+                    let s_disc = (s as f64 * strat_discount) as i64;
+                    self.strategy_sum[i].store(s_disc.max(0), Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /* Export raw atomic state for lossless training checkpoints. */
+    pub fn get_raw_state(&self) -> ([i64; MAX_ACTIONS], [i64; MAX_ACTIONS]) {
+        let mut r = [0i64; MAX_ACTIONS];
+        let mut s = [0i64; MAX_ACTIONS];
+        for i in 0..self.num_actions {
+            r[i] = self.regret_sum[i].load(Ordering::Relaxed);
+            s[i] = self.strategy_sum[i].load(Ordering::Relaxed);
+        }
+        (r, s)
+    }
+
+    /* Restore raw atomic state from a training checkpoint. */
+    pub fn set_raw_state(&self, regrets: &[i64; MAX_ACTIONS], strategies: &[i64; MAX_ACTIONS]) {
+        for i in 0..self.num_actions {
+            self.regret_sum[i].store(regrets[i], Ordering::Relaxed);
+            self.strategy_sum[i].store(strategies[i], Ordering::Relaxed);
+        }
+    }
+
     /* Discounted CFR (DCFR, Brown & Sandholm 2019):
      * Discounts positive regrets by pos_discount = t^alpha / (t^alpha + 1),
      * and negative regrets by neg_discount = t^beta / (t^beta + 1). */
     #[inline(always)]
     pub fn update_regrets_dcfr(&self, regrets: &[f64], pos_discount: f64, neg_discount: f64) {
+        if (pos_discount - 1.0).abs() < 1e-9 && (neg_discount - 1.0).abs() < 1e-9 {
+            self.update_regrets_linear(regrets);
+            return;
+        }
         for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
             let delta = (r * SCALE) as i64;
             let mut old = self.regret_sum[i].load(Ordering::Relaxed);
@@ -125,7 +184,7 @@ impl InfosetNode {
                 };
                 let new = (discounted as i64)
                     .saturating_add(delta)
-                    .max(-10_000_000_000);
+                    .max(REGRET_FLOOR_I64);
                 match self.regret_sum[i].compare_exchange_weak(
                     old,
                     new,

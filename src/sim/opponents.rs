@@ -101,7 +101,7 @@ pub fn sample_opponent_action(
             } else {
                 let bucket = postflop_equity_bucket(hole, board);
                 let (has_fd, has_sd) = detect_draws(hole, board);
-                if bucket >= 25 {
+                if bucket >= 38 {
                     if rng.gen_bool(0.75) {
                         pick_preferred_action(
                             &legal,
@@ -111,7 +111,7 @@ pub fn sample_opponent_action(
                     } else {
                         CALL_CHECK
                     }
-                } else if bucket >= 20 || has_fd || has_sd {
+                } else if bucket >= 30 || has_fd || has_sd {
                     if opp_to_call == 0 {
                         if (has_fd || has_sd) && rng.gen_bool(0.25) {
                             pick_preferred_action(
@@ -153,12 +153,12 @@ pub fn sample_opponent_action(
                 }
             } else {
                 let bucket = if game.round == 1 {
-                    20
+                    35
                 } else {
                     postflop_equity_bucket(hole, board)
                 };
-                if (opp_to_call > BIG_BLIND && bucket < 16 && rng.gen_bool(0.35))
-                    || (opp_to_call > BIG_BLIND * 3 && bucket < 22 && rng.gen_bool(0.60))
+                if (opp_to_call > BIG_BLIND && bucket < 15 && rng.gen_bool(0.35))
+                    || (opp_to_call > BIG_BLIND * 3 && bucket < 30 && rng.gen_bool(0.60))
                 {
                     H_FOLD
                 } else {
@@ -208,13 +208,13 @@ pub fn sample_opponent_action(
                 }
             } else {
                 let bucket = postflop_equity_bucket(hole, board);
-                if bucket >= 26 {
+                if bucket >= 46 {
                     pick_preferred_action(
                         &legal,
                         &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
                         rng,
                     )
-                } else if bucket >= 23 && opp_to_call <= BIG_BLIND * 2 {
+                } else if bucket >= 36 && opp_to_call <= BIG_BLIND * 2 {
                     CALL_CHECK
                 } else {
                     if opp_to_call == 0 {

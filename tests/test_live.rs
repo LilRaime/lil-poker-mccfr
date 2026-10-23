@@ -544,3 +544,96 @@ fn test_live_street_transition_closes_preflop_for_rich_keys() {
     );
     assert!(res.is_some(), "Hierarchical lookup must find rich key!");
 }
+
+#[test]
+fn test_multiway_6max_state_and_decisions() {
+    use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+    use lil_poker_mccfr::game::holdem::{Card, RoundHistory};
+    use lil_poker_mccfr::live::decision::decide_action_multiway;
+    use lil_poker_mccfr::live::state::{parse_live_state, process_showdown};
+    use std::collections::HashMap;
+
+    /* 6-player table where 2 opponents folded and 3 opponents remain active */
+    let state_6max = json!({
+        "hand_id": 101,
+        "phase": "Flop",
+        "active_player_id": "bot_hero",
+        "pot": 1200,
+        "current_bet": 400,
+        "board": ["Kh", "9d", "4c"],
+        "players": [
+            { "id": "p1", "name": "utg_fold", "bet": 0, "chips": 9900, "folded": true },
+            { "id": "p2", "name": "mp_raiser", "bet": 400, "chips": 8500, "folded": false },
+            { "id": "p3", "name": "co_caller", "bet": 400, "chips": 7200, "folded": false },
+            { "id": "bot_hero", "hole": ["7s", "2d"], "bet": 0, "chips": 9600, "is_small_blind": true },
+            { "id": "p5", "name": "bb_active", "bet": 0, "chips": 9000, "is_big_blind": true, "folded": false },
+            { "id": "p6", "name": "btn_folded", "bet": 0, "chips": 10000, "status": "folded" }
+        ],
+        "legal_actions": ["fold", "call", "raise", "allin"]
+    });
+
+    let snap = parse_live_state(&state_6max, "bot_hero").expect("parse 6max state");
+    assert_eq!(
+        snap.active_opponents, 3,
+        "Should detect exactly 3 active non-folded opponents"
+    );
+    assert_eq!(
+        snap.opp_bet, 400,
+        "Primary opponent bet must be highest active bet (400), not overwritten by last folded player (0)!"
+    );
+    assert_eq!(snap.opp_name, "mp_raiser");
+    assert_eq!(
+        snap.my_player, 1,
+        "SB in multi-way pot acts OOP postflop (player 1)"
+    );
+
+    /* Pure air (72o on K-9-4) facing a bet in a 4-way pot must fold */
+    let tracker = OpponentTracker::new();
+    let history = [RoundHistory::new(); NUM_ROUNDS];
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let (act, _) = decide_action_multiway(
+        &snap.hole,
+        &snap.board,
+        &snap.legal_actions,
+        snap.to_call,
+        snap.pot,
+        &strategy_map,
+        true,
+        &tracker,
+        &history,
+        snap.my_player,
+        [200, 600],
+        1,
+        None,
+        None,
+        None,
+        snap.active_opponents,
+    );
+    assert_eq!(act, "fold");
+
+    /* Multi-way Showdown with 2 opponents showing cards must record both */
+    let showdown_6max = json!({
+        "phase": "Showdown",
+        "pot": 2400,
+        "board": ["Kh", "9d", "4c", "2s", "Jc"],
+        "players": [
+            { "id": "bot_hero", "hole": ["Ah", "Kd"] },
+            { "id": "p2", "hole": ["Ks", "Qd"] },
+            { "id": "p3", "hole": ["7d", "2c"] }
+        ]
+    });
+    let mut sd_tracker = OpponentTracker::new();
+    let river_hist = RoundHistory::new();
+    process_showdown(
+        &showdown_6max,
+        "bot_hero",
+        &mut sd_tracker,
+        &river_hist,
+        400,
+    );
+    assert_eq!(
+        sd_tracker.showdown_hands, 2,
+        "Multi-way showdown must record each opponent's hand individually"
+    );
+    let _ = Card::new(Rank::Ace, Suit::Spades);
+}

@@ -10,6 +10,7 @@ Dockerfile
 tests/
 
 models/*.bin
+models/*.bin.ckpt
 !models/holdem_abstract_strategy.bin
 models/*.json
 !models/holdem_abstract_strategy.json

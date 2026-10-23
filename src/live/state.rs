@@ -26,6 +26,7 @@ pub struct LiveSnapshot {
     pub my_is_sb: bool,
     pub opp_is_sb: bool,
     pub my_player: usize,
+    pub active_opponents: usize,
     pub opp_name: String,
     pub action_seq_key: String,
 }
@@ -113,8 +114,12 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
     let mut my_chips = 0i32;
     let mut opp_chips = 0i32;
     let mut my_is_sb = false;
+    let mut my_is_bb = false;
     let mut opp_is_sb = false;
     let mut opp_name = String::new();
+    let mut active_opps = 0usize;
+    let mut total_opps = 0usize;
+    let mut best_opp_score = i64::MIN;
 
     if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
         for p in players {
@@ -132,25 +137,61 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
                 .get("is_small_blind")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let is_bb = p
+                .get("is_big_blind")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let p_chips = parse_json_i32(p.get("chips"));
 
             if p_id.eq_ignore_ascii_case(player_id) {
                 my_bet = p_bet;
                 my_chips = p_chips;
                 my_is_sb = is_sb;
+                my_is_bb = is_bb;
             } else {
-                opp_bet = p_bet;
-                opp_chips = p_chips;
-                opp_is_sb = is_sb;
-                opp_name = p
-                    .get("name")
-                    .or_else(|| p.get("username"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(p_id)
-                    .to_string();
+                total_opps += 1;
+                let is_folded = p
+                    .get("folded")
+                    .or_else(|| p.get("is_folded"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || p.get("status")
+                        .or_else(|| p.get("state"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            s.eq_ignore_ascii_case("folded")
+                                || s.eq_ignore_ascii_case("out")
+                                || s.eq_ignore_ascii_case("sitout")
+                        })
+                        .unwrap_or(false);
+
+                if !is_folded {
+                    active_opps += 1;
+                }
+
+                /* Prioritize active opponents with the highest current bet, then highest stack */
+                let active_bonus: i64 = if !is_folded { 1_000_000_000 } else { 0 };
+                let score = active_bonus + (p_bet as i64) * 100_000 + (p_chips as i64);
+                if score >= best_opp_score {
+                    best_opp_score = score;
+                    opp_bet = p_bet;
+                    opp_chips = p_chips;
+                    opp_is_sb = is_sb;
+                    opp_name = p
+                        .get("name")
+                        .or_else(|| p.get("username"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(p_id)
+                        .to_string();
+                }
             }
         }
     }
+    let active_opponents = if active_opps > 0 {
+        active_opps
+    } else {
+        total_opps.max(1)
+    };
 
     let state_bet = parse_json_i32(
         state
@@ -226,9 +267,22 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
         hist_len
     );
 
-    let my_player: usize = if my_is_sb {
+    /* In Heads-Up (total_opps <= 1): player 0 = SB/Button (IP postflop), player 1 = BB (OOP postflop).
+     * In Multi-way (total_opps >= 2): blinds (SB/BB) act first postflop (OOP -> player 1),
+     * while non-blind seats act in position (IP -> player 0). */
+    let my_player: usize = if total_opps <= 1 {
+        if my_is_sb {
+            0
+        } else if opp_is_sb || my_is_bb {
+            1
+        } else {
+            0
+        }
+    } else if !board.is_empty() && (my_is_sb || my_is_bb) {
+        1
+    } else if my_is_sb {
         0
-    } else if opp_is_sb {
+    } else if opp_is_sb || my_is_bb {
         1
     } else {
         0
@@ -252,6 +306,7 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
         my_is_sb,
         opp_is_sb,
         my_player,
+        active_opponents,
         opp_name,
         action_seq_key,
     })
@@ -266,25 +321,6 @@ pub fn process_showdown(
     last_opp_bet: i32,
 ) {
     if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-        let mut opp_hole = Vec::new();
-        for p in players {
-            let p_id = p
-                .get("id")
-                .or_else(|| p.get("uuid"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !p_id.eq_ignore_ascii_case(player_id) {
-                if let Some(cards) = p.get("hole").and_then(|v| v.as_array()) {
-                    for c in cards {
-                        if let Some(cs) = c.as_str() {
-                            if let Some(parsed) = parse_card_str(cs) {
-                                opp_hole.push(parsed);
-                            }
-                        }
-                    }
-                }
-            }
-        }
         let mut b_cards = Vec::new();
         if let Some(board) = state.get("board").and_then(|v| v.as_array()) {
             for c in board {
@@ -295,17 +331,40 @@ pub fn process_showdown(
                 }
             }
         }
-        if opp_hole.len() == 2 && b_cards.len() >= 3 {
-            let opp_raised_river =
-                last_opp_bet > 0 || (river_history.len() == 1 && river_history[0] >= RAISE_MIN);
-            let pot_showdown = parse_json_i32(state.get("pot"));
-            tracker.record_showdown_hand_detailed(
-                [opp_hole[0], opp_hole[1]],
-                &b_cards,
-                opp_raised_river,
-                last_opp_bet,
-                pot_showdown,
-            );
+        if b_cards.len() < 3 {
+            return;
+        }
+        let opp_raised_river =
+            last_opp_bet > 0 || (river_history.len() == 1 && river_history[0] >= RAISE_MIN);
+        let pot_showdown = parse_json_i32(state.get("pot"));
+
+        for p in players {
+            let p_id = p
+                .get("id")
+                .or_else(|| p.get("uuid"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !p_id.eq_ignore_ascii_case(player_id) {
+                let mut opp_hole = Vec::new();
+                if let Some(cards) = p.get("hole").and_then(|v| v.as_array()) {
+                    for c in cards {
+                        if let Some(cs) = c.as_str() {
+                            if let Some(parsed) = parse_card_str(cs) {
+                                opp_hole.push(parsed);
+                            }
+                        }
+                    }
+                }
+                if opp_hole.len() == 2 {
+                    tracker.record_showdown_hand_detailed(
+                        [opp_hole[0], opp_hole[1]],
+                        &b_cards,
+                        opp_raised_river,
+                        last_opp_bet,
+                        pot_showdown,
+                    );
+                }
+            }
         }
     }
 }

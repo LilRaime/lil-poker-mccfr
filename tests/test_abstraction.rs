@@ -217,4 +217,38 @@ fn test_v8_board_trips_paired_boards_and_draws() {
         card(Rank::Three, Suit::Spades),
     ];
     assert_eq!(postflop_equity_bucket(&hole_q8, &board_a93), 6);
+
+    /* 5. Warm-start hash parity: hash_from_infoset_key_str must match hash_holdem_infoset_key */
+    use lil_poker_mccfr::cfr::abstraction::{
+        get_holdem_infoset_key, hash_from_infoset_key_str, hash_holdem_infoset_key,
+    };
+    let history = [
+        vec![2u8, 1u8],
+        vec![1u8, 3u8, 1u8],
+        vec![1u8, 1u8],
+        vec![4u8],
+    ];
+    let full_board = [
+        card(Rank::Ace, Suit::Clubs),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Three, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    for r in 1..=4u8 {
+        let b_slice = match r {
+            1 => &full_board[..0],
+            2 => &full_board[..3],
+            3 => &full_board[..4],
+            _ => &full_board[..5],
+        };
+        let key_str = get_holdem_infoset_key(&hole_q8, b_slice, r, &history);
+        let h_direct = hash_holdem_infoset_key(&hole_q8, b_slice, r, &history);
+        let h_parsed = hash_from_infoset_key_str(&key_str);
+        assert_eq!(
+            h_direct, h_parsed,
+            "Hash mismatch on round {} for key {}",
+            r, key_str
+        );
+    }
 }

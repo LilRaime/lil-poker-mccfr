@@ -201,7 +201,7 @@ pub fn simulate_holdem_hand(
         let opp_raised_river = game.history[3]
             .iter()
             .enumerate()
-            .any(|(idx, &a)| idx % 2 == opp_player && a >= 2);
+            .any(|(idx, &a)| (1 - idx % 2) == opp_player && a >= 2);
         opp_tracker.record_showdown_hand(game.hole[opp_player], &game.board, opp_raised_river);
     }
 

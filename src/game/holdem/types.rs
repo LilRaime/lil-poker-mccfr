@@ -420,17 +420,22 @@ impl<'a> IntoIterator for &'a RoundHistory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeckRemaining {
-    cards: [Card; NUM_CARDS_DECK],
+    cards: [Card; NUM_COMMUNITY_CARDS],
     ptr: u8,
 }
 
 impl DeckRemaining {
     #[inline(always)]
     pub fn from_slice(cards: &[Card]) -> Self {
-        let mut arr = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
-        let n = cards.len().min(NUM_CARDS_DECK);
+        let mut arr = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
+        let n = cards.len().min(NUM_COMMUNITY_CARDS);
         arr[..n].copy_from_slice(&cards[..n]);
         DeckRemaining { cards: arr, ptr: 0 }
+    }
+
+    #[inline(always)]
+    pub fn peek5(&self) -> &[Card; NUM_COMMUNITY_CARDS] {
+        &self.cards
     }
 
     #[inline(always)]
@@ -442,20 +447,19 @@ impl DeckRemaining {
 
     #[inline(always)]
     pub fn len(&self) -> usize {
-        NUM_CARDS_DECK - self.ptr as usize
+        NUM_COMMUNITY_CARDS.saturating_sub(self.ptr as usize)
     }
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.ptr as usize >= NUM_CARDS_DECK
+        self.ptr as usize >= NUM_COMMUNITY_CARDS
     }
 }
 
 impl Default for DeckRemaining {
     fn default() -> Self {
-        DeckRemaining {
-            cards: ALL_52_CARDS,
-            ptr: 0,
-        }
+        let mut arr = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
+        arr.copy_from_slice(&ALL_52_CARDS[..NUM_COMMUNITY_CARDS]);
+        DeckRemaining { cards: arr, ptr: 0 }
     }
 }
