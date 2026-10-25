@@ -129,6 +129,29 @@ pub fn is_four_flush_board(board: &[Card]) -> bool {
     suit_counts.iter().any(|&cnt| cnt >= 4)
 }
 
+/* Detects if community cards contain 4 or more cards to a straight (e.g. 9-T-J-Q or 5-6-7-8). */
+#[inline(always)]
+pub fn is_four_straight_board(board: &[Card]) -> bool {
+    if board.len() < 4 {
+        return false;
+    }
+    let mut rank_counts = [false; 13];
+    for &c in board {
+        rank_counts[c.rank as usize] = true;
+    }
+    for start in 0..=8 {
+        let count = (start..start + 5).filter(|&r| rank_counts[r]).count();
+        if count >= 4 {
+            return true;
+        }
+    }
+    let ace_low = [12, 0, 1, 2, 3];
+    if ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4 {
+        return true;
+    }
+    false
+}
+
 /* Detects if community cards form a dangerous, highly coordinated board
  * (e.g. 3+ cards to a flush, 4 cards to a straight, or coordinated 3-to-straight on turn/river).
  */
@@ -157,6 +180,26 @@ pub fn is_dangerous_board(board: &[Card]) -> bool {
     let ace_low = [12, 0, 1, 2, 3];
     if ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4 {
         return true;
+    }
+    /* Coordinated paired board: paired board that also has 3 ranks within a 4-card straight span
+     * (e.g. 5c 8s 4h 3h 4s in Match 2 where 3-4-5 + paired 4s creates high trips/straight danger) */
+    if board.len() >= 4 {
+        let mut r_freq = [0u8; 13];
+        for &c in board {
+            r_freq[c.rank as usize] += 1;
+        }
+        if r_freq.iter().any(|&cnt| cnt >= 2) {
+            for start in 0..=9 {
+                let count = (start..start + 4).filter(|&r| rank_counts[r]).count();
+                if count >= 3 {
+                    return true;
+                }
+            }
+            let ace_low_4 = [12, 0, 1, 2];
+            if ace_low_4.iter().filter(|&&r| rank_counts[r]).count() >= 3 {
+                return true;
+            }
+        }
     }
     false
 }

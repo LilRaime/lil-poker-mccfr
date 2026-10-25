@@ -157,15 +157,17 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
         }
         5 => {
             /* Kicker-aware Flush Abstraction:
-             * Distinguishes nut flush, 2nd nut flush, mid/low flush, and board flush.
-             * Prevents holding 4s 5s on A-J-T-3-2 monotone board from being misclassified as Nut Flush. */
-            let mut suit_counts = [0u8; 4];
+             * Distinguishes nut flush, 2nd nut flush, mid/low flush, 4-flush baby flush, and board flush.
+             * Prevents holding 4s 5s on A-J-T-3-2 monotone board or 3c on 8c-Kc-Tc-4h-Jc from being misclassified as Monster. */
+            let mut board_suit_counts = [0u8; 4];
             for c in board {
-                suit_counts[c.suit as usize] += 1;
+                board_suit_counts[c.suit as usize] += 1;
             }
+            let mut suit_counts = board_suit_counts;
             suit_counts[hole[0].suit as usize] += 1;
             suit_counts[hole[1].suit as usize] += 1;
             let flush_suit = suit_counts.iter().position(|&cnt| cnt >= 5).unwrap_or(0);
+            let is_four_flush_board = board_suit_counts[flush_suit] >= 4;
 
             let my_flush_cards: Vec<usize> = hole
                 .iter()
@@ -207,6 +209,13 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     71 /* Nut Flush */
                 } else if my_high_flush == second_nut_rank {
                     70 /* 2nd Nut Flush */
+                } else if is_four_flush_board {
+                    /* On a 4-flush board, any single card below 2nd-nut is a vulnerable low flush (bucket 67..68) */
+                    if my_high_flush >= 9 {
+                        68 /* Queen/Jack-high flush on 4-flush board */
+                    } else {
+                        67 /* Baby/Low flush on 4-flush board (e.g. 5d or 3c) */
+                    }
                 } else if my_high_flush >= 9 {
                     69 /* Queen/Jack-high flush */
                 } else if my_high_flush >= 6 {
@@ -344,7 +353,11 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     high_kicker.min(8) /* Counterfeited/weak kicker on double-paired board */
                 }
             } else if is_pocket_pair {
-                if hole[0].rank as usize >= top_pair {
+                if super::texture::is_four_flush_board(board) {
+                    38 /* Pocket pair on 4-flush board without flush is only a bluff-catcher */
+                } else if super::texture::is_four_straight_board(board) {
+                    42 /* Pocket pair on 4-straight board without straight is heavily discounted */
+                } else if hole[0].rank as usize >= top_pair {
                     54 /* Pocket pair above board pair */
                 } else {
                     48 /* Pocket pair below board pair */
@@ -362,6 +375,8 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     53 /* Two Pair with Flush Redraw */
                 } else if super::texture::is_four_flush_board(board) {
                     38 /* Two Pair on 4-flush board without flush */
+                } else if super::texture::is_four_straight_board(board) {
+                    42 /* Two pair on 4-straight board without straight */
                 } else {
                     base
                 }
@@ -383,7 +398,11 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     (bottom_pair, k)
                 };
 
-                if hit_rank == top_pair {
+                if super::texture::is_four_flush_board(board) {
+                    38 /* Paired board with 4-flush without flush is a bluff catcher */
+                } else if super::texture::is_four_straight_board(board) {
+                    40 /* Paired board with 4-straight without straight */
+                } else if hit_rank == top_pair {
                     /* Player holds top pair on a paired board */
                     /* Check if hole kicker actually plays over board cards */
                     let max_unpaired_board = board
@@ -486,22 +505,34 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
                     }
                 } else if pair_rank > min_board_rank {
                     /* Middle Pair (relative to board ranks) */
+                    let overcards_count = board
+                        .iter()
+                        .filter(|c| (c.rank as usize) > pair_rank)
+                        .count();
                     if draws.is_nut_flush_draw {
                         26 /* Middle/Bottom Pair + Nut Flush Draw */
                     } else if draws.is_flush_draw || draws.is_straight_draw {
                         34 /* Middle Pair + Draw */
                     } else if is_pocket_pair {
-                        35 /* Pocket pair between board cards */
+                        if overcards_count >= 3 {
+                            30 /* Pocket pair under 3+ board overcards (e.g. 88 on T-J-A-4-5) */
+                        } else if overcards_count == 2 {
+                            32 /* Pocket pair under 2 board overcards (e.g. 88 on T-J-4-5) */
+                        } else {
+                            35 /* Pocket pair under single overcard (e.g. 88 on T-4-5) */
+                        }
                     } else {
                         let kicker = if hole[0].rank as usize == pair_rank {
                             hole[1].rank as usize
                         } else {
                             hole[0].rank as usize
                         };
-                        if kicker >= 10 {
+                        if overcards_count >= 3 {
+                            28 /* 4th pair on board is weak bottom pair */
+                        } else if kicker >= 10 && overcards_count == 1 {
                             33 /* Middle Pair, high kicker */
                         } else {
-                            32 /* Middle Pair, low kicker */
+                            32 /* Middle Pair, low kicker or multiple overcards */
                         }
                     }
                 } else {

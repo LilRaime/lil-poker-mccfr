@@ -200,7 +200,13 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
             .or_else(|| state.get("call_amount")),
     );
     let current_bet = max_bet_on_table.max(state_bet);
-    let to_call = (current_bet - my_bet).max(0);
+    let raw_to_call = (current_bet - my_bet).max(0);
+    /* Stack-clamp to_call so effective pot odds reflect actual remaining stack (e.g. 452 chips vs 6210 bet) */
+    let to_call = if my_chips > 0 {
+        raw_to_call.min(my_chips)
+    } else {
+        raw_to_call
+    };
     let pot = parse_json_i32(state.get("pot"));
     let phase = state
         .get("phase")
@@ -560,7 +566,8 @@ impl LiveRoundTracker {
     }
 
     pub fn compute_engine_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
-        let my_contrib = ((snapshot.pot - snapshot.to_call) / 2).max(SMALL_BLIND);
+        let num_players = (snapshot.active_opponents + 1).max(2);
+        let my_contrib = ((snapshot.pot - snapshot.to_call) / num_players as i32).max(SMALL_BLIND);
         let opp_contrib = my_contrib + snapshot.to_call;
         let engine_contributions = if snapshot.my_player == 0 {
             [my_contrib, opp_contrib]

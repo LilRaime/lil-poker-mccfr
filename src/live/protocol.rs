@@ -100,7 +100,28 @@ pub fn map_action_index_round(
     is_wet: bool,
     round: u8,
 ) -> Option<(String, i32)> {
+    map_action_index_round_bb(idx, legal, to_call, pot, is_wet, round, BIG_BLIND)
+}
+
+/* Blind-level and Street-aware CFR Action Index mapping with dynamic River/Turn bet sizing */
+pub fn map_action_index_round_bb(
+    idx: usize,
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    is_wet: bool,
+    round: u8,
+    table_bb: i32,
+) -> Option<(String, i32)> {
     let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
+    let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
+    let raise_min_amt = bb;
+    let raise_third_pot_floor = bb;
+    let raise_half_pot_floor_dry = bb;
+    let raise_half_pot_floor_wet = (bb * 3 / 2).max(100);
+    let raise_half_pot_floor_turn = (bb * 2).max(150);
+    let raise_half_pot_floor_river = (bb * 5 / 2).max(200);
+    let preflop_open_min_total = (bb * 5 / 2).max(200);
 
     match idx as u8 {
         FOLD => {
@@ -124,6 +145,11 @@ pub fn map_action_index_round(
             if to_call > 0 {
                 if has("call") {
                     Some(("call".to_string(), 0))
+                } else if has("all_in") {
+                    /* Action Bridge: when calling puts bot all-in and server only lists "all_in" */
+                    Some(("all_in".to_string(), 0))
+                } else if has("allin") {
+                    Some(("allin".to_string(), 0))
                 } else if has("check") {
                     Some(("check".to_string(), 0))
                 } else {
@@ -139,13 +165,13 @@ pub fn map_action_index_round(
         }
         RAISE_MIN..=RAISE_HALF_POT => {
             let min_raise = if to_call > 0 {
-                (to_call * 2).max(to_call + BIG_BLIND)
+                (to_call * 2).max(to_call + bb)
             } else {
-                BIG_BLIND
+                bb
             };
             let amt = match idx as u8 {
                 RAISE_THIRD_POT => {
-                    let s = (pot / 3).max(RAISE_THIRD_POT_FLOOR);
+                    let s = (pot / 3).max(raise_third_pot_floor);
                     if to_call > 0 {
                         (to_call + s).max(min_raise)
                     } else {
@@ -155,14 +181,14 @@ pub fn map_action_index_round(
                 RAISE_HALF_POT => {
                     let s = if round == 4 {
                         /* River: Polarized 125% pot overbet */
-                        (pot * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER)
+                        (pot * 5 / 4).max(raise_half_pot_floor_river)
                     } else if round == 3 {
                         /* Turn: 75% pot bet */
-                        (pot * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)
+                        (pot * 3 / 4).max(raise_half_pot_floor_turn)
                     } else if is_wet {
-                        (pot * 3 / 4).max(RAISE_HALF_POT_FLOOR_WET)
+                        (pot * 3 / 4).max(raise_half_pot_floor_wet)
                     } else {
-                        (pot / 2).max(RAISE_HALF_POT_FLOOR_DRY)
+                        (pot / 2).max(raise_half_pot_floor_dry)
                     };
                     if to_call > 0 {
                         (to_call + s).max(min_raise)
@@ -171,13 +197,17 @@ pub fn map_action_index_round(
                     }
                 }
                 _ => {
-                    if round == 1 && to_call <= BIG_BLIND / 2 {
-                        /* Preflop initial open-raise: 2.5x BB (250 chips total) */
-                        PREFLOP_OPEN_MIN_TOTAL
+                    if round == 1 && to_call <= bb / 2 {
+                        /* Preflop initial open-raise: 2.5x BB */
+                        preflop_open_min_total
+                    } else if round == 1 {
+                        (to_call + raise_min_amt).max(min_raise)
                     } else if to_call > 0 {
-                        (to_call + RAISE_MIN_AMT).max(min_raise)
+                        let s = ((pot + to_call) / 4).max(raise_min_amt);
+                        (to_call + s).max(min_raise)
                     } else {
-                        RAISE_MIN_AMT.max(min_raise)
+                        /* Postflop small probe bet: 25% pot floored at bb */
+                        (pot / 4).max(min_raise)
                     }
                 }
             };
@@ -203,9 +233,9 @@ pub fn map_action_index_round(
             } else if has("allin") {
                 Some(("allin".to_string(), 0))
             } else if has("raise") {
-                Some(("raise".to_string(), (pot * 2).max(RAISE_MIN_AMT * 2)))
+                Some(("raise".to_string(), (pot * 2).max(raise_min_amt * 2)))
             } else if has("bet") {
-                Some(("bet".to_string(), (pot * 2).max(RAISE_MIN_AMT * 2)))
+                Some(("bet".to_string(), (pot * 2).max(raise_min_amt * 2)))
             } else if to_call > 0 && has("call") {
                 Some(("call".to_string(), 0))
             } else if has("check") {

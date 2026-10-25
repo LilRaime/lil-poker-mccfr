@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use super::decision::decide_action_multiway;
+use super::decision::decide_action_multiway_context;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{parse_live_state, process_showdown, LiveRoundTracker};
 use crate::cfr::opponent_model::OpponentTracker;
@@ -160,7 +160,7 @@ pub async fn run_live_bot(
     println!("WebSocket connected successfully! Listening for hand events...");
 
     let (_, mut read) = ws_stream.split();
-    let mut tracker = OpponentTracker::new();
+    let mut trackers: HashMap<String, OpponentTracker> = HashMap::new();
     let mut current_opp_name = String::new();
     let profiles_path = "models/opponent_profiles.json";
     let mut last_action_key = String::new();
@@ -199,20 +199,27 @@ pub async fn run_live_bot(
         if phase.eq_ignore_ascii_case("Showdown") || phase.eq_ignore_ascii_case("Waiting") {
             if hand_active {
                 if phase.eq_ignore_ascii_case("Showdown") {
+                    let mut dummy = OpponentTracker::new();
+                    let opp_t = if !current_opp_name.is_empty() {
+                        trackers.entry(current_opp_name.clone()).or_default()
+                    } else {
+                        &mut dummy
+                    };
                     process_showdown(
                         &state,
                         &player_id,
-                        &mut tracker,
+                        opp_t,
                         &round_tracker.live_history[3],
                         round_tracker.last_opp_bet,
                     );
                 } else if let Some(&last_act) =
                     round_tracker.live_history[round_tracker.current_round_idx].last()
                 {
-                    if last_act >= crate::game::config::RAISE_MIN {
+                    if last_act >= crate::game::config::RAISE_MIN && !current_opp_name.is_empty() {
                         /* Hand ended without Showdown after bot bet/raise -> opponent folded */
                         let r_num = (round_tracker.current_round_idx + 1) as u8;
-                        tracker.record_action_street_detailed(
+                        let opp_t = trackers.entry(current_opp_name.clone()).or_default();
+                        opp_t.record_action_street_detailed(
                             crate::game::config::FOLD,
                             r_num,
                             r_num >= 2,
@@ -221,8 +228,14 @@ pub async fn run_live_bot(
                         );
                     }
                 }
-                tracker.end_hand();
-                let _ = tracker.save_profile(profiles_path, &current_opp_name);
+                if !current_opp_name.is_empty() {
+                    if let Some(t) = trackers.get_mut(&current_opp_name) {
+                        t.end_hand();
+                    }
+                }
+                for (name, opp_t) in trackers.iter() {
+                    let _ = opp_t.save_profile(profiles_path, name);
+                }
                 round_tracker.reset_hand(0);
                 last_action_key.clear();
                 last_hole = None;
@@ -247,20 +260,19 @@ pub async fn run_live_bot(
             None => continue,
         };
 
-        /* Load persistent opponent profile if new opponent sits down */
-        if !snapshot.opp_name.is_empty() && snapshot.opp_name != current_opp_name {
-            if !current_opp_name.is_empty() {
-                let _ = tracker.save_profile(profiles_path, &current_opp_name);
-            }
+        /* In-memory opponent profile caching across seats and multi-way changes */
+        if !snapshot.opp_name.is_empty() {
             current_opp_name = snapshot.opp_name.clone();
-            if let Some(loaded) = OpponentTracker::load_profile(profiles_path, &current_opp_name) {
-                println!(
-                    "Loaded persistent profile for opponent '{}' ({} prior hands).",
-                    current_opp_name, loaded.total_hands
-                );
-                tracker = loaded;
-            } else {
-                tracker = OpponentTracker::new();
+            if !trackers.contains_key(&current_opp_name) {
+                if let Some(loaded) = OpponentTracker::load_profile(profiles_path, &current_opp_name) {
+                    println!(
+                        "Loaded persistent profile for opponent '{}' ({} prior hands).",
+                        current_opp_name, loaded.total_hands
+                    );
+                    trackers.insert(current_opp_name.clone(), loaded);
+                } else {
+                    trackers.insert(current_opp_name.clone(), OpponentTracker::new());
+                }
             }
         }
 
@@ -279,19 +291,27 @@ pub async fn run_live_bot(
                 if let Some(&last_act) =
                     round_tracker.live_history[round_tracker.current_round_idx].last()
                 {
-                    if last_act >= crate::game::config::RAISE_MIN {
+                    if last_act >= crate::game::config::RAISE_MIN && !current_opp_name.is_empty() {
                         let r_num = (round_tracker.current_round_idx + 1) as u8;
-                        tracker.record_action_street_detailed(
-                            crate::game::config::FOLD,
-                            r_num,
-                            r_num >= 2,
-                            0,
-                            0,
-                        );
+                        if let Some(t) = trackers.get_mut(&current_opp_name) {
+                            t.record_action_street_detailed(
+                                crate::game::config::FOLD,
+                                r_num,
+                                r_num >= 2,
+                                0,
+                                0,
+                            );
+                        }
                     }
                 }
-                tracker.end_hand();
-                let _ = tracker.save_profile(profiles_path, &current_opp_name);
+                if !current_opp_name.is_empty() {
+                    if let Some(t) = trackers.get_mut(&current_opp_name) {
+                        t.end_hand();
+                    }
+                }
+                for (name, opp_t) in trackers.iter() {
+                    let _ = opp_t.save_profile(profiles_path, name);
+                }
             }
             round_tracker.reset_hand(snapshot.hand_id);
         }
@@ -299,8 +319,11 @@ pub async fn run_live_bot(
         last_board_len = snapshot.board.len();
         hand_active = true;
 
-        round_tracker.update_street_with_tracker(snapshot.board.len(), Some(&mut tracker));
-        round_tracker.infer_and_record_opponent_action(&snapshot, &mut tracker);
+        let active_tracker = trackers
+            .entry(current_opp_name.clone())
+            .or_default();
+        round_tracker.update_street_with_tracker(snapshot.board.len(), Some(active_tracker));
+        round_tracker.infer_and_record_opponent_action(&snapshot, active_tracker);
 
         let (engine_contributions, raises_this_round) =
             round_tracker.compute_scaled_subgame_contributions(&snapshot);
@@ -309,7 +332,7 @@ pub async fn run_live_bot(
         let index_clone = Arc::clone(&strategy_index);
         let solver_arc = Arc::clone(&subgame_solver);
         let subgame = subgame_search;
-        let tracker_clone = tracker.clone();
+        let tracker_clone = active_tracker.clone();
         let board_cards_clone = snapshot.board.clone();
         let history_clone = round_tracker.live_history;
         let hole = snapshot.hole;
@@ -318,10 +341,12 @@ pub async fn run_live_bot(
         let pot = snapshot.pot;
         let my_player = snapshot.my_player;
         let active_opponents = snapshot.active_opponents;
+        let big_blind = snapshot.big_blind;
+        let my_chips = snapshot.my_chips;
 
         let (chosen_action, raw_amount) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
-            decide_action_multiway(
+            decide_action_multiway_context(
                 &hole,
                 &board_cards_clone,
                 &legal_actions,
@@ -338,6 +363,8 @@ pub async fn run_live_bot(
                 Some(&solver_arc),
                 Some(&mut ctx),
                 active_opponents,
+                big_blind,
+                my_chips,
             )
         })
         .await?;
@@ -416,8 +443,12 @@ pub async fn run_live_bot(
                 /* Record bot's own action into live history only after server accepts it */
                 round_tracker.record_bot_action(&chosen_action, amount, snapshot.pot);
                 if chosen_action == "fold" && hand_active {
-                    tracker.end_hand();
-                    let _ = tracker.save_profile(profiles_path, &current_opp_name);
+                    if let Some(t) = trackers.get_mut(&current_opp_name) {
+                        t.end_hand();
+                    }
+                    for (name, opp_t) in trackers.iter() {
+                        let _ = opp_t.save_profile(profiles_path, name);
+                    }
                     hand_active = false;
                 }
             } else {
@@ -457,8 +488,12 @@ pub async fn run_live_bot(
     }
 
     if hand_active {
-        tracker.end_hand();
-        let _ = tracker.save_profile(profiles_path, &current_opp_name);
+        if let Some(t) = trackers.get_mut(&current_opp_name) {
+            t.end_hand();
+        }
+        for (name, opp_t) in trackers.iter() {
+            let _ = opp_t.save_profile(profiles_path, name);
+        }
     }
 
     Ok(())

@@ -158,8 +158,8 @@ fn postflop_fallback(
     let total_pot = (pot + to_call).max(1);
     let pot_odds = to_call as f64 / total_pot as f64;
 
-    if bucket >= 62 {
-        /* Monsters / Nuts (Straight, Flush, Full House, Quads, Straight Flush) */
+    if bucket >= 70 {
+        /* True Nuts / Monsters (Nut/2nd-Nut Flush, Full House, Quads, Straight Flush) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.10; /* Trap / Slowplay */
             s[RAISE_THIRD_POT as usize] = 0.20;
@@ -169,6 +169,23 @@ fn postflop_fallback(
             s[CALL_CHECK as usize] = 0.25;
             s[RAISE_HALF_POT as usize] = 0.35;
             s[ALL_IN as usize] = 0.40;
+        }
+    } else if bucket >= 62 {
+        /* Straights and Non-Nut Flushes (62..=69) */
+        if to_call == 0 {
+            s[CALL_CHECK as usize] = 0.20;
+            s[RAISE_THIRD_POT as usize] = 0.35;
+            s[RAISE_HALF_POT as usize] = 0.35;
+            s[ALL_IN as usize] = 0.10;
+        } else if pot_odds <= 0.35 {
+            s[CALL_CHECK as usize] = 0.60;
+            s[RAISE_HALF_POT as usize] = 0.25;
+            s[ALL_IN as usize] = 0.15;
+        } else {
+            /* Facing a large bet/overbet with a non-nut flush or low straight: prefer calling over jamming */
+            s[CALL_CHECK as usize] = 0.70;
+            s[FOLD as usize] = 0.20;
+            s[RAISE_HALF_POT as usize] = 0.10;
         }
     } else if bucket >= 51 {
         /* Very Strong (Trips / Sets, High Two Pair) */
@@ -240,9 +257,13 @@ fn postflop_fallback(
         } else if pot_odds <= 0.18 {
             s[CALL_CHECK as usize] = 0.65;
             s[FOLD as usize] = 0.35;
+        } else if pot_odds <= 0.24 {
+            s[CALL_CHECK as usize] = 0.20;
+            s[FOLD as usize] = 0.80;
         } else {
-            s[FOLD as usize] = 0.85;
-            s[CALL_CHECK as usize] = 0.15;
+            /* Strict Odds Guard: never call large bets or overbets with a bare gutshot! */
+            s[FOLD as usize] = 1.0;
+            s[CALL_CHECK as usize] = 0.0;
         }
     } else if round == 4 && bucket >= 8 {
         /* River Ace-High / King-High Bluff Catchers */
