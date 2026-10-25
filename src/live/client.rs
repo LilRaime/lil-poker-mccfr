@@ -264,7 +264,9 @@ pub async fn run_live_bot(
         if !snapshot.opp_name.is_empty() {
             current_opp_name = snapshot.opp_name.clone();
             if !trackers.contains_key(&current_opp_name) {
-                if let Some(loaded) = OpponentTracker::load_profile(profiles_path, &current_opp_name) {
+                if let Some(loaded) =
+                    OpponentTracker::load_profile(profiles_path, &current_opp_name)
+                {
                     println!(
                         "Loaded persistent profile for opponent '{}' ({} prior hands).",
                         current_opp_name, loaded.total_hands
@@ -319,9 +321,7 @@ pub async fn run_live_bot(
         last_board_len = snapshot.board.len();
         hand_active = true;
 
-        let active_tracker = trackers
-            .entry(current_opp_name.clone())
-            .or_default();
+        let active_tracker = trackers.entry(current_opp_name.clone()).or_default();
         round_tracker.update_street_with_tracker(snapshot.board.len(), Some(active_tracker));
         round_tracker.infer_and_record_opponent_action(&snapshot, active_tracker);
 

@@ -496,8 +496,7 @@ impl OpponentTracker {
          * or if we hold a postflop Monster/Nut hand (bucket >= 70: 2nd-Nut/Nut Flush, Full House, Quads, Straight Flush),
          * never fold! Also bridge to ALL_IN if CALL_CHECK is absent from server legal_actions. */
         if to_call > 0
-            && ((pot_odds <= 0.15 && (is_preflop || bucket >= 15))
-                || (!is_preflop && bucket >= 70))
+            && ((pot_odds <= 0.15 && (is_preflop || bucket >= 15)) || (!is_preflop && bucket >= 70))
         {
             if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                 let f_prob = probs[f_i];
@@ -666,8 +665,7 @@ impl OpponentTracker {
                     probs[hp_i] = 0.0;
                 }
             }
-        } else if round >= 3 && to_call == 0 && pot >= bb * 8 && (28..=33).contains(&bucket)
-        {
+        } else if round >= 3 && to_call == 0 && pot >= bb * 8 && (28..=33).contains(&bucket) {
             /* Underpair under 2+ overcards or weak middle/bottom pair in a large Turn/River pot (Match 5):
              * Check for pot control instead of turning showdown value into a burning lead-bluff! */
             let mut shifted = 0.0f64;

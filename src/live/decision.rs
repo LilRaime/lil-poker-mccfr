@@ -282,7 +282,8 @@ pub fn decide_action_multiway_context(
         suits.iter().any(|&s| s >= 2)
     };
 
-    if let Some(res) = map_action_index_round_bb(chosen_idx, legal, to_call, pot, is_wet, round, bb) {
+    if let Some(res) = map_action_index_round_bb(chosen_idx, legal, to_call, pot, is_wet, round, bb)
+    {
         return res;
     }
 
