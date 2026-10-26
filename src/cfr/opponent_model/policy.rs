@@ -2,7 +2,7 @@
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
     detect_board_texture, detect_river_nut_blocker, is_dangerous_board, is_four_flush_board,
-    preflop_strength_tier,
+    is_four_straight_board, preflop_strength_tier,
 };
 use crate::game::config::*;
 use crate::game::holdem::Card;
@@ -560,22 +560,29 @@ impl OpponentTracker {
             .unwrap_or(false);
 
         /* A situation is a dangerous shove/heavy bet if to_call is substantial (>= 4 BB) and pot odds are meaningful (> 0.18).
-         * On the River, require to_call to be either an actual overbet/heavy bet relative to the pot (pot_odds >= 0.35, i.e. >= 54% pot)
-         * or an all-in shove (>= ALLIN_GUARD_THRESHOLD or !can_raise), so normal bets in big-blind escalated games don't auto-fold Two Pair. */
+         * On the River, require to_call to be either an actual overbet/heavy bet relative to the pot (pot_odds >= 0.30, >= 4 BB)
+         * or an all-in shove (>= ALLIN_GUARD_THRESHOLD or !can_raise). */
         let is_substantial_bet = to_call >= bb * 4;
         let is_shove_faced = is_substantial_bet
             && pot_odds > 0.18
             && (to_call >= eff_allin_threshold
                 || !can_raise
-                || (round == 4 && to_call >= bb * 10 && pot_odds >= 0.42)
+                || (round == 4 && to_call >= bb * 5 && pot_odds >= 0.30)
                 || (round == 3 && to_call >= bb * 15 && pot_odds >= 0.33)
                 || (round == 2 && to_call >= bb * 20));
 
         if is_shove_faced {
             if is_preflop {
                 let pf_tier = preflop_strength_tier(bucket);
-                if pf_tier <= 2 && to_call < eff_allin_threshold * 2 {
-                    /* Premium pocket pairs & monster hands (AA-99, AK, AQ) never fold preflop to normal shoves */
+                if to_call >= bb * 40 {
+                    /* Facing massive cold shove (>= 40 BB, Match 3): only AA and KK (bucket <= 1) never fold */
+                    if bucket <= 1 {
+                        if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                            probs[f_i] = 0.0;
+                        }
+                    }
+                } else if pf_tier <= 1 && to_call < eff_allin_threshold * 2 {
+                    /* Tier 1 (AA, KK, QQ, AK) never fold preflop to standard shoves */
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         probs[f_i] = 0.0;
                     }
@@ -584,23 +591,31 @@ impl OpponentTracker {
 
             let is_trash = if is_preflop {
                 let pf_tier = preflop_strength_tier(bucket);
-                if to_call >= eff_allin_threshold {
-                    /* Facing massive 35+ BB shove/5-bet: only Tier 1 & 2 can call; Tier 3 (88, 77, 66) and below fold! */
-                    pf_tier >= 3
+                if to_call >= bb * 40 {
+                    /* Facing massive cold shove (>= 40 BB, Match 3): only AA and KK can call; fold AK, QQ, JJ! */
+                    bucket > 1
+                } else if to_call >= eff_allin_threshold {
+                    /* Facing 25-39 BB shove: only Tier 1 can call; Tier 2 (JJ, TT, AQ) and below fold! */
+                    pf_tier >= 2
                 } else {
                     /* Facing standard shove: Tier 4 & 5 (small pairs 22-55, unsuited rags, weak suited) fold */
                     pf_tier >= 4
                 }
             } else if round == 4 {
                 /* On River facing massive overbet/shove: only genuine Two Pair+ (>= 48) can comfortably call;
-                 * on a 4-flush board, baby/board flushes (bucket <= 67) and non-flushes must also fold! */
+                 * on a 4-flush board, baby/board flushes (bucket <= 67) and non-flushes must also fold!
+                 * on a 4-straight board, hands below high Two Pair (bucket < 50) must fold! */
                 let is_four_flush = board.map(is_four_flush_board).unwrap_or(false);
-                bucket < 48 || (is_four_flush && bucket <= 67)
+                let is_four_straight = board.map(is_four_straight_board).unwrap_or(false);
+                bucket < 48 || (is_four_flush && bucket <= 67) || (is_four_straight && bucket < 50)
             } else {
                 /* Flop/Turn facing massive shove:
                  * Strong draws (OESD, Flush Draws, Combo Draws) have 32-50% equity.
                  * With reasonable pot odds (<= 0.35), they are profitable calls and not trash! */
                 let is_wet = board.map(is_dangerous_board).unwrap_or(false);
+                let is_paired = board
+                    .map(|b| detect_board_texture(b).is_paired)
+                    .unwrap_or(false);
                 let is_strong_draw = (15..=17).contains(&bucket) || (19..=27).contains(&bucket);
                 if is_strong_draw && pot_odds <= 0.35 && !is_three_flush {
                     false
@@ -609,6 +624,9 @@ impl OpponentTracker {
                     false
                 } else if is_three_flush && bucket <= 44 {
                     /* Bare one pair or overpair without a made flush on a 3-flush board facing a massive shove */
+                    true
+                } else if round == 3 && is_paired && bucket < 51 {
+                    /* Turn on paired board facing massive shove: no trips/full house (bucket < 51, Match 7) is trash */
                     true
                 } else if bucket < 38 && !is_strong_draw {
                     true
@@ -634,10 +652,20 @@ impl OpponentTracker {
             }
         }
 
-        /* 1b. Postflop Bluff-Spew, Gutshot Overbet, and Underpair Pot-Control Guard:
-         * - Prevent suicidal all-in bluffs and check-raise bluffs with pure air/board-pair.
+        /* 1b. Postflop Bluff-Spew, Gutshot Overbet, and Turn/River Pot-Control Guard:
+         * - Prevent suicidal all-in bluffs on Turn/River with draws or marginal hands (bucket < 51, Match 9).
+         * - Suppress large overbets (RAISE_HALF_POT) on Turn/River with draws or air (bucket < 28) in medium/large pots (Match 10).
+         * - On a 3-flush board without a flush, unmade draws (bucket < 28) must never lead-raise; take the free card!
+         * - Turn facing a bet: never probe-raise with weak or marginal hands (bucket < 51, Match 7).
          * - Fold bare gutshots / pure air (bucket < 15) facing large bets / overbets (pot_odds >= 0.35, to_call >= 4 BB).
          * - Suppress turn/river lead donk-bets in bloated pots with multi-overcard underpairs (bucket 28..=33, Match 5). */
+        if round >= 3 && bucket < 51 {
+            /* Turn and River: block all-in pushes for draws (15..27) and marginal hands (< 51, Match 9) */
+            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                probs[ai_i] = 0.0;
+            }
+        }
+
         if !is_preflop && (bucket < 15 || bucket == 28 || bucket == 29) {
             if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
                 probs[ai_i] = 0.0;
@@ -659,10 +687,25 @@ impl OpponentTracker {
                         probs[f_i] = 1.0;
                     }
                 }
-            } else if round >= 3 && to_call == 0 && pot >= bb * 12 && bucket < 11 {
-                /* In a large turn/river pot with pure air, suppress huge overbet/pot-sized bluffs */
-                if let Some(hp_i) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
-                    probs[hp_i] = 0.0;
+            }
+        }
+
+        if round >= 3 && to_call == 0 && bucket < 28 {
+            /* Large turn/river bluffs with bare draws / air:
+             * On 3-flush boards or pots >= 6 BB, block RAISE_HALF_POT and shift all raises into CALL_CHECK (Match 10) */
+            if let Some(hp_i) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
+                probs[hp_i] = 0.0;
+            }
+            if pot >= bb * 6 || is_three_flush {
+                let mut shifted = 0.0f64;
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a >= RAISE_MIN {
+                        shifted += probs[i];
+                        probs[i] = 0.0;
+                    }
+                }
+                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] = (probs[c_i] + shifted).max(0.95);
                 }
             }
         } else if round >= 3 && to_call == 0 && pot >= bb * 8 && (28..=33).contains(&bucket) {
@@ -680,8 +723,8 @@ impl OpponentTracker {
             }
         }
 
-        /* Turn facing a bet: never probe-raise with weak or marginal hands (bucket < 45) */
-        if round == 3 && to_call > 0 && bucket < 45 {
+        /* Turn facing a bet: never probe-raise or check-raise with weak or marginal hands (bucket < 51, Match 7) */
+        if round == 3 && to_call > 0 && bucket < 51 {
             for (i, &a) in legal_actions.iter().enumerate() {
                 if a >= RAISE_MIN {
                     probs[i] = 0.0;
