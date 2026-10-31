@@ -47,56 +47,103 @@ pub fn preflop_bucket(c1: Card, c2: Card) -> (usize, &'static str) {
     }
 }
 
-/* Canonical preflop hand strength tier (1..=5) based on Sklansky-Chubukov / HU cash equity:
- * - 1: Monster (AA, KK, QQ, AKs, AKo)
- * - 2: Very Strong (JJ, TT, 99, AQs-ATs, KQs, AQo, KQo)
- * - 3: Strong / Playable (88, 77, 66, A9s-A2s, suited broadways, suited connectors 76s+, AJo-A9o, KJo-KTo, QJo)
- * - 4: Marginal / Speculative (55-22, weak suited, low unsuited broadway / connectors)
- * - 5: Trash (unsuited rags: 72o, 83o, etc.)
+/* Canonical preflop hand strength tier (1..=8) based on Sklansky-Chubukov / HU & 6-max cash equity:
+ * - 1: Super-Premium Monster (AA, KK, QQ, AKs, AKo)
+ * - 2: Strong Premium (JJ, TT, 99, AQs, AJs, KQs, AQo)
+ * - 3: Upper Playable / 3-Bet Value (88, 77, ATs-A8s, A5s, KJs, KTs, QJs, AJo, KQo)
+ * - 4: Solid Open / Call (66, 55, A7s, A6s, A4s-A2s, K9s, QTs, JTs, T9s, 98s, 87s, 76s, ATo, A9o, KJo, KTo, QJo)
+ * - 5: Speculative / Late-Position Open (44-22, K8s-K5s, Q9s-Q8s, J9s-J8s, T8s, 97s, 86s, 75s, 65s, 54s, A8o-A5o, K9o, QTo, JTo, T9o)
+ * - 6: Steal / BB Defense (K4s-K2s, Q7s-Q2s, J7s-J5s, T7s-T6s, 96s, 85s, 74s, 64s, 53s, 43s, A4o-A2o, K8o-K5o, Q9o-Q8o, J9o-J8o, T8o, 98o, 87o, 76o, 65o, 54o)
+ * - 7: Borderline / Weak Suited & Offsuit Kx (remaining suited hands & K4o-K2o, Q7o, J7o, T7o, 97o, 86o, 75o, 64o, 53o, 43o)
+ * - 8: Trash (unsuited rags: 72o, 83o, J3o, Q4o, etc.)
  */
 pub fn preflop_strength_tier(idx: usize) -> u8 {
     match idx {
-        /* Tier 1: Monsters */
+        /* Tier 1: Super-Premium Monsters */
         0..=2 | 13 | 91 => 1,
 
-        /* Tier 2: Very Strong */
-        3..=5 | 14..=16 | 25 | 92 | 103 => 2,
+        /* Tier 2: Strong Premium */
+        3..=5 | 14..=15 | 25 | 92 => 2,
 
-        /* Tier 3: Strong / Playable */
-        6..=8
-        | 17..=24
-        | 26..=28
-        | 36..=38
-        | 46..=47
+        /* Tier 3: Upper Playable */
+        6..=7 | 16..=18 | 21 | 26..=27 | 36 | 93 | 103 => 3,
+
+        /* Tier 4: Solid Open / Call */
+        8..=9
+        | 19..=20
+        | 22..=24
+        | 28
+        | 37
+        | 46
         | 55
         | 63
         | 70
         | 76
-        | 93..=95
+        | 94..=95
         | 104..=105
-        | 114 => 3,
+        | 114 => 4,
 
-        /* Tier 4: Marginal */
-        9..=12
-        | 29..=35
-        | 39..=45
-        | 48
+        /* Tier 5: Speculative / Late-Position Open */
+        10..=12
+        | 29..=32
+        | 38..=39
+        | 47..=48
         | 56
         | 64
         | 71
         | 77
         | 81
         | 85
-        | 96..=102
+        | 96..=99
         | 106
         | 115
         | 124
-        | 133
-        | 141
-        | 148 => 4,
+        | 133 => 5,
 
-        /* Tier 5: Trash */
-        _ => 5,
+        /* Tier 6: Steal / BB Defense */
+        33..=35
+        | 40..=45
+        | 49..=51
+        | 57..=58
+        | 65
+        | 72
+        | 78
+        | 82
+        | 86
+        | 88
+        | 100..=102
+        | 107..=110
+        | 116..=117
+        | 125..=126
+        | 134
+        | 141..=142
+        | 148..=149
+        | 154
+        | 159
+        | 163 => 6,
+
+        /* Tier 7: Borderline / Weak Suited & Offsuit Kx */
+        52..=54
+        | 59..=62
+        | 66..=69
+        | 73..=75
+        | 79..=80
+        | 83..=84
+        | 87
+        | 89..=90
+        | 111..=113
+        | 118..=120
+        | 127
+        | 135
+        | 143
+        | 150
+        | 155
+        | 160
+        | 164
+        | 166 => 7,
+
+        /* Tier 8: Trash */
+        _ => 8,
     }
 }
 

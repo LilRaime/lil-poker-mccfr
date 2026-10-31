@@ -177,7 +177,7 @@ impl HoldemMCCFRSolver {
                     (global_idx - warmup + 1) as f64 / train_iters_after_warmup
                 };
 
-                let allow_prune = self.pruning && global_idx >= warmup;
+                let allow_prune = self.pruning && global_idx >= warmup && rng.gen::<f64>() < 0.95;
                 self.traverse_precomputed(
                     &game,
                     updating_player,
@@ -198,7 +198,7 @@ impl HoldemMCCFRSolver {
                 let epoch = ((base_iters + done) / dcfr_epoch.max(1)).max(1) as f64;
                 let e_alpha = epoch.powf(1.5);
                 let pos_disc = e_alpha / (e_alpha + 1.0);
-                let neg_disc = 0.5;
+                let neg_disc = (epoch / (epoch + 1.0)).max(0.75);
                 let strat_disc = (epoch / (epoch + 1.0)).powi(2);
                 self.nodes.iter().par_bridge().for_each(|entry| {
                     entry.value().node.discount(pos_disc, neg_disc, strat_disc);
@@ -343,11 +343,11 @@ impl HoldemMCCFRSolver {
             let mut explored = [true; HOLDEM_NUM_ACTIONS];
 
             /* Pluribus-style Regret-Based Pruning:
-             * - Only prune after warmup (`allow_prune`);
-             * - Threshold near regret floor (0.85 * REGRET_FLOOR_F64 = -8,500 chips);
+             * - Coin flip (95%) is rolled once per episode (`allow_prune`);
+             * - Dynamic pot-relative threshold (-4 * pot, floored at -800 chips) when current action prob < 0.005;
              * - Never prune FOLD or River actions (round 4) or actions that immediately terminate the hand. */
-            let r_thresh = crate::cfr::node::REGRET_FLOOR_F64 * 0.85;
-            let p_prune = 0.95;
+            let pot = (game.contributions[0] + game.contributions[1]) as f64;
+            let r_thresh = -(pot * 4.0).max(800.0);
 
             for i in 0..n {
                 let act = actions[i];
@@ -356,11 +356,11 @@ impl HoldemMCCFRSolver {
                 if allow_prune && game.round < 4 && act != crate::game::config::FOLD {
                     let r = node.get_regret(act_idx);
                     let should_prune = if self.dcfr {
-                        r < r_thresh
+                        r < r_thresh && legal_probs[i] < 0.005
                     } else {
                         r <= 0.0 && legal_probs[i] < 0.005
                     };
-                    if should_prune && rng.gen::<f64>() < p_prune {
+                    if should_prune {
                         let child = game.apply_action(act);
                         if !child.is_terminal() {
                             explored[i] = false;

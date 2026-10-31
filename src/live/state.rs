@@ -141,7 +141,13 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
                 .get("is_big_blind")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let p_chips = parse_json_i32(p.get("chips"));
+            let p_chips = parse_json_i32(
+                p.get("chips")
+                    .or_else(|| p.get("stack"))
+                    .or_else(|| p.get("balance"))
+                    .or_else(|| p.get("remaining_chips"))
+                    .or_else(|| p.get("chip_count")),
+            );
 
             if p_id.eq_ignore_ascii_case(player_id) {
                 my_bet = p_bet;
@@ -193,6 +199,15 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
         total_opps.max(1)
     };
 
+    if my_chips <= 0 {
+        my_chips = parse_json_i32(state.get("my_chips").or_else(|| {
+            state
+                .get("hero_chips")
+                .or_else(|| state.get("stack"))
+                .or_else(|| state.get("chips"))
+        }));
+    }
+
     let state_bet = parse_json_i32(
         state
             .get("current_bet")
@@ -201,13 +216,16 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
     );
     let current_bet = max_bet_on_table.max(state_bet);
     let raw_to_call = (current_bet - my_bet).max(0);
-    /* Stack-clamp to_call so effective pot odds reflect actual remaining stack (e.g. 452 chips vs 6210 bet) */
+    /* Stack-clamp to_call so effective pot odds reflect actual remaining stack (e.g. 452 chips vs 6210 bet)
+     * and subtract uncallable overbet chips from pot (Item F). */
     let to_call = if my_chips > 0 {
         raw_to_call.min(my_chips)
     } else {
         raw_to_call
     };
-    let pot = parse_json_i32(state.get("pot"));
+    let raw_pot = parse_json_i32(state.get("pot"));
+    let uncallable = raw_to_call.saturating_sub(to_call);
+    let pot = raw_pot.saturating_sub(uncallable).max(0);
     let phase = state
         .get("phase")
         .and_then(|v| v.as_str())
@@ -382,6 +400,7 @@ pub struct LiveRoundTracker {
     pub current_round_idx: usize,
     pub live_history: [RoundHistory; NUM_ROUNDS],
     pub last_opp_bet: i32,
+    pub estimated_my_chips: i32,
 }
 
 impl Default for LiveRoundTracker {
@@ -397,6 +416,7 @@ impl LiveRoundTracker {
             current_round_idx: 0,
             live_history: [RoundHistory::new(); NUM_ROUNDS],
             last_opp_bet: 0,
+            estimated_my_chips: STACK_SIZE,
         }
     }
 
@@ -562,6 +582,9 @@ impl LiveRoundTracker {
             }
         }
 
+        if snapshot.my_chips > 0 {
+            self.estimated_my_chips = snapshot.my_chips;
+        }
         self.last_opp_bet = snapshot.opp_bet;
     }
 

@@ -22,10 +22,10 @@ pub const NUM_HOLE_CARDS: usize = 2;
 pub const NUM_COMMUNITY_CARDS: usize = 5;
 pub const NUM_SUITS: usize = 4;
 pub const NUM_RANKS: usize = 13;
-pub const MAX_ROUND_ACTIONS: usize = 32;
+pub const MAX_ROUND_ACTIONS: usize = 8;
 
-/// Number of postflop equity abstraction buckets (0..=76).
-pub const NUM_EQUITY_BUCKETS: usize = 77;
+/// Number of postflop equity abstraction buckets (0..=87).
+pub const NUM_EQUITY_BUCKETS: usize = 88;
 
 /// Number of canonical preflop starting hand combinations (13 pairs + 78 suited + 78 offsuited).
 pub const NUM_PREFLOP_BUCKETS: usize = 169;

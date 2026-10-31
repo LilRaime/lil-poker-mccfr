@@ -342,7 +342,11 @@ pub async fn run_live_bot(
         let my_player = snapshot.my_player;
         let active_opponents = snapshot.active_opponents;
         let big_blind = snapshot.big_blind;
-        let my_chips = snapshot.my_chips;
+        let my_chips = if snapshot.my_chips > 0 {
+            snapshot.my_chips
+        } else {
+            round_tracker.estimated_my_chips
+        };
 
         let (chosen_action, raw_amount) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
@@ -369,36 +373,52 @@ pub async fn run_live_bot(
         })
         .await?;
 
-        let (chosen_action, amount) = if (chosen_action == "raise" || chosen_action == "bet")
-            && snapshot.my_chips > 0
-        {
-            let max_total = snapshot.my_chips + snapshot.my_bet;
-            let capped = raw_amount.min(max_total);
-            let remaining_behind = max_total - capped;
-            let new_pot = snapshot.pot + (capped - snapshot.my_bet).max(0);
-            /* Avoid awkward raises that leave < 25% of the new pot behind: commit cleanly as all-in */
-            if remaining_behind > 0 && remaining_behind * 4 <= new_pot {
-                if snapshot
-                    .legal_actions
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case("all_in"))
-                {
-                    ("all_in".to_string(), 0)
-                } else if snapshot
-                    .legal_actions
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case("allin"))
-                {
-                    ("allin".to_string(), 0)
+        let eff_chips = if snapshot.my_chips > 0 {
+            snapshot.my_chips
+        } else {
+            round_tracker.estimated_my_chips
+        };
+        let (chosen_action, amount) =
+            if (chosen_action == "raise" || chosen_action == "bet") && eff_chips > 0 {
+                let max_total = eff_chips + snapshot.my_bet;
+                let min_legal_total = if snapshot.current_bet > 0 {
+                    (snapshot.current_bet + snapshot.to_call.max(snapshot.big_blind))
+                        .max(snapshot.current_bet * 2)
                 } else {
-                    (chosen_action, max_total)
+                    snapshot.big_blind
+                };
+                let capped = raw_amount.max(min_legal_total).min(max_total);
+                let remaining_behind = max_total - capped;
+                let new_pot = snapshot.pot + (capped - snapshot.my_bet).max(0);
+                /* Stack-Commit Guard (Item N, Hand G2-1):
+                 * Convert raises that leave <= 25% of the new pot behind, leave <= 3 BB behind,
+                 * or commit >= 40% of total stack on preflop directly into an all-in shove! */
+                let commits_stack = remaining_behind > 0
+                    && (remaining_behind * 4 <= new_pot
+                        || remaining_behind <= snapshot.big_blind * 3
+                        || (snapshot.board.is_empty() && capped * 5 >= max_total * 2));
+                if commits_stack {
+                    if snapshot
+                        .legal_actions
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case("all_in"))
+                    {
+                        ("all_in".to_string(), 0)
+                    } else if snapshot
+                        .legal_actions
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case("allin"))
+                    {
+                        ("allin".to_string(), 0)
+                    } else {
+                        (chosen_action, max_total)
+                    }
+                } else {
+                    (chosen_action, capped)
                 }
             } else {
-                (chosen_action, capped)
-            }
-        } else {
-            (chosen_action, raw_amount)
-        };
+                (chosen_action, raw_amount)
+            };
 
         let hole_str = format!(
             "[{} {}]",
@@ -460,23 +480,39 @@ pub async fn run_live_bot(
                 );
                 last_action_key.clear();
 
-                /* Automatic fallback retry if server rejected 'check' in favor of 'call' */
-                if chosen_action == "check"
+                /* Automatic fallback retry if server rejected 'check' in favor of 'call',
+                 * or if server rejected 'raise'/'bet' (e.g. cap reached or sizing mismatch) */
+                let fallback_act = if chosen_action == "check"
                     && (err_text.contains("cannot check") || err_text.contains("call"))
                 {
-                    println!("-> Auto-fallback: Retrying action CALL (amt: 0)");
+                    Some("call")
+                } else if chosen_action == "raise" || chosen_action == "bet" {
+                    if snapshot.to_call == 0 {
+                        Some("check")
+                    } else {
+                        Some("call")
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(fb) = fallback_act {
+                    println!(
+                        "-> Auto-fallback: Retrying action {} (amt: 0)",
+                        fb.to_uppercase()
+                    );
                     if let Ok(r_retry) = client
                         .post(&act_url)
                         .json(&ActPayload {
                             player_id: player_id.clone(),
-                            action: "call".to_string(),
+                            action: fb.to_string(),
                             amount: 0,
                         })
                         .send()
                         .await
                     {
                         if r_retry.status().is_success() {
-                            round_tracker.record_bot_action("call", 0, snapshot.pot);
+                            round_tracker.record_bot_action(fb, 0, snapshot.pot);
                         }
                     }
                 }

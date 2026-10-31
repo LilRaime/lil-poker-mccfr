@@ -113,6 +113,21 @@ pub fn map_action_index_round_bb(
     round: u8,
     table_bb: i32,
 ) -> Option<(String, i32)> {
+    map_action_index_round_bb_chips(idx, legal, to_call, pot, is_wet, round, table_bb, 0)
+}
+
+/* Blind-level, Street-aware, and Stack-aware CFR Action Index mapping */
+#[allow(clippy::too_many_arguments)]
+pub fn map_action_index_round_bb_chips(
+    idx: usize,
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    is_wet: bool,
+    round: u8,
+    table_bb: i32,
+    my_chips: i32,
+) -> Option<(String, i32)> {
     let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
     let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
     let raise_min_amt = bb;
@@ -164,44 +179,66 @@ pub fn map_action_index_round_bb(
             }
         }
         RAISE_MIN..=RAISE_HALF_POT => {
-            let min_raise = if to_call > 0 {
+            let is_unopened_or_limped_pf = round == 1 && to_call <= bb && pot <= bb * 2 + bb / 2;
+            let min_raise = if round == 1 {
+                if is_unopened_or_limped_pf {
+                    preflop_open_min_total
+                } else if to_call > 0 {
+                    ((to_call + bb) * 2).max(preflop_open_min_total)
+                } else {
+                    (bb * 2).max(preflop_open_min_total)
+                }
+            } else if to_call > 0 {
                 (to_call * 2).max(to_call + bb)
             } else {
                 bb
             };
+            let base_bet = if round == 1 && to_call == 0 {
+                bb
+            } else {
+                to_call
+            };
             let amt = match idx as u8 {
                 RAISE_THIRD_POT => {
-                    let s = (pot / 3).max(raise_third_pot_floor);
-                    if to_call > 0 {
-                        (to_call + s).max(min_raise)
+                    if is_unopened_or_limped_pf {
+                        (bb * 3).max(preflop_open_min_total)
                     } else {
-                        s.max(min_raise)
+                        let s = (pot / 3).max(raise_third_pot_floor);
+                        if base_bet > 0 {
+                            (base_bet + s).max(min_raise)
+                        } else {
+                            s.max(min_raise)
+                        }
                     }
                 }
                 RAISE_HALF_POT => {
-                    let s = if round == 4 {
-                        /* River: Polarized 125% pot overbet */
-                        (pot * 5 / 4).max(raise_half_pot_floor_river)
-                    } else if round == 3 {
-                        /* Turn: 75% pot bet */
-                        (pot * 3 / 4).max(raise_half_pot_floor_turn)
-                    } else if is_wet {
-                        (pot * 3 / 4).max(raise_half_pot_floor_wet)
+                    if is_unopened_or_limped_pf {
+                        (bb * 7 / 2).max(preflop_open_min_total)
                     } else {
-                        (pot / 2).max(raise_half_pot_floor_dry)
-                    };
-                    if to_call > 0 {
-                        (to_call + s).max(min_raise)
-                    } else {
-                        s.max(min_raise)
+                        let s = if round == 4 {
+                            /* River: Polarized 125% pot overbet */
+                            (pot * 5 / 4).max(raise_half_pot_floor_river)
+                        } else if round == 3 {
+                            /* Turn: 75% pot bet */
+                            (pot * 3 / 4).max(raise_half_pot_floor_turn)
+                        } else if is_wet {
+                            (pot * 3 / 4).max(raise_half_pot_floor_wet)
+                        } else {
+                            (pot / 2).max(raise_half_pot_floor_dry)
+                        };
+                        if base_bet > 0 {
+                            (base_bet + s).max(min_raise)
+                        } else {
+                            s.max(min_raise)
+                        }
                     }
                 }
                 _ => {
-                    if round == 1 && to_call <= bb / 2 {
-                        /* Preflop initial open-raise: 2.5x BB */
+                    if is_unopened_or_limped_pf {
+                        /* Preflop initial open-raise (HU SB or Multi-way UTG/MP/CO/BTN) or BB ISO vs limp: 2.5x BB */
                         preflop_open_min_total
                     } else if round == 1 {
-                        (to_call + raise_min_amt).max(min_raise)
+                        (base_bet + raise_min_amt).max(min_raise)
                     } else if to_call > 0 {
                         let s = ((pot + to_call) / 4).max(raise_min_amt);
                         (to_call + s).max(min_raise)
@@ -228,14 +265,19 @@ pub fn map_action_index_round_bb(
             }
         }
         ALL_IN => {
+            let allin_amt = if my_chips > 0 {
+                my_chips
+            } else {
+                (pot * 2).max(raise_min_amt * 2)
+            };
             if has("all_in") {
                 Some(("all_in".to_string(), 0))
             } else if has("allin") {
                 Some(("allin".to_string(), 0))
             } else if has("raise") {
-                Some(("raise".to_string(), (pot * 2).max(raise_min_amt * 2)))
+                Some(("raise".to_string(), allin_amt))
             } else if has("bet") {
-                Some(("bet".to_string(), (pot * 2).max(raise_min_amt * 2)))
+                Some(("bet".to_string(), allin_amt))
             } else if to_call > 0 && has("call") {
                 Some(("call".to_string(), 0))
             } else if has("check") {

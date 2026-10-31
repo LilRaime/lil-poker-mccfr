@@ -240,7 +240,10 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
         card(Rank::Two, Suit::Hearts),
     ];
     let bucket_qq = postflop_equity_bucket(&hole_qq, &board_t);
-    assert_eq!(bucket_qq, 43, "Overpair QQ on T-7-2 should be bucket 43");
+    assert_eq!(
+        bucket_qq, 54,
+        "Dry Overpair QQ on T-7-2 should be bucket 54"
+    );
 
     /* Top Pair Top Kicker: A-K on A-7-2 board */
     let hole_ak = [
@@ -253,7 +256,7 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
         card(Rank::Two, Suit::Hearts),
     ];
     let bucket_ak = postflop_equity_bucket(&hole_ak, &board_a);
-    assert_eq!(bucket_ak, 39, "TPTK AK on A-7-2 should be bucket 39");
+    assert_eq!(bucket_ak, 47, "Dry TPTK AK on A-7-2 should be bucket 47");
 
     /* Top Pair Weak Kicker: A-3 on A-7-2 board */
     let hole_a3 = [
@@ -261,7 +264,10 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
         card(Rank::Three, Suit::Hearts),
     ];
     let bucket_a3 = postflop_equity_bucket(&hole_a3, &board_a);
-    assert_eq!(bucket_a3, 36, "Top pair weak kicker should be bucket 36");
+    assert_eq!(
+        bucket_a3, 44,
+        "Dry Top pair weak kicker should be bucket 44"
+    );
     assert!(
         bucket_ak > bucket_a3,
         "TPTK must be strictly higher than weak kicker top pair"
@@ -280,8 +286,8 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
     ];
     let bucket_board_pair = postflop_equity_bucket(&hole_junk, &board_aa_k);
     assert!(
-        bucket_board_pair < 36,
-        "7-2 on A-A-K board must NOT be evaluated as a high pair (expected < 36, got {})",
+        bucket_board_pair <= 10,
+        "7-2 on A-A-K board must be evaluated as unpaired high card (<= 10, got {})",
         bucket_board_pair
     );
 }
@@ -506,20 +512,20 @@ fn test_kicker_aware_flush_and_straight_abstraction() {
     let b_board_only = postflop_equity_bucket(&hole_board_only, &board_mono);
 
     assert_eq!(
-        b_king, 71,
-        "King of spades on Ace-board must be Nut Flush (bucket 71)"
+        b_king, 83,
+        "King of spades on Ace-board must be Nut Flush (bucket 83)"
     );
     assert_eq!(
-        b_queen, 70,
-        "Queen of spades on Ace-board must be 2nd Nut Flush (bucket 70)"
+        b_queen, 82,
+        "Queen of spades on Ace-board must be 2nd Nut Flush (bucket 82)"
     );
     assert_eq!(
-        b_low, 67,
-        "6s 4s on Ace-board must be Low Flush (bucket 67)"
+        b_low, 79,
+        "6s 4s on Ace-board must be Low Flush (bucket 79)"
     );
     assert_eq!(
-        b_board_only, 67,
-        "No spades in hand must be Board Flush (bucket 67)"
+        b_board_only, 79,
+        "No spades in hand must be Board Flush (bucket 79)"
     );
 
     /* Straight board: 5♠ 6♥ 7♦ 8♣ 9♠ */
@@ -546,8 +552,8 @@ fn test_kicker_aware_flush_and_straight_abstraction() {
         b_board_st
     );
     assert_eq!(
-        b_board_st, 62,
-        "Playing the board straight must map to bucket 62"
+        b_board_st, 73,
+        "Playing the board straight must map to bucket 73"
     );
 }
 
@@ -688,8 +694,8 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     let hole_aa = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
     let bucket_aa = postflop_equity_bucket(&hole_aa, &board_paired);
     assert_eq!(
-        bucket_aa, 54,
-        "AA on 8-8-2 must be bucket 54 (Pocket pair above board pair), got {}",
+        bucket_aa, 52,
+        "AA on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {}",
         bucket_aa
     );
 
@@ -700,8 +706,8 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     ];
     let bucket_55 = postflop_equity_bucket(&hole_55, &board_paired);
     assert_eq!(
-        bucket_55, 48,
-        "55 on 8-8-2 must be bucket 48 (Pocket pair below board pair), got {}",
+        bucket_55, 37,
+        "55 on 8-8-2 must be bucket 37 (Pocket pair below 1 board overcard rank), got {}",
         bucket_55
     );
 
@@ -712,8 +718,8 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     ];
     let bucket_kk = postflop_equity_bucket(&hole_kk, &board_paired);
     assert_eq!(
-        bucket_kk, 54,
-        "KK on 8-8-2 must be bucket 54 (Pocket pair above board pair), got {}",
+        bucket_kk, 52,
+        "KK on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {}",
         bucket_kk
     );
 }

@@ -20,6 +20,8 @@ pub struct TexasHoldemGame {
     pub history: [RoundHistory; NUM_ROUNDS],
     pub terminal: bool,
     pub returns: [f64; NUM_PLAYERS],
+    pub showdown_outcome: i8,
+    pub is_wet_flop: bool,
 }
 
 impl TexasHoldemGame {
@@ -34,7 +36,20 @@ impl TexasHoldemGame {
 
         let hole0 = [deck[0], deck[1]];
         let hole1 = [deck[2], deck[3]];
-        let deck_rem = DeckRemaining::from_slice(&deck[4..CARDS_NEEDED]);
+        let runout = &deck[4..CARDS_NEEDED];
+        let deck_rem = DeckRemaining::from_slice(runout);
+        let s0 = evaluate_7cards(&hole0, runout);
+        let s1 = evaluate_7cards(&hole1, runout);
+        let showdown_outcome = if s0 > s1 {
+            1
+        } else if s1 > s0 {
+            -1
+        } else {
+            0
+        };
+        let is_wet_flop = runout[0].suit == runout[1].suit
+            || runout[0].suit == runout[2].suit
+            || runout[1].suit == runout[2].suit;
 
         TexasHoldemGame {
             hole: [hole0, hole1],
@@ -47,6 +62,8 @@ impl TexasHoldemGame {
             history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
             returns: [0.0, 0.0],
+            showdown_outcome,
+            is_wet_flop,
         }
     }
 
@@ -55,10 +72,28 @@ impl TexasHoldemGame {
         hole1: [Card; NUM_HOLE_CARDS],
         runout: &[Card],
     ) -> Self {
+        let deck_rem = DeckRemaining::from_slice(runout);
+        let r5 = deck_rem.peek5();
+        let showdown_outcome = if runout.len() >= NUM_COMMUNITY_CARDS {
+            let s0 = evaluate_7cards(&hole0, r5);
+            let s1 = evaluate_7cards(&hole1, r5);
+            if s0 > s1 {
+                1
+            } else if s1 > s0 {
+                -1
+            } else {
+                0
+            }
+        } else {
+            i8::MIN
+        };
+        let is_wet_flop =
+            r5[0].suit == r5[1].suit || r5[0].suit == r5[2].suit || r5[1].suit == r5[2].suit;
+
         TexasHoldemGame {
             hole: [hole0, hole1],
             board: Board::new(),
-            deck_remaining: DeckRemaining::from_slice(runout),
+            deck_remaining: deck_rem,
             current_player: 0,
             round: 1,
             raises_this_round: 0,
@@ -66,6 +101,8 @@ impl TexasHoldemGame {
             history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
             returns: [0.0, 0.0],
+            showdown_outcome,
+            is_wet_flop,
         }
     }
 
@@ -197,13 +234,7 @@ impl TexasHoldemGame {
             RAISE_HALF_POT => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let is_wet = next.board.len() >= 3 && {
-                    let mut suits = [0u8; 4];
-                    for &c in next.board.as_slice() {
-                        suits[c.suit as usize] += 1;
-                    }
-                    suits.iter().any(|&s| s >= 2)
-                };
+                let is_wet = next.round == 2 && next.is_wet_flop;
                 let pot_with_call = pot + diff;
                 let raise_amt = if next.round == 4 {
                     /* River: Polarized 125% pot overbet */
@@ -275,14 +306,26 @@ impl TexasHoldemGame {
     }
 
     fn resolve_showdown(&mut self) {
-        let score0 = evaluate_7cards(&self.hole[0], &self.board);
-        let score1 = evaluate_7cards(&self.hole[1], &self.board);
+        let outcome = if self.showdown_outcome != i8::MIN && self.board.len() == NUM_COMMUNITY_CARDS
+        {
+            self.showdown_outcome
+        } else {
+            let score0 = evaluate_7cards(&self.hole[0], &self.board);
+            let score1 = evaluate_7cards(&self.hole[1], &self.board);
+            if score0 > score1 {
+                1
+            } else if score1 > score0 {
+                -1
+            } else {
+                0
+            }
+        };
 
         let pot = self.contributions[0] + self.contributions[1];
-        if score0 > score1 {
+        if outcome > 0 {
             self.returns[0] = (pot - self.contributions[0]) as f64;
             self.returns[1] = -(self.contributions[1] as f64);
-        } else if score1 > score0 {
+        } else if outcome < 0 {
             self.returns[0] = -(self.contributions[0] as f64);
             self.returns[1] = (pot - self.contributions[1]) as f64;
         } else {

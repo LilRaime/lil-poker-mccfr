@@ -300,8 +300,8 @@ impl OpponentReachDistribution {
                 let tier = preflop_strength_tier(pf_idx);
                 match tier {
                     1 | 2 => 1.00,
-                    3 => 0.80,
-                    4 => 0.30,
+                    3 | 4 => 0.80,
+                    5 | 6 => 0.30,
                     _ => 0.04,
                 }
             } else if opp_called {
@@ -309,8 +309,8 @@ impl OpponentReachDistribution {
                 match tier {
                     1 => 0.35, /* Premium hands rarely just call preflop */
                     2 => 0.60,
-                    3 => 0.95,
-                    4 => 0.65,
+                    3 | 4 => 0.95,
+                    5 | 6 => 0.65,
                     _ => 0.18,
                 }
             } else {
@@ -318,8 +318,8 @@ impl OpponentReachDistribution {
                 match tier {
                     1 => 0.50,
                     2 => 0.70,
-                    3 => 0.85,
-                    4 => 0.60,
+                    3 | 4 => 0.85,
+                    5 | 6 => 0.60,
                     _ => 0.35,
                 }
             }

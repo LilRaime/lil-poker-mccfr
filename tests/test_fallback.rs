@@ -213,16 +213,16 @@ fn test_preflop_strength_tiers_and_88_shove_defense() {
     assert_eq!(preflop_strength_tier(eight_idx), 3);
     assert_eq!(preflop_strength_tier(ajo_idx), 3);
 
-    /* Tier 4: 22, 55, K5s */
+    /* Tier 5: 22, 44, K5s (Speculative / Late-Position Open in 8-tier scale) */
     let (two_idx, _) = preflop_bucket(card(Rank::Two, Suit::Spades), card(Rank::Two, Suit::Hearts));
-    assert_eq!(preflop_strength_tier(two_idx), 4);
+    assert_eq!(preflop_strength_tier(two_idx), 5);
 
-    /* Tier 5: 72o */
+    /* Tier 8: 72o (Pure Trash in 8-tier scale) */
     let (trash_idx, _) = preflop_bucket(
         card(Rank::Seven, Suit::Diamonds),
         card(Rank::Two, Suit::Clubs),
     );
-    assert_eq!(preflop_strength_tier(trash_idx), 5);
+    assert_eq!(preflop_strength_tier(trash_idx), 8);
 
     /* Check fallback strategy for 88 facing a large 35+ BB shove */
     let hole_88 = [

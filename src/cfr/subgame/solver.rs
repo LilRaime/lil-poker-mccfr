@@ -382,6 +382,19 @@ impl SubgameSolver {
                         ],
                     ];
 
+                    let s0 = crate::game::holdem::evaluate_7cards(&p0_hole, &full_board_5);
+                    let s1 = crate::game::holdem::evaluate_7cards(&p1_hole, &full_board_5);
+                    let showdown_outcome = if s0 > s1 {
+                        1
+                    } else if s1 > s0 {
+                        -1
+                    } else {
+                        0
+                    };
+                    let is_wet_flop = full_board_5[0].suit == full_board_5[1].suit
+                        || full_board_5[1].suit == full_board_5[2].suit
+                        || full_board_5[0].suit == full_board_5[2].suit;
+
                     let game = TexasHoldemGame {
                         hole: [p0_hole, p1_hole],
                         board: crate::game::holdem::Board::from_slice(board),
@@ -395,6 +408,8 @@ impl SubgameSolver {
                         raises_this_round,
                         terminal: false,
                         returns: [0.0, 0.0],
+                        showdown_outcome,
+                        is_wet_flop,
                     };
 
                     self.cfr_shared(
@@ -487,6 +502,19 @@ impl SubgameSolver {
                     ],
                 ];
 
+                let s0 = crate::game::holdem::evaluate_7cards(&p0_hole, &full_board_5);
+                let s1 = crate::game::holdem::evaluate_7cards(&p1_hole, &full_board_5);
+                let showdown_outcome = if s0 > s1 {
+                    1
+                } else if s1 > s0 {
+                    -1
+                } else {
+                    0
+                };
+                let is_wet_flop = full_board_5[0].suit == full_board_5[1].suit
+                    || full_board_5[1].suit == full_board_5[2].suit
+                    || full_board_5[0].suit == full_board_5[2].suit;
+
                 let game = TexasHoldemGame {
                     hole: [p0_hole, p1_hole],
                     board: crate::game::holdem::Board::from_slice(board),
@@ -500,6 +528,8 @@ impl SubgameSolver {
                     raises_this_round,
                     terminal: false,
                     returns: [0.0, 0.0],
+                    showdown_outcome,
+                    is_wet_flop,
                 };
 
                 self.cfr_local(
@@ -784,18 +814,29 @@ impl SubgameSolver {
 
 #[inline]
 fn evaluate_leaf_rollout(game: &TexasHoldemGame, updating_player: usize) -> f64 {
-    use crate::game::holdem::evaluate_7cards;
-    let mut full_board = game.board;
-    let mut deck_rem = game.deck_remaining;
-    while full_board.len() < NUM_COMMUNITY_CARDS && !deck_rem.is_empty() {
-        full_board.push(deck_rem.deal_one());
-    }
-    let s0 = evaluate_7cards(&game.hole[0], &full_board);
-    let s1 = evaluate_7cards(&game.hole[1], &full_board);
+    let outcome = if game.showdown_outcome != i8::MIN {
+        game.showdown_outcome
+    } else {
+        use crate::game::holdem::evaluate_7cards;
+        let mut full_board = game.board;
+        let mut deck_rem = game.deck_remaining;
+        while full_board.len() < NUM_COMMUNITY_CARDS && !deck_rem.is_empty() {
+            full_board.push(deck_rem.deal_one());
+        }
+        let s0 = evaluate_7cards(&game.hole[0], &full_board);
+        let s1 = evaluate_7cards(&game.hole[1], &full_board);
+        if s0 > s1 {
+            1
+        } else if s1 > s0 {
+            -1
+        } else {
+            0
+        }
+    };
     let pot = game.contributions[0] + game.contributions[1];
-    let ret0 = if s0 > s1 {
+    let ret0 = if outcome > 0 {
         (pot - game.contributions[0]) as f64
-    } else if s1 > s0 {
+    } else if outcome < 0 {
         -(game.contributions[0] as f64)
     } else {
         0.0

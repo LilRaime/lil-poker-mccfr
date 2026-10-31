@@ -12,6 +12,7 @@ use lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver;
 use lil_poker_mccfr::game::config::{
     ALL_IN, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
@@ -75,11 +76,15 @@ struct StreetStats {
     count: usize,
     pure_count: usize,
     action_sums: [f64; HOLDEM_NUM_ACTIONS],
+    unique_buckets: HashSet<String>,
 }
 
 impl StreetStats {
-    fn add(&mut self, probs: &[f64]) {
+    fn add(&mut self, probs: &[f64], bucket_id: Option<String>) {
         self.count += 1;
+        if let Some(b) = bucket_id {
+            self.unique_buckets.insert(b);
+        }
         let mut max_p = 0.0f64;
         for (i, &p) in probs.iter().enumerate() {
             if i < HOLDEM_NUM_ACTIONS {
@@ -93,6 +98,35 @@ impl StreetStats {
         if max_p >= 0.95 {
             self.pure_count += 1;
         }
+    }
+}
+
+fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
+    let prefix = match street {
+        1 => "P:",
+        2 => "F:B",
+        3 => "T:B",
+        4 => "R:B",
+        _ => return None,
+    };
+    if street == 1 {
+        if let Some(rest) = key.strip_prefix("P:") {
+            let end = rest.find('/').unwrap_or(rest.len());
+            if end > 0 && !rest[..end].contains('|') {
+                return Some(rest[..end].to_string());
+            }
+        }
+        None
+    } else if let Some(pos) = key.find(prefix) {
+        let rest = &key[pos + prefix.len()..];
+        let end = rest.find('/').unwrap_or(rest.len());
+        if end > 0 {
+            Some(rest[..end].to_string())
+        } else {
+            None
+        }
+    } else {
+        None
     }
 }
 
@@ -135,7 +169,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     /* Approximate memory in RAM: key string (~32 bytes) + Vec capacity (~32 bytes) + HashMap overhead (~32 bytes) */
     let est_ram = (total_infosets * 128) as u64;
     println!("RAM Estimate: {}", format_bytes(est_ram));
-    println!("------------------------------------------------------------\n");
 
     /* Group and compute statistics by street */
     let mut stats = [
@@ -144,13 +177,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         StreetStats::default(),
         StreetStats::default(),
     ];
+    let mut postflop_buckets = HashSet::new();
 
     let mut matches = Vec::new();
 
     for (key, probs) in &strategy {
         let street = get_street(key);
         if (1..=4).contains(&street) {
-            stats[(street - 1) as usize].add(probs);
+            let bucket_tok = extract_bucket_token(key, street);
+            if street >= 2 {
+                if let Some(ref b) = bucket_tok {
+                    if let Ok(num) = b.parse::<usize>() {
+                        postflop_buckets.insert(num);
+                    }
+                }
+            }
+            stats[(street - 1) as usize].add(probs, bucket_tok);
         }
 
         if let Some(ref pat) = args.pattern {
@@ -160,10 +202,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let pf_hands = stats[0].unique_buckets.len();
+    let pf_bucket_count = postflop_buckets.len();
+    println!(
+        "Buckets:      {} postflop | {} preflop hands",
+        pf_bucket_count, pf_hands
+    );
+    println!("------------------------------------------------------------\n");
+
     /* Print Street Distribution Table */
-    println!("+---------------+---------------+------------+--------------+");
-    println!("| Street        |      Infosets |    Share % | Pure Actions |");
-    println!("+---------------+---------------+------------+--------------+");
+    println!("+---------------+----------+---------------+------------+--------------+");
+    println!("| Street        |  Buckets |      Infosets |    Share % | Pure Actions |");
+    println!("+---------------+----------+---------------+------------+--------------+");
     for s in 1..=4 {
         let st = &stats[(s - 1) as usize];
         let pct = if total_infosets > 0 {
@@ -177,19 +227,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             0.0
         };
         println!(
-            "| {:<13} | {:>13} | {:>9.2}% | {:>10.1}% |",
+            "| {:<13} | {:>8} | {:>13} | {:>9.2}% | {:>10.1}% |",
             street_name(s),
+            st.unique_buckets.len(),
             st.count,
             pct,
             pure_pct
         );
     }
-    println!("+---------------+---------------+------------+--------------+");
+    println!("+---------------+----------+---------------+------------+--------------+");
     println!(
-        "| TOTAL         | {:>13} |    100.00% |              |",
-        total_infosets
+        "| TOTAL         | {:>8} | {:>13} |    100.00% |              |",
+        pf_bucket_count, total_infosets
     );
-    println!("+---------------+---------------+------------+--------------+\n");
+    println!("+---------------+----------+---------------+------------+--------------+\n");
 
     /* Print Average Action Probabilities by Street */
     println!("Average Action Distributions by Street:");

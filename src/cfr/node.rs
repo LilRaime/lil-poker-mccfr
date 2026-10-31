@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /* Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
 const SCALE: f64 = 1_000_000.0;
 pub const MAX_ACTIONS: usize = crate::game::config::HOLDEM_NUM_ACTIONS;
-pub const REGRET_FLOOR_I64: i64 = -10_000_000_000;
+pub const REGRET_FLOOR_I64: i64 = -200_000_000_000;
 pub const REGRET_FLOOR_F64: f64 = REGRET_FLOOR_I64 as f64 / SCALE;
 
 pub struct InfosetNode {

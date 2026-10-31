@@ -1,7 +1,7 @@
 /* Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::map_action_index_round_bb;
+use super::protocol::map_action_index_round_bb_chips;
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
 use crate::cfr::opponent_model::OpponentTracker;
@@ -153,42 +153,57 @@ pub fn decide_action_multiway_context(
         postflop_equity_bucket(hole, board)
     };
 
-    /* Short-Stack Push/Fold Engine:
+    /* Short-Stack Push/Fold Engine (Items H & N):
      * When effective stack is <= 12 BB on preflop, playing regular postflop lines is mathematically -EV.
-     * Commit with high-equity hands or preserve stack cleanly. */
+     * Commit with high-equity hands, call when priced in from the Big Blind (Hands G2-2, G2-3),
+     * or preserve stack cleanly. */
     if round == 1 && my_chips > 0 {
         let stack_bb = my_chips / bb;
         if stack_bb <= 12 {
             let pf_tier = preflop_strength_tier(current_bucket);
             let can_allin = has("all_in") || has("allin") || has("raise") || has("bet");
-
-            if pf_tier <= 2 {
-                /* Tier 1 & Tier 2 monsters/strong broadways (AA-99, AK, AQ, AJ, KQ): PUSH! */
-                if can_allin {
-                    if has("all_in") {
-                        return ("all_in".to_string(), 0);
-                    } else if has("allin") {
-                        return ("allin".to_string(), 0);
-                    } else if has("raise") {
-                        return ("raise".to_string(), my_chips);
-                    } else if has("bet") {
-                        return ("bet".to_string(), my_chips);
-                    }
+            let total_pot = (pot + to_call).max(1);
+            let pot_odds = to_call as f64 / total_pot as f64;
+            let push_action = || -> (String, i32) {
+                if has("all_in") {
+                    ("all_in".to_string(), 0)
+                } else if has("allin") {
+                    ("allin".to_string(), 0)
+                } else if has("raise") {
+                    ("raise".to_string(), my_chips)
+                } else if has("bet") {
+                    ("bet".to_string(), my_chips)
                 } else if has("call") {
-                    return ("call".to_string(), 0);
+                    ("call".to_string(), 0)
+                } else {
+                    ("check".to_string(), 0)
                 }
-            } else if pf_tier == 3 {
-                /* Tier 3 playable hands (88-22, ATs, KTs, QTs, JTs, suited connectors):
-                 * PUSH if pot is unraised/limped (to_call <= bb), otherwise fold! */
+            };
+            let call_or_allin_action = || -> Option<(String, i32)> {
+                if has("call") {
+                    Some(("call".to_string(), 0))
+                } else if has("all_in") {
+                    Some(("all_in".to_string(), 0))
+                } else if has("allin") {
+                    Some(("allin".to_string(), 0))
+                } else {
+                    None
+                }
+            };
+
+            if pf_tier <= 3 {
+                /* Tiers 1..=3 (AA-77, AK-A8s, A5s, KQs-KTs, QJs, AKo-AJo, KQo): PUSH / CALL! */
+                if can_allin || has("call") {
+                    return push_action();
+                }
+            } else if pf_tier <= 5 {
+                /* Tiers 4..=5 (66-22, suited aces/kings/connectors, ATo-A5o, KJo-K9o, QJo-QTo, JTo, T9o):
+                 * PUSH if pot is unraised/limped (to_call <= bb), or CALL if priced in (pot_odds <= 0.33)! */
                 if to_call <= bb && can_allin {
-                    if has("all_in") {
-                        return ("all_in".to_string(), 0);
-                    } else if has("allin") {
-                        return ("allin".to_string(), 0);
-                    } else if has("raise") {
-                        return ("raise".to_string(), my_chips);
-                    } else if has("bet") {
-                        return ("bet".to_string(), my_chips);
+                    return push_action();
+                } else if to_call > 0 && (pot_odds <= 0.33 || my_chips <= bb * 2) {
+                    if let Some(act) = call_or_allin_action() {
+                        return act;
                     }
                 } else if to_call == 0 && has("check") {
                     return ("check".to_string(), 0);
@@ -196,8 +211,21 @@ pub fn decide_action_multiway_context(
                     return ("fold".to_string(), 0);
                 }
             } else {
-                /* Tier 4 & 5 (trash): Take free flop if checked to us, else fold! */
-                if to_call == 0 && has("check") {
+                /* Tiers 6..=8:
+                 * 1) If in HU SB (active_opponents == 1, to_call <= bb / 2) with Tier 6: PUSH!
+                 * 2) If priced in from BB (pot_odds <= 0.28 or my_chips <= 2 BB, Hands G2-2 & G2-3): CALL!
+                 * 3) Otherwise check for free or fold. */
+                if active_opponents == 1 && to_call <= bb / 2 && pf_tier == 6 && can_allin {
+                    return push_action();
+                } else if to_call > 0
+                    && ((pot_odds <= 0.28 && pf_tier <= 7)
+                        || pot_odds <= 0.22
+                        || my_chips <= bb * 2)
+                {
+                    if let Some(act) = call_or_allin_action() {
+                        return act;
+                    }
+                } else if to_call == 0 && has("check") {
                     return ("check".to_string(), 0);
                 } else if has("fold") {
                     return ("fold".to_string(), 0);
@@ -206,12 +234,12 @@ pub fn decide_action_multiway_context(
         }
     }
 
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots when Heads-Up 1v1):
-     * When multiple opponents are still active on Flop/Turn (active_opponents >= 2),
-     * use the Blueprint + Multi-way policy adaptation instead of a 1v1 tree. */
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots when Heads-Up 1v1, Item M):
+     * Scale flop subgame trigger dynamically with big_blind (`(bb * 12).max(SUBGAME_FLOP_TRIGGER_POT)`). */
+    let flop_trigger_pot = (bb * 12).max(SUBGAME_FLOP_TRIGGER_POT);
     let use_subgame = subgame_search
         && active_opponents == 1
-        && (round >= 3 || (round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
+        && (round >= 3 || (round == 2 && pot >= flop_trigger_pot));
 
     let raw_probs = if use_subgame {
         let default_solver = SubgameSolver::default();
@@ -282,8 +310,9 @@ pub fn decide_action_multiway_context(
         suits.iter().any(|&s| s >= 2)
     };
 
-    if let Some(res) = map_action_index_round_bb(chosen_idx, legal, to_call, pot, is_wet, round, bb)
-    {
+    if let Some(res) = map_action_index_round_bb_chips(
+        chosen_idx, legal, to_call, pot, is_wet, round, bb, my_chips,
+    ) {
         return res;
     }
 
@@ -292,9 +321,9 @@ pub fn decide_action_multiway_context(
         ("check".to_string(), 0)
     } else if has("call") {
         ("call".to_string(), 0)
-    } else if to_call > 0 && round >= 2 && current_bucket >= 67 && has("all_in") {
+    } else if to_call > 0 && round >= 2 && current_bucket >= 79 && has("all_in") {
         ("all_in".to_string(), 0)
-    } else if to_call > 0 && round >= 2 && current_bucket >= 67 && has("allin") {
+    } else if to_call > 0 && round >= 2 && current_bucket >= 79 && has("allin") {
         ("allin".to_string(), 0)
     } else if has("check") {
         ("check".to_string(), 0)

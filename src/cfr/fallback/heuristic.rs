@@ -55,14 +55,14 @@ pub fn get_holdem_fallback_strategy(
     filtered
 }
 
-/* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers */
+/* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers (1..=8) */
 fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
     let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
     let tier = preflop_strength_tier(idx);
 
     match tier {
         1 => {
-            /* Tier 1: Premium / Monsters (AA, KK, QQ, AKs, AKo) */
+            /* Tier 1: Super-Premium Monsters (AA, KK, QQ, AKs, AKo) */
             if to_call == 0 {
                 s[CALL_CHECK as usize] = 0.05;
                 s[RAISE_MIN as usize] = 0.15;
@@ -82,7 +82,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
             }
         }
         2 => {
-            /* Tier 2: Very Strong (JJ, TT, 99, AQs-ATs, KQs, AQo, KQo) */
+            /* Tier 2: Strong Premium (JJ, TT, 99, AQs, AJs, KQs, AQo) */
             if to_call == 0 {
                 s[CALL_CHECK as usize] = 0.15;
                 s[RAISE_MIN as usize] = 0.25;
@@ -99,8 +99,8 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
                 s[ALL_IN as usize] = 0.15;
             }
         }
-        3 => {
-            /* Tier 3: Strong / Playable (88, 77, 66, A9s-A2s, suited broadways, suited connectors) */
+        3 | 4 => {
+            /* Tier 3-4: Upper Playable & Solid Open/Call (88-55, ATs-A2s, suited broadways/connectors, AJo-A9o, KQo-KTo, QJo) */
             if to_call == 0 {
                 s[CALL_CHECK as usize] = 0.45;
                 s[RAISE_MIN as usize] = 0.25;
@@ -120,21 +120,21 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
                 s[CALL_CHECK as usize] = 0.15;
             }
         }
-        4 => {
-            /* Tier 4: Marginal (55-22, weak suited, low unsuited broadway / connectors) */
+        5 | 6 => {
+            /* Tier 5-6: Speculative / Late-Position Open / BB Defense (44-22, suited kings/queens/gappers, offsuit aces/connectors) */
             if to_call == 0 {
-                s[CALL_CHECK as usize] = 0.90;
-                s[RAISE_MIN as usize] = 0.10;
+                s[CALL_CHECK as usize] = 0.85;
+                s[RAISE_MIN as usize] = 0.15;
             } else if to_call <= PF_TIER4_CALL_MAX {
-                s[CALL_CHECK as usize] = 0.35;
-                s[FOLD as usize] = 0.65;
+                s[CALL_CHECK as usize] = 0.40;
+                s[FOLD as usize] = 0.60;
             } else {
                 s[FOLD as usize] = 0.96;
                 s[RAISE_THIRD_POT as usize] = 0.04;
             }
         }
         _ => {
-            /* Tier 5: Trash (unsuited rag hands: 72o, 83o, etc.) */
+            /* Tier 7-8: Borderline & Trash (72o, 83o, etc.) */
             if to_call == 0 {
                 s[CALL_CHECK as usize] = 1.0;
             } else {
@@ -147,7 +147,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
     s
 }
 
-/* Postflop heuristic based on 77 equity buckets, board round, pot odds, and aggression */
+/* Postflop heuristic based on 88 equity buckets (0..=87), board round, pot odds, and aggression */
 fn postflop_fallback(
     bucket: usize,
     round: u8,
@@ -158,8 +158,8 @@ fn postflop_fallback(
     let total_pot = (pot + to_call).max(1);
     let pot_odds = to_call as f64 / total_pot as f64;
 
-    if bucket >= 70 {
-        /* True Nuts / Monsters (Nut/2nd-Nut Flush, Full House, Quads, Straight Flush) */
+    if bucket >= 82 {
+        /* True Nuts / Monsters (Nut/2nd-Nut Flush, Full House, Quads, Straight Flush: 82..=87) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.10; /* Trap / Slowplay */
             s[RAISE_THIRD_POT as usize] = 0.20;
@@ -170,13 +170,22 @@ fn postflop_fallback(
             s[RAISE_HALF_POT as usize] = 0.35;
             s[ALL_IN as usize] = 0.40;
         }
-    } else if bucket >= 62 {
-        /* Straights and Non-Nut Flushes (62..=69) */
+    } else if bucket >= 73 {
+        /* Straights and Non-Nut Flushes (73..=81) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.20;
             s[RAISE_THIRD_POT as usize] = 0.35;
             s[RAISE_HALF_POT as usize] = 0.35;
             s[ALL_IN as usize] = 0.10;
+        } else if bucket == 73 {
+            /* Board Straight / Idiot-End Dummy Straight: call cheap bets, fold to heavy pressure */
+            if pot_odds <= 0.28 {
+                s[CALL_CHECK as usize] = 0.85;
+                s[FOLD as usize] = 0.15;
+            } else {
+                s[CALL_CHECK as usize] = 0.35;
+                s[FOLD as usize] = 0.65;
+            }
         } else if pot_odds <= 0.35 {
             s[CALL_CHECK as usize] = 0.60;
             s[RAISE_HALF_POT as usize] = 0.25;
@@ -187,8 +196,8 @@ fn postflop_fallback(
             s[FOLD as usize] = 0.20;
             s[RAISE_HALF_POT as usize] = 0.10;
         }
-    } else if bucket >= 51 {
-        /* Very Strong (Trips / Sets, High Two Pair) */
+    } else if bucket >= 65 {
+        /* Very Strong (Trips & Sets: 65..=72) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.15;
             s[RAISE_THIRD_POT as usize] = 0.30;
@@ -199,8 +208,8 @@ fn postflop_fallback(
             s[RAISE_HALF_POT as usize] = 0.30;
             s[ALL_IN as usize] = 0.25;
         }
-    } else if bucket >= 36 {
-        /* Strong (Two Pair, Top Pair with Top Kicker) */
+    } else if bucket >= 40 {
+        /* Strong (Genuine Two Pair 57..=64, Overpairs 50..=56, Top Pair 40..=49) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.35;
             s[RAISE_THIRD_POT as usize] = 0.35;
@@ -217,7 +226,7 @@ fn postflop_fallback(
             s[RAISE_HALF_POT as usize] = 0.15;
         }
     } else if bucket >= 28 {
-        /* Marginal / Bluff Catcher (One Pair: middle pair, bottom pair, weak kicker) */
+        /* Marginal / Bluff Catcher (Weak & Middle Pairs: 28..=39) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.95;
             s[RAISE_THIRD_POT as usize] = 0.05; /* Rare small probe bet */
@@ -234,20 +243,44 @@ fn postflop_fallback(
             s[FOLD as usize] = 0.90;
         }
     } else if round < 4 && bucket >= 15 {
-        /* Strong Draws on Flop & Turn (Flush draw, Open-ended straight draw, combo draw) */
+        /* Strong Draws on Flop & Turn (OESD 15..=18, Flush Draw 19..=23, Combo Draw 24..=27) */
+        let max_call_odds = if round == 3 {
+            /* Turn (1 card to come): strict direct equity thresholds */
+            if bucket >= 24 {
+                0.31 /* Combo Draw (~30-34% equity) */
+            } else if bucket >= 19 {
+                0.22 /* Flush Draw (~19.6% equity) */
+            } else {
+                0.19 /* OESD (~17.4% equity) */
+            }
+        } else {
+            /* Flop (2 cards to come): higher implied + two-card equity */
+            if bucket >= 24 {
+                0.42
+            } else {
+                0.28
+            }
+        };
+
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.40;
             s[RAISE_THIRD_POT as usize] = 0.40; /* Standard 33% semi-bluff c-bet! */
             s[RAISE_HALF_POT as usize] = 0.15;
-            s[ALL_IN as usize] = 0.05; /* High pressure semi-bluff shove */
-        } else if pot_odds <= 0.28 {
+            if round == 2 || bucket >= 24 {
+                s[ALL_IN as usize] = 0.05;
+            }
+        } else if pot_odds <= max_call_odds {
             s[CALL_CHECK as usize] = 0.75;
-            s[RAISE_THIRD_POT as usize] = 0.15;
-            s[FOLD as usize] = 0.10;
-        } else {
-            s[CALL_CHECK as usize] = 0.50;
-            s[FOLD as usize] = 0.45;
+            s[RAISE_THIRD_POT as usize] = if round == 2 { 0.15 } else { 0.05 };
+            s[FOLD as usize] = if round == 2 { 0.10 } else { 0.20 };
+        } else if round == 2 && pot_odds <= max_call_odds + 0.07 {
+            s[CALL_CHECK as usize] = 0.45;
+            s[FOLD as usize] = 0.50;
             s[RAISE_THIRD_POT as usize] = 0.05;
+        } else {
+            /* Overpriced draw (especially on the Turn): fold */
+            s[FOLD as usize] = 0.95;
+            s[CALL_CHECK as usize] = 0.05;
         }
     } else if round < 4 && bucket >= 11 {
         /* Weak Draws on Flop & Turn (Gutshots) */
@@ -331,7 +364,7 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         /* 3. Adjacent bucket search (+1, -1, +2, -2) preserving exact street history and active player */
         for delta in [1i32, -1, 2, -2] {
             let nb = bucket + delta;
-            if (0..77).contains(&nb) {
+            if (0..NUM_EQUITY_BUCKETS as i32).contains(&nb) {
                 let adj_rich =
                     get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
                 if let Some(v) = get_fn(&adj_rich) {
@@ -429,7 +462,7 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         let bucket = postflop_equity_bucket(hole, board) as i32;
         for delta in [1i32, -1, 2, -2] {
             let nb = bucket + delta;
-            if (0..77).contains(&nb) {
+            if (0..NUM_EQUITY_BUCKETS as i32).contains(&nb) {
                 let adj_rich =
                     get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
                 if let Some(v) = get_fn(&adj_rich) {

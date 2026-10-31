@@ -428,7 +428,7 @@ impl OpponentTracker {
             self.showdown_trap_count += 1;
         }
         /* 3. Did opponent enter pot with trash cards? */
-        if preflop_strength_tier(pf_idx) >= 5 {
+        if preflop_strength_tier(pf_idx) >= 7 {
             self.showdown_loose_count += 1;
         }
         /* 4. Sizing tells inference */
