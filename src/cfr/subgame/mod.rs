@@ -5,6 +5,7 @@
 
 pub mod reach;
 pub mod solver;
+mod traversal;
 
 pub use reach::OpponentReachDistribution;
 pub use solver::{SubgameContext, SubgameSolver};

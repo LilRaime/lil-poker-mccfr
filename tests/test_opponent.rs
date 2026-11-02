@@ -750,3 +750,72 @@ fn test_persistent_opponent_profile_and_bluff_spew_guard() {
         act
     );
 }
+
+#[test]
+fn test_passive_station_value_extraction_boost() {
+    let mut tracker = OpponentTracker::new();
+    for _ in 0..20 {
+        tracker.record_action(CALL_CHECK, false);
+    }
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(777);
+    let legal = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    /* SubgameSolver / blueprint passive vector where CALL_CHECK is 90% and RAISE_HALF_POT is 0% */
+    let passive_solver_probs = [0.0, 0.90, 0.05, 0.05, 0.0, 0.0];
+    let safe_board = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+
+    /* 1. Turn (round 3) & River (round 4) with Top Pair Good Kicker (bucket 47) or Overpair (bucket 55):
+     * Must override passive SubgameSolver checking and fire RAISE_HALF_POT / RAISE_THIRD_POT! */
+    for &round in &[2u8, 3, 4] {
+        for &bucket in &[47usize, 55, 62, 70] {
+            let act = tracker.select_action_purified_context(
+                &passive_solver_probs,
+                &legal,
+                bucket,
+                round,
+                0,
+                1200,
+                None,
+                Some(&safe_board[..(round as usize + 1)]),
+                &mut rng,
+            );
+            assert!(
+                act == RAISE_HALF_POT || act == RAISE_THIRD_POT || (bucket >= 65 && act == ALL_IN),
+                "Against passive check/call station on round {} with bucket {}, bot must value-bet large instead of checking, got {}",
+                round,
+                bucket,
+                act
+            );
+        }
+    }
+
+    /* 2. Preflop (round 1) with strong Tier 1-2 hand (bucket 5) against passive station:
+     * Must size up to RAISE_HALF_POT instead of limping or min-raising */
+    let pf_act = tracker.select_action_purified_context(
+        &passive_solver_probs,
+        &legal,
+        5,
+        1,
+        0,
+        300,
+        None,
+        None,
+        &mut rng,
+    );
+    assert_eq!(
+        pf_act, RAISE_HALF_POT,
+        "Against passive station preflop with Tier 1-3 hand, bot must size up to RAISE_HALF_POT"
+    );
+}

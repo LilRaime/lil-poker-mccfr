@@ -225,6 +225,20 @@ fn postflop_fallback(
             s[FOLD as usize] = 0.30;
             s[RAISE_HALF_POT as usize] = 0.15;
         }
+    } else if round < 4 && (bucket == 33 || bucket == 38) {
+        /* Pair + Strong Draw (Bottom/Middle/Pocket Pair + Flush Draw or OESD: 10-14 outs + pair showdown value, Hand 4: 33 on 2-2-5-4) */
+        if to_call == 0 {
+            s[CALL_CHECK as usize] = 0.75;
+            s[RAISE_THIRD_POT as usize] = 0.20;
+            s[RAISE_HALF_POT as usize] = 0.05;
+        } else if pot_odds <= 0.35 {
+            s[CALL_CHECK as usize] = 0.85;
+            s[FOLD as usize] = 0.10;
+            s[RAISE_THIRD_POT as usize] = 0.05;
+        } else {
+            s[CALL_CHECK as usize] = 0.35;
+            s[FOLD as usize] = 0.65;
+        }
     } else if bucket >= 28 {
         /* Marginal / Bluff Catcher (Weak & Middle Pairs: 28..=39) */
         if to_call == 0 {

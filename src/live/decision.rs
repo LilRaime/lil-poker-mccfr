@@ -320,10 +320,21 @@ pub fn decide_action_multiway_context(
         }
     }
     if round >= 2 && my_chips > 0 {
+        let is_four_board_pair = round >= 3
+            && (current_bucket == 28
+                || current_bucket == 40
+                || current_bucket == 50
+                || current_bucket == 57);
+        let is_bloated_flop_weak = round == 2
+            && ((current_bucket < 15 && (my_chips <= pot * 2 || pot >= bb * 8))
+                || ((28..=37).contains(&current_bucket) && pot >= bb * 10));
         if to_call == 0
-            && current_bucket < 11
-            && chosen_idx >= RAISE_THIRD_POT as usize
-            && (my_chips <= pot * 2 || pot >= bb * 8)
+            && chosen_idx >= RAISE_MIN as usize
+            && (is_four_board_pair
+                || is_bloated_flop_weak
+                || (current_bucket < 11
+                    && chosen_idx >= RAISE_THIRD_POT as usize
+                    && (my_chips <= pot * 2 || pot >= bb * 8)))
         {
             chosen_idx = CALL_CHECK as usize;
         } else if to_call > 0

@@ -9,6 +9,9 @@ Dockerfile
 
 tests/
 
+*.tar
+*.tar.gz
+
 models/*.bin
 models/*.bin.ckpt
 !models/holdem_abstract_strategy.bin
