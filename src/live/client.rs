@@ -378,25 +378,71 @@ pub async fn run_live_bot(
         } else {
             round_tracker.estimated_my_chips
         };
-        let (chosen_action, amount) =
-            if (chosen_action == "raise" || chosen_action == "bet") && eff_chips > 0 {
-                let max_total = eff_chips + snapshot.my_bet;
-                let min_legal_total = if snapshot.current_bet > 0 {
-                    (snapshot.current_bet + snapshot.to_call.max(snapshot.big_blind))
-                        .max(snapshot.current_bet * 2)
+        let (chosen_action, amount) = if (chosen_action == "raise" || chosen_action == "bet")
+            && eff_chips > 0
+        {
+            let max_total = eff_chips + snapshot.my_bet;
+            let min_legal_total = if snapshot.current_bet > 0 {
+                (snapshot.current_bet + snapshot.to_call.max(snapshot.big_blind))
+                    .max(snapshot.current_bet * 2)
+            } else {
+                snapshot.big_blind
+            };
+            let capped = raw_amount.max(min_legal_total).min(max_total);
+            let bet_add = (capped - snapshot.my_bet).max(0);
+            let remaining_behind = max_total - capped;
+            let new_pot = snapshot.pot + bet_add;
+            let post_bucket = if !snapshot.board.is_empty() {
+                Some(crate::cfr::abstraction::postflop_equity_bucket(
+                    &hole,
+                    &snapshot.board,
+                ))
+            } else {
+                None
+            };
+            /* Postflop Air Stack-Risk Guard (b1.md Item B, Hand 5):
+             * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11). */
+            if let Some(b_idx) = post_bucket {
+                if b_idx < 11 && bet_add * 20 >= eff_chips * 7 {
+                    if snapshot.to_call == 0 {
+                        ("check".to_string(), 0)
+                    } else {
+                        ("fold".to_string(), 0)
+                    }
                 } else {
-                    snapshot.big_blind
-                };
-                let capped = raw_amount.max(min_legal_total).min(max_total);
-                let remaining_behind = max_total - capped;
-                let new_pot = snapshot.pot + (capped - snapshot.my_bet).max(0);
-                /* Stack-Commit Guard (Item N, Hand G2-1):
+                    let strong_postflop = b_idx >= 40 || (19..=27).contains(&b_idx);
+                    let commits_stack = remaining_behind > 0
+                        && (remaining_behind * 4 <= new_pot
+                            || remaining_behind <= snapshot.big_blind * 3
+                            || (strong_postflop && remaining_behind * 2 <= new_pot));
+                    if commits_stack {
+                        if snapshot
+                            .legal_actions
+                            .iter()
+                            .any(|l| l.eq_ignore_ascii_case("all_in"))
+                        {
+                            ("all_in".to_string(), 0)
+                        } else if snapshot
+                            .legal_actions
+                            .iter()
+                            .any(|l| l.eq_ignore_ascii_case("allin"))
+                        {
+                            ("allin".to_string(), 0)
+                        } else {
+                            (chosen_action, max_total)
+                        }
+                    } else {
+                        (chosen_action, capped)
+                    }
+                }
+            } else {
+                /* Preflop Stack-Commit Guard (Item N & b1.md Item A):
                  * Convert raises that leave <= 25% of the new pot behind, leave <= 3 BB behind,
-                 * or commit >= 40% of total stack on preflop directly into an all-in shove! */
+                 * or commit >= 35% of total stack on preflop directly into an all-in shove! */
                 let commits_stack = remaining_behind > 0
                     && (remaining_behind * 4 <= new_pot
                         || remaining_behind <= snapshot.big_blind * 3
-                        || (snapshot.board.is_empty() && capped * 5 >= max_total * 2));
+                        || capped * 20 >= max_total * 7);
                 if commits_stack {
                     if snapshot
                         .legal_actions
@@ -416,9 +462,10 @@ pub async fn run_live_bot(
                 } else {
                     (chosen_action, capped)
                 }
-            } else {
-                (chosen_action, raw_amount)
-            };
+            }
+        } else {
+            (chosen_action, raw_amount)
+        };
 
         let hole_str = format!(
             "[{} {}]",

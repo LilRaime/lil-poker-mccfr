@@ -288,7 +288,7 @@ pub fn decide_action_multiway_context(
 
     /* 3. Action Selection via Purified Strategy Sampling with Multi-way, Opponent Exploitation, and All-in Defense */
     let mut rng = rand::thread_rng();
-    let chosen_idx = tracker.select_action_purified_context_full(
+    let mut chosen_idx = tracker.select_action_purified_context_full(
         &raw_probs,
         &legal_u8,
         current_bucket,
@@ -301,6 +301,42 @@ pub fn decide_action_multiway_context(
         bb,
         &mut rng,
     ) as usize;
+
+    /* 4. Postflop Low-SPR Commitment & River Turn-Aggressor Guards (b1.md Items B, C, D):
+     * - Item D (Hand 4): On the River (round == 4) with < Trips (bucket < 65) when OOP (my_player == 1)
+     *   and the opponent raised on the Turn, check to the Turn raiser instead of donk-betting into a shove!
+     * - Item B (Hand 5): On Flop/Turn at low SPR (my_chips <= pot * 2) or bloated pot (pot >= bb * 8),
+     *   never fire >= 33% pot bluffs with pure air (bucket < 11).
+     * - Item B/C (Hand 1): Never call a postflop bet/raise with pure air or bare gutshot (bucket < 15)
+     *   if calling leaves < 50% of the new pot behind or commits >= 30% of remaining chips. */
+    if round == 4 && to_call == 0 && current_bucket < 65 && chosen_idx >= RAISE_MIN as usize {
+        let turn_raises = history[2]
+            .as_slice()
+            .iter()
+            .filter(|&&a| a >= RAISE_MIN)
+            .count();
+        if turn_raises >= 2 || (my_player == 1 && turn_raises >= 1) {
+            chosen_idx = CALL_CHECK as usize;
+        }
+    }
+    if round >= 2 && my_chips > 0 {
+        if to_call == 0
+            && current_bucket < 11
+            && chosen_idx >= RAISE_THIRD_POT as usize
+            && (my_chips <= pot * 2 || pot >= bb * 8)
+        {
+            chosen_idx = CALL_CHECK as usize;
+        } else if to_call > 0
+            && (current_bucket < 15 || current_bucket == 28)
+            && chosen_idx == CALL_CHECK as usize
+        {
+            let remaining = my_chips - to_call;
+            let new_pot = pot + to_call;
+            if remaining * 2 < new_pot || to_call * 10 >= my_chips * 3 {
+                chosen_idx = FOLD as usize;
+            }
+        }
+    }
 
     let is_wet = board.len() >= 3 && {
         let mut suits = [0u8; 4];

@@ -561,6 +561,23 @@ impl OpponentTracker {
                 } else if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                     probs[f_i] += shifted;
                 }
+            } else if to_call > bb / 2 && (pf_tier >= 5 || bucket >= 92) {
+                /* Facing a preflop raise with Tier 5..=6 or offsuit Tier 4 (ATo, A9o, KJo — Hands 1 & 5):
+                 * Do not 3-bet bloat the pot out of position! Shift 3-bet weight into flat calling (or folding if overpriced). */
+                let mut shifted = 0.0f64;
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a >= RAISE_MIN {
+                        shifted += probs[i];
+                        probs[i] = 0.0;
+                    }
+                }
+                if pot_odds <= 0.36 {
+                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                        probs[c_i] += shifted;
+                    }
+                } else if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                    probs[f_i] += shifted;
+                }
             }
         }
 
@@ -591,6 +608,8 @@ impl OpponentTracker {
                 && (self.raise_ratio() > 0.35
                     || self.pfr_ratio() > 0.40
                     || self.vpip_ratio() > 0.65);
+            let is_extreme_shove_bot =
+                self.total_hands >= 15 && self.raise_ratio() > 0.50 && self.vpip_ratio() > 0.70;
 
             if is_preflop {
                 let pf_tier = preflop_strength_tier(bucket);
@@ -602,10 +621,22 @@ impl OpponentTracker {
                             probs[f_i] = 0.0;
                         }
                     }
-                } else if pf_tier <= 1 && to_call < eff_allin_threshold * 2 {
-                    /* Tier 1 (AA, KK, QQ, AK) never fold preflop to standard shoves */
+                } else if (pf_tier <= 1
+                    || (is_known_maniac && pf_tier <= 3 && to_call < eff_allin_threshold)
+                    || (is_extreme_shove_bot && pf_tier <= 6 && pot_odds <= 0.46))
+                    && to_call < eff_allin_threshold * 2
+                {
+                    /* Tier 1 (or Tiers 1..=6 vs extreme shove-bot at <= 46% pot odds, b1.md Item E) never fold preflop */
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                        let f_w = probs[f_i];
                         probs[f_i] = 0.0;
+                        if let Some(c_i) = legal_actions
+                            .iter()
+                            .position(|&a| a == CALL_CHECK)
+                            .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
+                        {
+                            probs[c_i] += f_w;
+                        }
                     }
                 }
             }
@@ -639,6 +670,12 @@ impl OpponentTracker {
                     } else {
                         pf_tier > 1
                     }
+                } else if is_extreme_shove_bot && pot_odds <= 0.46 {
+                    /* Facing < 35 BB shove from proven shove-bot (b1.md Item E, Hand 6): call with Tiers 1..=6 */
+                    pf_tier > 6
+                } else if is_known_maniac {
+                    /* Facing < 35 BB shove from known maniac: call with Tiers 1..=5 */
+                    pf_tier > 5
                 } else {
                     /* Facing standard shove (< 35 BB): Tiers 5..=8 fold */
                     pf_tier >= 5
@@ -728,11 +765,18 @@ impl OpponentTracker {
                         probs[i] = 0.0;
                     }
                 }
-                /* Strict Odds Guard (Match 4 & Item E): facing >= 33% pot bet (pot_odds >= 0.25, >= 2 BB) on Flop/Turn
-                 * (or >= 16% pot odds on Turn where a gutshot has only 8.7% equity) with bucket < 15 or 28, force 100% fold! */
+                /* Strict Odds Guard (Match 4, Item E & b1.md Item C):
+                 * - Facing >= 33% pot bet (pot_odds >= 0.25, >= 2 BB) on Flop/Turn with bucket < 15 or 28 -> 100% fold!
+                 * - Facing >= 16% pot odds on Turn with a bare gutshot/air (bucket < 15) -> 100% fold!
+                 * - Pure air without even a gutshot (bucket < 11 or 28, e.g. KJo on 7-7-2 in Hand 1) facing any bet >= 1 BB
+                 *   with pot_odds > 0.12 on Flop/Turn -> 100% fold! */
                 let overpriced_gutshot_or_air =
                     (round < 4 && to_call >= bb * 2 && pot_odds >= 0.25)
-                        || (round == 3 && to_call >= bb && pot_odds >= 0.16 && bucket < 15);
+                        || (round == 3 && to_call >= bb && pot_odds >= 0.16 && bucket < 15)
+                        || (round < 4
+                            && to_call >= bb
+                            && pot_odds > 0.12
+                            && (bucket < 11 || bucket == 28));
                 if overpriced_gutshot_or_air {
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         for p in probs.iter_mut() {
@@ -762,6 +806,22 @@ impl OpponentTracker {
                     }
                     probs[f_i] = 1.0;
                 }
+            }
+        }
+
+        if round == 2 && to_call == 0 && bucket < 11 && pot >= bb * 8 {
+            /* Bloated / 3-bet Flop pot (pot >= 8 BB, b1.md Item B, Hand 5):
+             * With pure air (bucket < 11), never fire a 75%/50% pot c-bet (RAISE_HALF_POT) that commits the stack;
+             * shift large c-bets into CALL_CHECK! */
+            let mut shifted = 0.0f64;
+            for (i, &a) in legal_actions.iter().enumerate() {
+                if a == RAISE_HALF_POT || a == RAISE_THIRD_POT {
+                    shifted += probs[i];
+                    probs[i] = 0.0;
+                }
+            }
+            if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                probs[c_i] += shifted;
             }
         }
 
@@ -874,7 +934,7 @@ impl OpponentTracker {
          * - If we have bucket 73 (Board Straight or Idiot-End straight on 4-to-straight board),
          *   NEVER blast a 125% pot overbet or shove into a checked pot!
          * - With a one-pair, overpair, or vulnerable two-pair hand on River (28 <= bucket < 61), suppress 125% pot overbets
-         *   (`RAISE_HALF_POT` on river) and all-in shoves so we don't value-own ourselves for stacks.
+         *   (`RAISE_HALF_POT` on river) and all-in shoves so we don't value-own ourselves for stacks (b1.md Item D, Hand 4).
          * - On a 3-flush or dangerous board on Turn/River, if we hold less than a Flush (bucket < 79)
          *   and are facing a substantial bet (pot_odds > 0.25), do not re-raise / jam over the top! */
         if round == 4 && bucket == 73 {
@@ -888,7 +948,18 @@ impl OpponentTracker {
                 probs[c_i] = probs[c_i].max(0.50);
             }
         } else if round == 4 && (28..61).contains(&bucket) {
-            let is_dangerous = board.map(is_dangerous_board).unwrap_or(false) || is_three_flush;
+            let is_three_straight = board
+                .map(|b| {
+                    let mut ranks = [false; 13];
+                    for c in b {
+                        ranks[c.rank as usize] = true;
+                    }
+                    (0..=9).any(|s| (s..s + 4).filter(|&r| ranks[r]).count() >= 3)
+                })
+                .unwrap_or(false);
+            let is_dangerous = board.map(is_dangerous_board).unwrap_or(false)
+                || is_three_flush
+                || is_three_straight;
             if to_call > 0 {
                 /* Facing a River bet with One Pair, Overpair, or weak Two Pair (bucket < 61, e.g. Match 2 with 86o on 5-8-4-3-4):
                  * NEVER raise and pot-commit into a 3-bet shove! Shift all raise weight into flat calling. */
@@ -904,23 +975,30 @@ impl OpponentTracker {
                         probs[c_i] += shifted_raise;
                     }
                 }
-            } else if is_dangerous {
-                /* On a 3-flush / 4-straight / coordinated paired river with one pair or weak two pair: never overbet or shove */
+            } else {
+                /* River with 28..61 (One Pair, Overpair, or Bottom/Middle Two Pair, b1.md Item D, Hand 4):
+                 * NEVER fire a 125% pot overbet (`RAISE_HALF_POT`) or `ALL_IN`!
+                 * Shift overbet weight into thin 33% value (`RAISE_THIRD_POT`) on safe boards or `CALL_CHECK` on dangerous/3-straight boards. */
+                let mut shifted = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a == RAISE_HALF_POT || a == ALL_IN {
+                        shifted += probs[i];
                         probs[i] = 0.0;
                     }
                 }
-                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                    probs[c_i] = probs[c_i].max(0.60);
-                }
-            } else if bucket < 55 {
-                /* Even on a dry river, one-pair and low/mid overpair hands (bucket < 55) should bet small/medium, not 125% overbet */
-                if let Some(r_hp) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
-                    probs[r_hp] *= 0.15;
-                }
-                if let Some(r_ai) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                    probs[r_ai] *= 0.05;
+                if is_dangerous {
+                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                        probs[c_i] = (probs[c_i] + shifted).max(0.60);
+                    }
+                } else if bucket >= 46 {
+                    if let Some(r_t) = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT) {
+                        probs[r_t] += shifted * 0.60;
+                    }
+                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                        probs[c_i] += shifted * 0.40;
+                    }
+                } else if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] += shifted;
                 }
             }
         } else if round >= 3

@@ -180,11 +180,14 @@ pub fn map_action_index_round_bb_chips(
         }
         RAISE_MIN..=RAISE_HALF_POT => {
             let is_unopened_or_limped_pf = round == 1 && to_call <= bb && pot <= bb * 2 + bb / 2;
+            let opp_bet_pf = ((pot + to_call) / 2).max(to_call + bb / 2);
             let min_raise = if round == 1 {
                 if is_unopened_or_limped_pf {
                     preflop_open_min_total
                 } else if to_call > 0 {
-                    ((to_call + bb) * 2).max(preflop_open_min_total)
+                    (opp_bet_pf * 2)
+                        .max((to_call + bb) * 2)
+                        .max(preflop_open_min_total)
                 } else {
                     (bb * 2).max(preflop_open_min_total)
                 }
@@ -202,6 +205,9 @@ pub fn map_action_index_round_bb_chips(
                 RAISE_THIRD_POT => {
                     if is_unopened_or_limped_pf {
                         (bb * 3).max(preflop_open_min_total)
+                    } else if round == 1 && to_call > 0 {
+                        /* Preflop 3-bet / 4-bet (b1.md Item A): 3.0x opponent's bet */
+                        (opp_bet_pf * 3).max(min_raise)
                     } else {
                         let s = (pot / 3).max(raise_third_pot_floor);
                         if base_bet > 0 {
@@ -214,6 +220,9 @@ pub fn map_action_index_round_bb_chips(
                 RAISE_HALF_POT => {
                     if is_unopened_or_limped_pf {
                         (bb * 7 / 2).max(preflop_open_min_total)
+                    } else if round == 1 && to_call > 0 {
+                        /* Preflop large 3-bet / 4-bet (b1.md Item A): 3.5x to pot-sized 3-bet */
+                        (opp_bet_pf + pot).max(opp_bet_pf * 7 / 2).max(min_raise)
                     } else {
                         let s = if round == 4 {
                             /* River: Polarized 125% pot overbet */
@@ -237,6 +246,9 @@ pub fn map_action_index_round_bb_chips(
                     if is_unopened_or_limped_pf {
                         /* Preflop initial open-raise (HU SB or Multi-way UTG/MP/CO/BTN) or BB ISO vs limp: 2.5x BB */
                         preflop_open_min_total
+                    } else if round == 1 && to_call > 0 {
+                        /* Preflop small/value 3-bet (b1.md Item A): 2.75x opponent's bet (or min_raise) */
+                        (opp_bet_pf * 11 / 4).max(min_raise)
                     } else if round == 1 {
                         (base_bet + raise_min_amt).max(min_raise)
                     } else if to_call > 0 {
@@ -248,6 +260,16 @@ pub fn map_action_index_round_bb_chips(
                     }
                 }
             };
+            if round == 1 && my_chips > 0 && to_call > 0 && amt * 20 >= my_chips * 7 {
+                /* If a preflop 3-bet/4-bet commits >= 35% of remaining stack (b1.md Item A, Hand 5), jam all-in! */
+                if has("all_in") {
+                    return Some(("all_in".to_string(), 0));
+                } else if has("allin") {
+                    return Some(("allin".to_string(), 0));
+                } else if has("raise") {
+                    return Some(("raise".to_string(), my_chips));
+                }
+            }
             if has("raise") {
                 Some(("raise".to_string(), amt))
             } else if has("bet") {
