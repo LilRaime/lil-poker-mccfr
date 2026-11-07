@@ -819,3 +819,203 @@ fn test_passive_station_value_extraction_boost() {
         "Against passive station preflop with Tier 1-3 hand, bot must size up to RAISE_HALF_POT"
     );
 }
+
+#[test]
+fn test_postflop_barrel_and_deep_shove_defense() {
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..12 {
+        maniac.record_action_street_detailed(ALL_IN, 1, true, 4000, 300);
+        maniac.end_hand();
+    }
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(2026);
+
+    /* 1. Offsuit QJo (bucket 77, Tier 4) facing a 29 BB cold preflop shove (5800 into 6200, bb=200)
+     * must FOLD even against a known maniac! */
+    let legal_shove = [FOLD, CALL_CHECK, ALL_IN];
+    let call_heavy_probs = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+    let act_qjo_shove = maniac.select_action_purified_context_full(
+        &call_heavy_probs,
+        &legal_shove,
+        77, /* QJo */
+        1,
+        5800,
+        6200,
+        None,
+        None,
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_qjo_shove, FOLD,
+        "Offsuit QJo must fold to a 29 BB preflop shove!"
+    );
+
+    /* 2. Pocket 77 (bucket 8) facing a standard 2x open (to_call = 400, bb = 200)
+     * must NOT 3-bet all-in jam! */
+    let tracker = OpponentTracker::new();
+    let legal_full = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let shove_probs = [0.0, 0.10, 0.0, 0.0, 0.0, 0.90];
+    let act_mid_pair_open = tracker.select_action_purified_context_full(
+        &shove_probs,
+        &legal_full,
+        8, /* 77 */
+        1,
+        400,
+        1000,
+        None,
+        None,
+        1,
+        200,
+        &mut rng,
+    );
+    assert_ne!(
+        act_mid_pair_open, ALL_IN,
+        "Pocket 77 facing a standard 2x open must not 3-bet jam ALL_IN!"
+    );
+
+    /* 3. Set of Queens (bucket 68) on a 4-to-a-straight River (Kh Ad 2h Qs Jd)
+     * facing a river shove (6725 into 9975) must FOLD! */
+    let board_four_straight = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Diamonds),
+    ];
+    let act_set_four_straight = tracker.select_action_purified_context_full(
+        &call_heavy_probs,
+        &legal_shove,
+        68, /* Middle Set QQ */
+        4,
+        6725,
+        9975,
+        None,
+        Some(&board_four_straight),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_set_four_straight, FOLD,
+        "Set on a 4-to-a-straight river board must fold to a river shove!"
+    );
+
+    /* 4. Straight (bucket 76) on a paired + 3-flush River (5h 9s 7d 9h 8h)
+     * must NOT overbet (RAISE_HALF_POT) or shove (ALL_IN)! */
+    let board_paired_flush = [
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Hearts),
+    ];
+    let legal_no_fold = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let jam_probs = [0.0, 0.05, 0.0, 0.05, 0.45, 0.45];
+    let act_straight_paired = tracker.select_action_purified_context_full(
+        &jam_probs,
+        &legal_no_fold,
+        76, /* Straight */
+        4,
+        0,
+        1750,
+        None,
+        Some(&board_paired_flush),
+        1,
+        200,
+        &mut rng,
+    );
+    assert!(
+        act_straight_paired != ALL_IN && act_straight_paired != RAISE_HALF_POT,
+        "Straight on paired 3-flush river must not jam or 125% overbet, got {}",
+        act_straight_paired
+    );
+
+    /* 5. Bottom pair without draw (bucket 30) on 9h 7c 3h facing a 2/3 pot Flop bet (800 into 2000) must FOLD! */
+    let board_flop_dry = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let act_bottom_pair_flop = tracker.select_action_purified_context_full(
+        &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+        &legal_full,
+        30,
+        2,
+        800,
+        2000,
+        None,
+        Some(&board_flop_dry),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_bottom_pair_flop, FOLD,
+        "Bare bottom pair must fold to a 2/3 pot flop bet!"
+    );
+
+    /* 6. Vulnerable Top Pair Mid Kicker without flush redraw (bucket 42)
+     * on monotone 4s Ks 8s 6d Turn facing 2900 into 7250 must FOLD! */
+    let board_monotone_turn = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Six, Suit::Diamonds),
+    ];
+    let act_tp_monotone = tracker.select_action_purified_context_full(
+        &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+        &legal_full,
+        42,
+        3,
+        2900,
+        7250,
+        None,
+        Some(&board_monotone_turn),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_tp_monotone, FOLD,
+        "Bare top pair mid kicker without flush redraw on 3-flush turn must fold to heavy barrel!"
+    );
+
+    /* 7. Pot-committed Turn call (600 into 9400 on 3-flush turn, ~6% pot odds) must NEVER fold! */
+    let board_turn_committed = [
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Diamonds),
+    ];
+    let act_committed_turn = tracker.select_action_purified_context_full(
+        &[0.95, 0.05, 0.0, 0.0, 0.0, 0.0],
+        &legal_shove,
+        58, /* Two Pair / Overpair above board pair */
+        3,
+        600,
+        9400,
+        None,
+        Some(&board_turn_committed),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_ne!(
+        act_committed_turn, FOLD,
+        "Calling 600 into 9400 (6% pot odds) with overpair must never fold!"
+    );
+}

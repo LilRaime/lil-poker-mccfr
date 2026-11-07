@@ -42,7 +42,9 @@ impl OpponentTracker {
         let never_fold_postflop = !is_preflop
             && (bucket >= 83 || (bucket == 82 && !is_four_flush_board_now && to_call < pot * 2));
         if to_call > 0
-            && ((pot_odds <= 0.15 && (is_preflop || bucket >= 15)) || never_fold_postflop)
+            && (pot_odds <= 0.12
+                || (pot_odds <= 0.15 && (is_preflop || bucket >= 15))
+                || never_fold_postflop)
         {
             if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                 let f_prob = probs[f_i];
@@ -60,7 +62,7 @@ impl OpponentTracker {
         /* Preflop Trash, Priced-In BB Defense & Limp-Pot OOP ISO-Raise Guard:
          * 1) In BB facing a limp (to_call == 0): never iso-raise OOP with Tier 6..=8 hands (e.g. 53s, J3o); take the free flop!
          * 2) Facing a bet with Tier 7..=8 hands (e.g. 54o, 72o): never 3x open-raise or 3-bet bluff!
-         * 3) Priced-In BB Protection (Hands G2-1, G2-2, G2-3): if pot_odds <= 0.26 (e.g. BB already posted facing a min-raise
+         * 3) Priced-In BB Protection: if pot_odds <= 0.26 (e.g. BB already posted facing a min-raise
          *    or short-stack shove), do NOT force-fold playable/borderline hands! */
         if is_preflop {
             let pf_tier = preflop_strength_tier(bucket);
@@ -137,6 +139,22 @@ impl OpponentTracker {
                     probs[f_i] += shifted;
                 }
             }
+            if to_call <= bb * 4 && bucket >= 6 {
+                /* Facing a standard preflop open/limp (to_call <= 4 BB) with hands below TT/AK/AQs (bucket >= 6, e.g. 77):
+                 * Never 3-bet jam ALL_IN directly for full stacks; shift ALL_IN weight into standard 3-bet or flat call! */
+                if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                    let s = probs[ai_i];
+                    probs[ai_i] = 0.0;
+                    if let Some(t_i) = legal_actions
+                        .iter()
+                        .position(|&a| a == RAISE_THIRD_POT)
+                        .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN))
+                        .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
+                    {
+                        probs[t_i] += s;
+                    }
+                }
+            }
         }
 
         /* A situation is a dangerous shove/heavy bet if to_call is substantial (>= 4 BB) and pot odds are meaningful (> 0.18).
@@ -147,6 +165,7 @@ impl OpponentTracker {
             && pot_odds > 0.18
             && (to_call >= eff_allin_threshold
                 || !can_raise
+                || (round == 1 && to_call >= bb * 10)
                 || (round == 4 && to_call >= bb * 5 && pot_odds >= 0.30)
                 || (round == 3 && to_call >= bb * 15 && pot_odds >= 0.33)
                 || (round == 2 && to_call >= bb * 20));
@@ -171,10 +190,13 @@ impl OpponentTracker {
                     }
                 } else if (pf_tier <= 1
                     || (is_known_maniac && pf_tier <= 3 && to_call < eff_allin_threshold)
-                    || (is_extreme_shove_bot && pf_tier <= 6 && pot_odds <= 0.46))
+                    || (is_extreme_shove_bot
+                        && pf_tier <= 6
+                        && pot_odds <= 0.46
+                        && to_call < bb * 18))
                     && to_call < eff_allin_threshold * 2
                 {
-                    /* Tier 1 (or Tiers 1..=6 vs extreme shove-bot at <= 46% pot odds, b1.md Item E) never fold preflop */
+                    /* Tier 1 (or Tiers 1..=6 vs extreme shove-bot at < 18 BB and <= 46% pot odds, b1.md Item E) never fold preflop */
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         let f_w = probs[f_i];
                         probs[f_i] = 0.0;
@@ -192,7 +214,7 @@ impl OpponentTracker {
             let is_trash = if is_preflop {
                 let pf_tier = preflop_strength_tier(bucket);
                 if pot_odds <= 0.22 || (pot_odds <= 0.26 && pf_tier <= 7) {
-                    /* Priced in from BB against a short-stack shove (Hands G2-2, G2-3): never auto-fold! */
+                    /* Priced in from BB against a short-stack shove: never auto-fold! */
                     false
                 } else if to_call >= bb * 40 {
                     /* Facing massive cold shove (>= 40 BB, Match 3):
@@ -218,23 +240,33 @@ impl OpponentTracker {
                     } else {
                         pf_tier > 1
                     }
+                } else if to_call >= bb * 18 {
+                    /* Facing deep 18-34 BB shove (e.g. 29 BB shove with QJo):
+                     * - vs known maniac / extreme shove-bot: call with Tiers 1..=3 or pocket pairs (bucket <= 11);
+                     *   fold dominated offsuit Tier 4 (QJo, KJo, ATo) and Tiers 5..=8!
+                     * - vs tight/unknown: call with Tiers 1..=2 or pocket pairs 88-77 (bucket <= 7) */
+                    if is_known_maniac || is_extreme_shove_bot {
+                        pf_tier > 3 && bucket > 11
+                    } else {
+                        pf_tier > 2 && bucket > 7
+                    }
                 } else if is_extreme_shove_bot && pot_odds <= 0.46 {
-                    /* Facing < 35 BB shove from proven shove-bot (b1.md Item E, Hand 6): call with Tiers 1..=6 */
+                    /* Facing < 18 BB shove from proven shove-bot (b1.md Item E, Hand 6): call with Tiers 1..=6 */
                     pf_tier > 6
                 } else if is_known_maniac {
-                    /* Facing < 35 BB shove from known maniac: call with Tiers 1..=5 */
+                    /* Facing < 18 BB shove from known maniac: call with Tiers 1..=5 */
                     pf_tier > 5
                 } else {
-                    /* Facing standard shove (< 35 BB): Tiers 5..=8 fold */
+                    /* Facing standard < 18 BB shove: Tiers 5..=8 fold */
                     pf_tier >= 5
                 }
             } else if round == 4 {
                 /* On River facing massive overbet/shove: only High Overpair (54+) or Genuine Two Pair+ (57+) can call;
                  * on a 4-flush board, baby/board flushes (bucket <= 79) and non-flushes must also fold!
-                 * on a 4-straight board, hands below Genuine Top Two Pair (bucket < 61) must fold! */
+                 * on a 4-straight board (e.g. K-A-2-Q-J with a set, bucket 68), hands below Straight (bucket < 73) must fold! */
                 let is_four_flush = board.map(is_four_flush_board).unwrap_or(false);
                 let is_four_straight = board.map(is_four_straight_board).unwrap_or(false);
-                bucket < 54 || (is_four_flush && bucket <= 79) || (is_four_straight && bucket < 61)
+                bucket < 54 || (is_four_flush && bucket <= 79) || (is_four_straight && bucket < 73)
             } else {
                 /* Flop/Turn facing massive shove:
                  * On Flop (2 cards to come), strong draws have 32-54% equity and can call <= 0.35 pot odds.
@@ -377,9 +409,9 @@ impl OpponentTracker {
         let is_four_board_danger = board
             .map(|b| is_four_straight_board(b) || is_four_flush_board(b))
             .unwrap_or(false);
-        if round >= 3 && to_call == 0 && is_four_board_danger && bucket <= 57 {
-            /* Turn/River on a 4-to-a-straight or 4-to-a-flush board (e.g. b1a Hand 2: KQh on 8d-Ts-9c-Qc):
-             * Any unimproved One Pair, Overpair, or Two Pair (bucket <= 57) is strictly a bluff-catcher
+        if round >= 3 && to_call == 0 && is_four_board_danger && bucket < 73 {
+            /* Turn/River on a 4-to-a-straight or 4-to-a-flush board (e.g. KQh on 8d-Ts-9c-Qc, or QQ set on K-A-2-Q-J):
+             * Any unimproved One Pair, Overpair, Two Pair, or Set (bucket < 73) is strictly a bluff-catcher
              * and must check for pot control rather than jamming into made straights/flushes! */
             let mut shifted = 0.0f64;
             for (i, &a) in legal_actions.iter().enumerate() {
@@ -536,6 +568,33 @@ impl OpponentTracker {
             if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
                 probs[c_i] = probs[c_i].max(0.50);
             }
+        } else if round == 4
+            && (74..=78).contains(&bucket)
+            && (is_three_flush
+                || board
+                    .map(|b| detect_board_texture(b).is_paired || is_four_flush_board(b))
+                    .unwrap_or(false))
+        {
+            /* Straight on a paired or 3/4-flush River board (e.g. 7c 6s on 5h-9s-7d-9h-8h):
+             * Vulnerable to Full Houses and Flushes -> NEVER blast a 125% pot overbet (`RAISE_HALF_POT`) or `ALL_IN` shove,
+             * and never raise facing a River bet! Shift weight into thin value (`RAISE_THIRD_POT`) or `CALL_CHECK`. */
+            let mut shifted = 0.0f64;
+            for (i, &a) in legal_actions.iter().enumerate() {
+                if a == RAISE_HALF_POT || a == ALL_IN || (a >= RAISE_MIN && to_call > 0) {
+                    shifted += probs[i];
+                    probs[i] = 0.0;
+                }
+            }
+            if to_call == 0 && !is_three_flush && !board.map(is_four_flush_board).unwrap_or(false) {
+                if let Some(r_t) = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT) {
+                    probs[r_t] = (probs[r_t] + shifted * 0.65).max(0.55);
+                }
+                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] += shifted * 0.35;
+                }
+            } else if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                probs[c_i] = (probs[c_i] + shifted).max(0.65);
+            }
         } else if round == 4 && (28..61).contains(&bucket) {
             let is_three_straight = board
                 .map(|b| {
@@ -663,5 +722,18 @@ impl OpponentTracker {
                 is_four_board_danger,
             );
         }
+
+        /* 6. Postflop Heavy-Bet / Multi-Street Barrel Defense & Unconditional Pot-Commitment Rescue */
+        self.apply_postflop_barrel_and_pot_commitment_guards(
+            probs,
+            legal_actions,
+            bucket,
+            round,
+            to_call,
+            bb,
+            pot_odds,
+            is_three_flush,
+            never_fold_postflop,
+        );
     }
 }

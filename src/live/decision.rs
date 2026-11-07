@@ -111,6 +111,12 @@ pub fn decide_action_multiway_context(
 ) -> (String, i32) {
     let bb = if big_blind > 0 { big_blind } else { BIG_BLIND };
     let active_opponents = active_opponents.max(1);
+    let (to_call, pot) = if my_chips > 0 && to_call > my_chips {
+        let uncallable = to_call - my_chips;
+        (my_chips, (pot - uncallable).max(my_chips))
+    } else {
+        (to_call, pot)
+    };
     let round = match board.len() {
         0 => 1,
         3 => 2,
@@ -155,7 +161,7 @@ pub fn decide_action_multiway_context(
 
     /* Short-Stack Push/Fold Engine (Items H & N):
      * When effective stack is <= 12 BB on preflop, playing regular postflop lines is mathematically -EV.
-     * Commit with high-equity hands, call when priced in from the Big Blind (Hands G2-2, G2-3),
+     * Commit with high-equity hands, call when priced in from the Big Blind,
      * or preserve stack cleanly. */
     if round == 1 && my_chips > 0 {
         let stack_bb = my_chips / bb;
@@ -198,24 +204,37 @@ pub fn decide_action_multiway_context(
                 }
             } else if pf_tier <= 5 {
                 /* Tiers 4..=5 (66-22, suited aces/kings/connectors, ATo-A5o, KJo-K9o, QJo-QTo, JTo, T9o):
-                 * PUSH if pot is unraised/limped (to_call <= bb), or CALL if priced in (pot_odds <= 0.33)! */
-                if to_call <= bb && can_allin {
+                 * - In BB facing a limp (to_call == 0): only push pocket pairs / suited Aces (bucket <= 26);
+                 *   with offsuit / non-Ace hands (e.g. T9o), take the free flop ("check")!
+                 * - Opening from SB (to_call > 0 && to_call <= bb): PUSH (e.g. K8s, A3s)!
+                 * - Facing a raise: CALL if priced in (pot_odds <= 0.33)! */
+                if to_call == 0 {
+                    if current_bucket <= 26 && can_allin {
+                        return push_action();
+                    } else if has("check") {
+                        return ("check".to_string(), 0);
+                    }
+                } else if to_call <= bb && can_allin {
                     return push_action();
-                } else if to_call > 0 && (pot_odds <= 0.33 || my_chips <= bb * 2) {
+                } else if pot_odds <= 0.33 || my_chips <= bb * 2 {
                     if let Some(act) = call_or_allin_action() {
                         return act;
                     }
-                } else if to_call == 0 && has("check") {
-                    return ("check".to_string(), 0);
                 } else if has("fold") {
                     return ("fold".to_string(), 0);
                 }
             } else {
                 /* Tiers 6..=8:
-                 * 1) If in HU SB (active_opponents == 1, to_call <= bb / 2) with Tier 6: PUSH!
-                 * 2) If priced in from BB (pot_odds <= 0.28 or my_chips <= 2 BB, Hands G2-2 & G2-3): CALL!
+                 * 1) If in HU SB (active_opponents == 1, to_call > 0 && to_call <= bb / 2) with Tier 6: PUSH!
+                 *    Never push Tier 6 from BB into a limp when to_call == 0 (e.g. 96s)!
+                 * 2) If priced in from BB (pot_odds <= 0.28 or my_chips <= 2 BB): CALL!
                  * 3) Otherwise check for free or fold. */
-                if active_opponents == 1 && to_call <= bb / 2 && pf_tier == 6 && can_allin {
+                if active_opponents == 1
+                    && to_call > 0
+                    && to_call <= bb / 2
+                    && pf_tier == 6
+                    && can_allin
+                {
                     return push_action();
                 } else if to_call > 0
                     && ((pot_odds <= 0.28 && pf_tier <= 7)
@@ -302,13 +321,15 @@ pub fn decide_action_multiway_context(
         &mut rng,
     ) as usize;
 
-    /* 4. Postflop Low-SPR Commitment & River Turn-Aggressor Guards (b1.md Items B, C, D):
+    /* 4. Postflop Low-SPR Commitment & River Turn-Aggressor Guards:
      * - Item D (Hand 4): On the River (round == 4) with < Trips (bucket < 65) when OOP (my_player == 1)
      *   and the opponent raised on the Turn, check to the Turn raiser instead of donk-betting into a shove!
      * - Item B (Hand 5): On Flop/Turn at low SPR (my_chips <= pot * 2) or bloated pot (pot >= bb * 8),
      *   never fire >= 33% pot bluffs with pure air (bucket < 11).
-     * - Item B/C (Hand 1): Never call a postflop bet/raise with pure air or bare gutshot (bucket < 15)
-     *   if calling leaves < 50% of the new pot behind or commits >= 30% of remaining chips. */
+     * - Unconditional Pot-Commitment when pot_odds <= 12.5% (or <= 16.6% with bucket >= 15):
+     *   never fold for 1-2 chips or tiny micro-stacks into a massive pot!
+     * - Item B/C (Hand 1): Never call a meaningful postflop bet (to_call > bb, pot_odds > 16.6%) with pure air
+     *   or bare gutshot (bucket < 15) if calling leaves < 50% of the new pot behind or commits >= 30% of stack. */
     if round == 4 && to_call == 0 && current_bucket < 65 && chosen_idx >= RAISE_MIN as usize {
         let turn_raises = history[2]
             .as_slice()
@@ -316,6 +337,22 @@ pub fn decide_action_multiway_context(
             .filter(|&&a| a >= RAISE_MIN)
             .count();
         if turn_raises >= 2 || (my_player == 1 && turn_raises >= 1) {
+            chosen_idx = CALL_CHECK as usize;
+        }
+    }
+    if to_call > 0 && chosen_idx == FOLD as usize && legal_u8.contains(&CALL_CHECK) {
+        let new_pot = (pot + to_call).max(1);
+        if to_call * 8 <= new_pot
+            || (to_call * 6 <= new_pot && (round == 1 || current_bucket >= 15))
+        {
+            chosen_idx = CALL_CHECK as usize;
+        }
+    }
+    if to_call > 0 && chosen_idx == FOLD as usize && legal_u8.contains(&CALL_CHECK) {
+        let new_pot = (pot + to_call).max(1);
+        if to_call * 8 <= new_pot
+            || (to_call * 6 <= new_pot && (round == 1 || current_bucket >= 15))
+        {
             chosen_idx = CALL_CHECK as usize;
         }
     }
@@ -337,13 +374,13 @@ pub fn decide_action_multiway_context(
                     && (my_chips <= pot * 2 || pot >= bb * 8)))
         {
             chosen_idx = CALL_CHECK as usize;
-        } else if to_call > 0
+        } else if to_call > bb
             && (current_bucket < 15 || current_bucket == 28)
             && chosen_idx == CALL_CHECK as usize
         {
             let remaining = my_chips - to_call;
-            let new_pot = pot + to_call;
-            if remaining * 2 < new_pot || to_call * 10 >= my_chips * 3 {
+            let new_pot = (pot + to_call).max(1);
+            if to_call * 6 > new_pot && (remaining * 2 < new_pot || to_call * 10 >= my_chips * 3) {
                 chosen_idx = FOLD as usize;
             }
         }

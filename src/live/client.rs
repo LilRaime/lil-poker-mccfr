@@ -463,6 +463,45 @@ pub async fn run_live_bot(
                     (chosen_action, capped)
                 }
             }
+        } else if chosen_action == "call"
+            && eff_chips > snapshot.to_call
+            && snapshot.to_call > 0
+            && !snapshot.board.is_empty()
+        {
+            /* Postflop Call Stack-Commit Guard:
+             * If calling a Flop/Turn raise with a strong hand (bucket >= 45, e.g. 99 on 7-3-7)
+             * leaves <= 3 BB and <= 15% of the new pot behind, push all-in immediately! */
+            let rem_after_call = eff_chips - snapshot.to_call;
+            let new_pot = snapshot.pot + snapshot.to_call;
+            let b_idx = crate::cfr::abstraction::postflop_equity_bucket(&hole, &snapshot.board);
+            if b_idx >= 45
+                && rem_after_call <= snapshot.big_blind * 3
+                && rem_after_call * 6 <= new_pot
+            {
+                if snapshot
+                    .legal_actions
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case("all_in"))
+                {
+                    ("all_in".to_string(), 0)
+                } else if snapshot
+                    .legal_actions
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case("allin"))
+                {
+                    ("allin".to_string(), 0)
+                } else if snapshot
+                    .legal_actions
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case("raise"))
+                {
+                    ("raise".to_string(), eff_chips + snapshot.my_bet)
+                } else {
+                    (chosen_action, raw_amount)
+                }
+            } else {
+                (chosen_action, raw_amount)
+            }
         } else {
             (chosen_action, raw_amount)
         };

@@ -1,6 +1,6 @@
-/* Anti-Passive / Calling-Station Value-Extraction Boost */
+/* Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
 use super::tracker::OpponentTracker;
-use crate::cfr::abstraction::{is_dangerous_board, preflop_strength_tier};
+use crate::cfr::abstraction::{detect_board_texture, is_dangerous_board, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::Card;
 
@@ -108,7 +108,15 @@ impl OpponentTracker {
                 if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
                     probs[c_i] += shifted;
                 }
-            } else if bucket >= 65 && bucket != 73 && !(is_three_flush && bucket < 79) {
+            } else if bucket >= 65
+                && bucket != 73
+                && !(is_three_flush && bucket < 79)
+                && !(round == 4
+                    && (74..=78).contains(&bucket)
+                    && board
+                        .map(|b| detect_board_texture(b).is_paired)
+                        .unwrap_or(false))
+            {
                 /* Trips / Set / Straight / Flush / Full House+: relentless heavy value */
                 let hp_idx = legal_actions.iter().position(|&a| a == RAISE_HALF_POT);
                 let ai_idx = legal_actions.iter().position(|&a| a == ALL_IN);
@@ -214,6 +222,84 @@ impl OpponentTracker {
                         probs[c_i] -= s;
                         probs[t_i] = (probs[t_i] + s).max(0.60);
                     }
+                }
+            }
+        }
+    }
+
+    /* Postflop Heavy-Bet / Multi-Street Barrel Defense
+     * & Unconditional Pot-Commitment Rescue */
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_postflop_barrel_and_pot_commitment_guards(
+        &self,
+        probs: &mut [f64],
+        legal_actions: &[u8],
+        bucket: usize,
+        round: u8,
+        to_call: i32,
+        bb: i32,
+        pot_odds: f64,
+        is_three_flush: bool,
+        never_fold_postflop: bool,
+    ) {
+        let is_preflop = round == 1;
+
+        /* 1. Flop heavy-bet defense:
+         * - Fold bare Bottom Pair / Underpair without draw (28..=32), Pocket Pair under 2+ overcards (34),
+         *   or Weak 2nd/Middle Pair (35) when facing >= ~58% pot bet (pot_odds >= 0.27, to_call >= 3 BB).
+         * - Fold 2nd Pair Good Kicker (36) when facing a Flop overbet (to_call >= 5 BB, pot_odds >= 0.35). */
+        if round == 2 && to_call >= bb * 3 {
+            let should_fold_flop = (((28..=32).contains(&bucket) || bucket == 34 || bucket == 35)
+                && pot_odds >= 0.27)
+                || (bucket == 36 && to_call >= bb * 5 && pot_odds >= 0.35);
+            if should_fold_flop {
+                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                    for p in probs.iter_mut() {
+                        *p = 0.0;
+                    }
+                    probs[f_i] = 1.0;
+                }
+            }
+        }
+
+        /* 2. Turn & River barrel defense:
+         * - Fold Weak / 2nd / 3rd / Bottom Pair without draw ((28..=36).contains(&bucket) && bucket != 33)
+         *   when facing a medium/large Turn or River bet (pot_odds >= 0.24, to_call >= 2 BB).
+         * - On a 3-flush Turn/River (`is_three_flush`), fold bare Top Pair Weak/Mid Kicker without a flush redraw
+         *   (bucket <= 42) when facing a heavy barrel (to_call >= 4 BB, pot_odds >= 0.26). */
+        if round >= 3 && to_call >= bb * 2 {
+            let should_fold_weak_pair = (28..=36).contains(&bucket)
+                && bucket != 33
+                && pot_odds >= 0.24
+                && (round == 4 || pot_odds >= 0.25 || to_call >= bb * 4);
+            let should_fold_three_flush_tp =
+                is_three_flush && bucket <= 42 && to_call >= bb * 4 && pot_odds >= 0.26;
+            if should_fold_weak_pair || should_fold_three_flush_tp {
+                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                    for p in probs.iter_mut() {
+                        *p = 0.0;
+                    }
+                    probs[f_i] = 1.0;
+                }
+            }
+        }
+
+        /* 3. Final Unconditional Pot-Commitment Rescue:
+         * Ensures no intermediate shove/danger guard can force a fold when pot_odds <= 12%
+         * (e.g. 2 chips into 10,940, or 600 chips into 9,400). */
+        if to_call > 0
+            && (pot_odds <= 0.12
+                || (pot_odds <= 0.15 && (is_preflop || bucket >= 15))
+                || never_fold_postflop)
+        {
+            if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                let f_prob = probs[f_i];
+                probs[f_i] = 0.0;
+                if let Some(c_i) = legal_actions
+                    .iter()
+                    .position(|&a| a == CALL_CHECK || a == ALL_IN)
+                {
+                    probs[c_i] = (probs[c_i] + f_prob).max(0.95);
                 }
             }
         }

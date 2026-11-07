@@ -637,3 +637,90 @@ fn test_multiway_6max_state_and_decisions() {
     );
     let _ = Card::new(Rank::Ace, Suit::Spades);
 }
+
+#[test]
+fn test_short_stack_bb_check_and_pot_commitment() {
+    use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+    use lil_poker_mccfr::game::holdem::{Card, RoundHistory};
+    use lil_poker_mccfr::live::decision::decide_action_multiway_context;
+    use std::collections::HashMap;
+
+    let tracker = OpponentTracker::new();
+    let history = [RoundHistory::new(); NUM_ROUNDS];
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let legal_bb = vec![
+        "fold".to_string(),
+        "check".to_string(),
+        "raise".to_string(),
+        "allin".to_string(),
+    ];
+
+    /* 1. Short stack (11 BB, my_chips = 2200, bb = 200) in BB facing a limp (to_call = 0, pot = 400)
+     * with a weak Tier 6 hand (9h 6h) MUST check for a free flop, NOT jam all-in! */
+    let hole_96s = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Six, Suit::Hearts),
+    ];
+    let (act_bb_limp, _) = decide_action_multiway_context(
+        &hole_96s,
+        &[],
+        &legal_bb,
+        0,
+        400,
+        &strategy_map,
+        true,
+        &tracker,
+        &history,
+        1,
+        [200, 200],
+        0,
+        None,
+        None,
+        None,
+        1,
+        200,
+        2200,
+    );
+    assert_eq!(
+        act_bb_limp, "check",
+        "Weak suited connector in BB facing a limp at 11 BB must check, not shove!"
+    );
+
+    /* 2. Postflop Turn with 2 chips remaining (to_call = 2, my_chips = 2, pot = 10940)
+     * must call, NEVER fold! */
+    let hole_k7o = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Clubs),
+    ];
+    let board_turn = vec![
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let legal_call = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
+    let (act_micro_call, _) = decide_action_multiway_context(
+        &hole_k7o,
+        &board_turn,
+        &legal_call,
+        2,
+        10940,
+        &strategy_map,
+        true,
+        &tracker,
+        &history,
+        0,
+        [5469, 5471],
+        2,
+        None,
+        None,
+        None,
+        1,
+        200,
+        2,
+    );
+    assert_ne!(
+        act_micro_call, "fold",
+        "Facing a 2-chip bet into a 10,940 pot must never fold!"
+    );
+}
