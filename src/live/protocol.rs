@@ -133,10 +133,10 @@ pub fn map_action_index_round_bb_chips(
     let raise_min_amt = bb;
     let raise_third_pot_floor = bb;
     let raise_half_pot_floor_dry = bb;
-    let raise_half_pot_floor_wet = (bb * 3 / 2).max(100);
-    let raise_half_pot_floor_turn = (bb * 2).max(150);
-    let raise_half_pot_floor_river = (bb * 5 / 2).max(200);
-    let preflop_open_min_total = (bb * 5 / 2).max(200);
+    let raise_half_pot_floor_wet = (bb * 3 / 2).max(bb);
+    let raise_half_pot_floor_turn = (bb * 2).max(bb);
+    let raise_half_pot_floor_river = (bb * 5 / 2).max(bb);
+    let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
 
     match idx as u8 {
         FOLD => {
@@ -206,7 +206,7 @@ pub fn map_action_index_round_bb_chips(
                     if is_unopened_or_limped_pf {
                         (bb * 3).max(preflop_open_min_total)
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop 3-bet / 4-bet (b1.md Item A): 3.0x opponent's bet */
+                        /* Preflop 3-bet / 4-bet: 3.0x opponent's bet */
                         (opp_bet_pf * 3).max(min_raise)
                     } else {
                         let s = (pot / 3).max(raise_third_pot_floor);
@@ -221,7 +221,7 @@ pub fn map_action_index_round_bb_chips(
                     if is_unopened_or_limped_pf {
                         (bb * 7 / 2).max(preflop_open_min_total)
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop large 3-bet / 4-bet (b1.md Item A): 3.5x to pot-sized 3-bet */
+                        /* Preflop large 3-bet / 4-bet: 3.5x to pot-sized 3-bet */
                         (opp_bet_pf + pot).max(opp_bet_pf * 7 / 2).max(min_raise)
                     } else {
                         let s = if round == 4 {
@@ -247,7 +247,7 @@ pub fn map_action_index_round_bb_chips(
                         /* Preflop initial open-raise (HU SB or Multi-way UTG/MP/CO/BTN) or BB ISO vs limp: 2.5x BB */
                         preflop_open_min_total
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop small/value 3-bet (b1.md Item A): 2.75x opponent's bet (or min_raise) */
+                        /* Preflop small/value 3-bet: 2.75x opponent's bet (or min_raise) */
                         (opp_bet_pf * 11 / 4).max(min_raise)
                     } else if round == 1 {
                         (base_bet + raise_min_amt).max(min_raise)
@@ -260,8 +260,12 @@ pub fn map_action_index_round_bb_chips(
                     }
                 }
             };
-            if round == 1 && my_chips > 0 && to_call > 0 && amt * 20 >= my_chips * 7 {
-                /* If a preflop 3-bet/4-bet commits >= 35% of remaining stack (b1.md Item A, Hand 5), jam all-in! */
+            if round == 1
+                && my_chips > 0
+                && to_call > 0
+                && (amt * 20 >= my_chips * 11 || my_chips - amt <= bb * 3)
+            {
+                /* If a preflop 3-bet/4-bet commits >= 55% of remaining stack or leaves <= 3 BB behind, jam all-in! */
                 if has("all_in") {
                     return Some(("all_in".to_string(), 0));
                 } else if has("allin") {
@@ -346,9 +350,10 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
         return ALL_IN;
     }
 
-    let s_min = RAISE_MIN_AMT;
-    let s_third = (pot / 3).max(RAISE_THIRD_POT_FLOOR);
-    let s_half = (pot / 2).max(RAISE_HALF_POT_FLOOR_DRY);
+    let eff_bb = (allin_threshold / 35).max(1);
+    let s_min = eff_bb;
+    let s_third = (pot / 3).max(eff_bb);
+    let s_half = (pot / 2).max(eff_bb);
 
     if bet_amt <= s_min {
         return RAISE_MIN;
@@ -369,11 +374,11 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
             RAISE_HALF_POT
         }
     } else {
-        let s_overbet = (pot * 3 / 2).max(s_half + 100);
+        let s_overbet = (pot * 3 / 2).max(s_half + eff_bb);
         if bet_amt <= s_overbet {
             RAISE_HALF_POT
         } else {
-            let s_cap = allin_threshold.max(s_overbet + 100);
+            let s_cap = allin_threshold.max(s_overbet + eff_bb);
             let p_half = pseudo_harmonic_prob(bet_amt, s_overbet, s_cap, pot);
             if rng.gen::<f64>() <= p_half {
                 RAISE_HALF_POT

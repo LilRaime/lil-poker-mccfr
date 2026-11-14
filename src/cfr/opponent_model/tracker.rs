@@ -61,6 +61,10 @@ pub struct OpponentTracker {
     pub hand_vpip_recorded: bool,
     pub hand_pfr_recorded: bool,
     pub hand_saw_flop_recorded: bool,
+
+    /* Optional guard ablation filter (reason codes disabled for benchmarking) */
+    #[serde(skip)]
+    pub disabled_guards: Vec<String>,
 }
 
 impl Default for OpponentTracker {
@@ -111,7 +115,27 @@ impl OpponentTracker {
             hand_vpip_recorded: false,
             hand_pfr_recorded: false,
             hand_saw_flop_recorded: false,
+            disabled_guards: Vec::new(),
         }
+    }
+
+    pub fn set_disabled_guards(&mut self, guards: Vec<String>) {
+        self.disabled_guards = guards
+            .into_iter()
+            .map(|g| g.trim().to_ascii_uppercase())
+            .filter(|g| !g.is_empty())
+            .collect();
+    }
+
+    pub fn is_guard_enabled(&self, reason: &str) -> bool {
+        if self.disabled_guards.is_empty() {
+            return true;
+        }
+        let upper = reason.to_ascii_uppercase();
+        !self
+            .disabled_guards
+            .iter()
+            .any(|g| g == "ALL" || g == &upper)
     }
 
     pub fn set_exploit_enabled(&mut self, enabled: bool) {

@@ -42,6 +42,29 @@ impl OpponentReachDistribution {
         strategy_map: Option<&HashMap<String, Vec<f64>>>,
         my_player: Option<usize>,
     ) -> Self {
+        Self::build_with_stats(
+            remaining_deck,
+            board,
+            round,
+            history,
+            strategy_map,
+            my_player,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_stats<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        remaining_deck: &[Card],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        strategy_map: Option<&HashMap<String, Vec<f64>>>,
+        my_player: Option<usize>,
+        opp_vpip: Option<f64>,
+        opp_pfr: Option<f64>,
+    ) -> Self {
         use crate::cfr::abstraction::{detect_draws, preflop_bucket, preflop_strength_tier};
         use crate::game::holdem::evaluate_7cards;
 
@@ -578,6 +601,46 @@ impl OpponentReachDistribution {
 
                 let w: f64 = (pf_weight * flop_weight * turn_weight * river_weight * texture_mult)
                     .max(1e-5f64);
+                /* 5. Observed VPIP / PFR Range Width Adaptation */
+                let tier = preflop_strength_tier(pf_idx);
+                let style_mult = if let Some(vpip) = opp_vpip {
+                    if vpip > 0.60 {
+                        /* Loose opponent: significantly higher weight on speculative / trash tiers 5..=8 */
+                        if tier >= 6 {
+                            1.85
+                        } else if tier == 5 {
+                            1.40
+                        } else {
+                            1.0
+                        }
+                    } else if vpip < 0.26 {
+                        /* Tight/Nit opponent: heavily discount tiers 5..=8 */
+                        if tier >= 6 {
+                            0.18
+                        } else if tier == 5 {
+                            0.40
+                        } else if tier == 4 {
+                            0.75
+                        } else {
+                            1.15
+                        }
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                } * if let Some(pfr) = opp_pfr {
+                    if opp_raised_pf && pfr > 0.42 && tier >= 4 {
+                        1.45
+                    } else if opp_raised_pf && pfr < 0.15 && tier >= 4 {
+                        0.35
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+                let w = (w * style_mult).max(1e-5f64);
                 combos.push(cand);
                 weights.push(w);
                 sum_w += w;

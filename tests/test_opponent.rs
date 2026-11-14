@@ -81,7 +81,7 @@ fn test_select_action_purified_defense() {
 fn test_opponent_tracker_advanced_metrics() {
     let mut tracker = OpponentTracker::new();
 
-    /* Hand 1: Preflop open raise, Flop c-bet faced and folded */
+    /* First sequence: Preflop open raise, Flop c-bet faced and folded */
     tracker.record_action_street(RAISE_MIN, 1, false);
     tracker.record_action_street(FOLD, 2, true); /* fold to c-bet */
     tracker.end_hand();
@@ -93,7 +93,7 @@ fn test_opponent_tracker_advanced_metrics() {
     assert_eq!(tracker.flop_cbet_faced, 1);
     assert_eq!(tracker.flop_fold_to_cbet, 1);
 
-    /* Hand 2: Preflop limp/call, Flop call c-bet, Showdown reached */
+    /* Second sequence: Preflop limp/call, Flop call c-bet, Showdown reached */
     tracker.record_action_street(CALL_CHECK, 1, false);
     tracker.record_action_street(CALL_CHECK, 2, true); /* call c-bet */
     tracker.record_action_street(CALL_CHECK, 3, false);
@@ -1017,5 +1017,282 @@ fn test_postflop_barrel_and_deep_shove_defense() {
     assert_ne!(
         act_committed_turn, FOLD,
         "Calling 600 into 9400 (6% pot odds) with overpair must never fold!"
+    );
+}
+
+#[test]
+fn test_3bet_4bet_defense_and_monotone_board_guards() {
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..12 {
+        maniac.record_preflop_positional(true, true, false);
+        maniac.record_action_street_detailed(ALL_IN, 1, true, 4000, 300);
+        maniac.end_hand();
+    }
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(2027);
+    let legal_full = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let legal_shove = [FOLD, CALL_CHECK, ALL_IN];
+
+    /* 1. Small pocket pair 55 (bucket 10, Tier 4) facing a preflop 3-bet (to_call = 500, pot = 1500, bb = 200)
+     * must flat call (or fold), NEVER 4-bet raise or 4-bet jam even if opponent has a high SB limp ratio! */
+    let raise_heavy = [0.05, 0.25, 0.20, 0.20, 0.15, 0.15];
+    let act_55_vs_3bet = maniac.select_action_purified_context_full(
+        &raise_heavy,
+        &legal_full,
+        10, /* 55 */
+        1,
+        500,
+        1500,
+        None,
+        None,
+        1,
+        200,
+        &mut rng,
+    );
+    assert!(
+        act_55_vs_3bet < RAISE_MIN,
+        "Pocket 55 facing a preflop 3-bet must not 4-bet bluff or jam, got {}",
+        act_55_vs_3bet
+    );
+
+    /* 2. Suited Ace A8s (bucket 34, Tier 3) facing a 32 BB preflop shove (6400 into 6800, bb = 200)
+     * must FOLD even against a known maniac! */
+    let call_heavy = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+    let act_a8s_shove = maniac.select_action_purified_context_full(
+        &call_heavy,
+        &legal_shove,
+        34, /* A8s */
+        1,
+        6400,
+        6800,
+        None,
+        None,
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_a8s_shove, FOLD,
+        "Suited A8s must fold to a 32 BB preflop shove even against an aggressive opponent!"
+    );
+
+    /* 3. Suited one-gapper 97s (bucket 51, Tier 5) facing a 13.3 BB preflop shove (2663 into 3063, bb = 200)
+     * must FOLD even against a known maniac! */
+    let act_97s_shove = maniac.select_action_purified_context_full(
+        &call_heavy,
+        &legal_shove,
+        51, /* 97s */
+        1,
+        2663,
+        3063,
+        None,
+        None,
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_97s_shove, FOLD,
+        "Suited 97s must fold to a 13.3 BB preflop shove!"
+    );
+
+    /* 4. Non-flush OESD (bucket 16) on a monotone 3-club Flop (Jc 9c 2c) facing a half-pot bet (400 into 800) must FOLD! */
+    let tracker = OpponentTracker::new();
+    let board_monotone_flop = [
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let act_oesd_monotone = tracker.select_action_purified_context_full(
+        &call_heavy,
+        &legal_full,
+        16, /* Non-flush OESD */
+        2,
+        400,
+        800,
+        None,
+        Some(&board_monotone_flop),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_oesd_monotone, FOLD,
+        "Non-flush OESD on a monotone 3-flush flop must fold to a half-pot bet!"
+    );
+
+    /* 5. Bare Top Pair Good Kicker (bucket 46) on Flop facing a half-pot donk-bet (500 into 1000)
+     * must flat call rather than raising! */
+    let board_dry_flop = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let act_tp_flop = tracker.select_action_purified_context_full(
+        &raise_heavy,
+        &legal_full,
+        46, /* Top Pair Good Kicker */
+        2,
+        500,
+        1000,
+        None,
+        Some(&board_dry_flop),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_tp_flop, CALL_CHECK,
+        "Bare Top Pair facing a half-pot flop bet must flat-call rather than raise!"
+    );
+
+    /* 6. Weak Trips (bucket 65) on a paired River board (4d 8c 6h 2d 6s) facing a 48 BB river shove
+     * (9562 into 13124, bb = 200) must FOLD! */
+    let board_paired_river = [
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Spades),
+    ];
+    let act_weak_trips_river = tracker.select_action_purified_context_full(
+        &call_heavy,
+        &legal_shove,
+        65, /* Weak Trips */
+        4,
+        9562,
+        13124,
+        None,
+        Some(&board_paired_river),
+        1,
+        200,
+        &mut rng,
+    );
+    assert_eq!(
+        act_weak_trips_river, FOLD,
+        "Weak trips on a paired river board must fold to a 48 BB river shove!"
+    );
+}
+
+#[test]
+fn test_priority_tier_ordering_and_decision_trace_reasons() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::ALL_52_CARDS;
+
+    /* 1. Verify Priority Tier 2/3 hard caps override Priority Tier 1 passive-station boosts */
+    let mut station = OpponentTracker::new();
+    for _ in 0..15 {
+        station.record_action_street(CALL_CHECK, 1, false);
+        station.record_action_street(CALL_CHECK, 2, false);
+        station.end_hand();
+    }
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(999);
+    let legal_no_fold = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let passive_probs = [0.0, 0.85, 0.05, 0.05, 0.05, 0.0];
+
+    /* Straight (bucket 76) on a paired 3-flush river against a calling station:
+     * Priority Tier 1 boosts value sizing, but Priority Tier 2 must still block ALL_IN and RAISE_HALF_POT! */
+    let board_paired_flush = [
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Hearts),
+    ];
+    let (act, trace) = station.select_action_purified_traced(
+        &passive_probs,
+        &legal_no_fold,
+        76,
+        4,
+        0,
+        2000,
+        None,
+        Some(&board_paired_flush),
+        1,
+        200,
+        &mut rng,
+    );
+    assert!(
+        act != ALL_IN && act != RAISE_HALF_POT,
+        "Priority Tier 2 paired/flush river cap must override Priority Tier 1 passive-station boost, got {}",
+        act
+    );
+    assert!(
+        trace.guard_reasons.contains(&"PASSIVE_STATION_BOOST")
+            && trace
+                .guard_reasons
+                .contains(&"POST_PAIRED_FLUSH_STRAIGHT_CAP"),
+        "DecisionTrace must record both Tier 1 and Tier 2 guard reasons: {:?}",
+        trace.guard_reasons
+    );
+
+    /* 2. Verify VPIP-adapted Bayesian range narrowing in OpponentReachDistribution */
+    let board_flop = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let hole_bot = [
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Diamonds),
+    ];
+    let remaining_deck: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|c| !board_flop.contains(c) && !hole_bot.contains(c))
+        .collect();
+    let history = [vec![RAISE_HALF_POT, CALL_CHECK], vec![], vec![], vec![]];
+
+    let dist_nit = OpponentReachDistribution::build_with_stats(
+        &remaining_deck,
+        &board_flop,
+        2,
+        &history,
+        None,
+        Some(0),
+        Some(0.15),
+        Some(0.12),
+    );
+    let dist_loose = OpponentReachDistribution::build_with_stats(
+        &remaining_deck,
+        &board_flop,
+        2,
+        &history,
+        None,
+        Some(0),
+        Some(0.75),
+        Some(0.10),
+    );
+
+    /* Trash hand 72o should have higher normalized probability in a 75% VPIP range than in a 15% VPIP nit range */
+    let c7h = Card::new(Rank::Seven, Suit::Hearts);
+    let c2d = Card::new(Rank::Two, Suit::Diamonds);
+    let find_prob = |dist: &OpponentReachDistribution| -> f64 {
+        dist.combos
+            .iter()
+            .zip(dist.weights.iter())
+            .find(|(c, _)| (c[0] == c7h && c[1] == c2d) || (c[0] == c2d && c[1] == c7h))
+            .map(|(_, &w)| w / dist.total_weight.max(1e-12))
+            .unwrap_or(0.0)
+    };
+    let p_nit = find_prob(&dist_nit);
+    let p_loose = find_prob(&dist_loose);
+    assert!(
+        p_loose > p_nit,
+        "Loose VPIP opponent must assign higher relative reach probability to weak offsuit combos ({:.6} vs {:.6})",
+        p_loose,
+        p_nit
     );
 }

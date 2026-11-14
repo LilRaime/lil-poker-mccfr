@@ -201,6 +201,37 @@ impl SubgameSolver {
         ctx: &mut SubgameContext,
         strategy_map: Option<&HashMap<String, Vec<f64>>>,
     ) -> Vec<f64> {
+        self.solve_with_stats(
+            hole,
+            board,
+            round,
+            history,
+            my_player,
+            contributions,
+            raises_this_round,
+            ctx,
+            strategy_map,
+            None,
+            None,
+        )
+    }
+
+    /* Solves subgame with explicit blueprint-informed and VPIP/PFR-adapted opponent reach ranges */
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_with_stats<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+        &self,
+        hole: &[Card; 2],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        my_player: usize,
+        contributions: [i32; 2],
+        raises_this_round: u8,
+        ctx: &mut SubgameContext,
+        strategy_map: Option<&HashMap<String, Vec<f64>>>,
+        opp_vpip: Option<f64>,
+        opp_pfr: Option<f64>,
+    ) -> Vec<f64> {
         use rand::Rng;
 
         ctx.clear();
@@ -240,13 +271,15 @@ impl SubgameSolver {
         let effective_iterations = self.compute_budget(round, contributions, my_player);
 
         /* Construct explicit Bayesian reach range distribution across all remaining combos */
-        let reach_dist = OpponentReachDistribution::build_detailed(
+        let reach_dist = OpponentReachDistribution::build_with_stats(
             &remaining_deck,
             board,
             round,
             history,
             strategy_map,
             Some(my_player),
+            opp_vpip,
+            opp_pfr,
         );
 
         /* Construct Hero's own Bayesian reach distribution for Range-vs-Range Continual Resolving */

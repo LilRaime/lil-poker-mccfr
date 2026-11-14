@@ -723,3 +723,139 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
         bucket_kk
     );
 }
+
+#[test]
+fn test_range_equity_and_nash_short_stack_thresholds() {
+    use lil_poker_mccfr::cfr::abstraction::{
+        calculate_range_equity, nash_call_shove_max_bb, nash_open_push_max_bb, preflop_bucket,
+    };
+
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. Range-aware equity: Top pair on dry river has higher equity vs loose VPIP than vs tight range facing heavy bet */
+    let hole_tp = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Jack, Suit::Diamonds),
+    ];
+    let board_river = [
+        card(Rank::Ace, Suit::Clubs),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Four, Suit::Spades),
+        card(Rank::Two, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+    ];
+    let eq_vs_loose = calculate_range_equity(&hole_tp, &board_river, 0.70, false, 1);
+    let eq_vs_tight_bet = calculate_range_equity(&hole_tp, &board_river, 0.20, true, 1);
+    assert!(
+        eq_vs_loose > eq_vs_tight_bet,
+        "Equity against wide passive range ({:.3}) must exceed equity against tight aggressive range ({:.3})",
+        eq_vs_loose,
+        eq_vs_tight_bet
+    );
+
+    /* Multi-way equity discount must reduce expected equity compared to heads-up */
+    let eq_multiway = calculate_range_equity(&hole_tp, &board_river, 0.50, false, 3);
+    assert!(
+        eq_multiway < eq_vs_loose,
+        "Multi-way equity ({:.3}) must be lower than heads-up equity ({:.3})",
+        eq_multiway,
+        eq_vs_loose
+    );
+
+    /* 2. Nash short-stack push/fold thresholds */
+    let (aa_idx, _) = preflop_bucket(card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts));
+    let (a5s_idx, _) = preflop_bucket(
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Five, Suit::Spades),
+    );
+    let (trash_idx, _) = preflop_bucket(
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Two, Suit::Hearts),
+    );
+
+    assert!(nash_open_push_max_bb(aa_idx, 1) >= 15);
+    assert!(nash_open_push_max_bb(a5s_idx, 1) >= 12);
+    assert_eq!(nash_open_push_max_bb(trash_idx, 1), 0);
+
+    assert!(nash_call_shove_max_bb(aa_idx, 1, false) >= 50);
+    assert!(
+        nash_call_shove_max_bb(a5s_idx, 1, true) > nash_call_shove_max_bb(a5s_idx, 1, false),
+        "Maniac adjustment must widen short-stack shove calling threshold"
+    );
+    assert_eq!(nash_call_shove_max_bb(trash_idx, 1, true), 2);
+}
+
+#[test]
+fn test_backdoor_draws_and_trips_vs_set_bucket_separation() {
+    let card = |rank, suit| Card { rank, suit };
+
+    /* 1. Flop Nut Backdoor Flush Draw + Overcard (Ah Td on Qs 7h 2h):
+     * Must land in weak draw buckets (11..=14) on the Flop, and drop to High Card (<= 10) on the Turn if bricked */
+    let hole_bdfd = [
+        card(Rank::Ace, Suit::Hearts),
+        card(Rank::Ten, Suit::Diamonds),
+    ];
+    let board_flop = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Seven, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+    ];
+    let b_flop = postflop_equity_bucket(&hole_bdfd, &board_flop);
+    assert!(
+        (11..=14).contains(&b_flop),
+        "Flop Nut Backdoor FD + Overcard must be in weak draw range 11..=14, got {}",
+        b_flop
+    );
+
+    let board_turn_brick = [
+        card(Rank::Queen, Suit::Spades),
+        card(Rank::Seven, Suit::Hearts),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Four, Suit::Clubs),
+    ];
+    let b_turn = postflop_equity_bucket(&hole_bdfd, &board_turn_brick);
+    assert!(
+        b_turn <= 10,
+        "Bricked backdoor draw on Turn must revert to High Card (<= 10), got {}",
+        b_turn
+    );
+
+    /* 2. Strict separation between Visible Trips (65..=67) and Disguised Sets (68..=72) */
+    let board_paired = [
+        card(Rank::Nine, Suit::Spades),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Four, Suit::Diamonds),
+    ];
+    let hole_trips_top = [
+        card(Rank::Nine, Suit::Clubs),
+        card(Rank::Ace, Suit::Diamonds),
+    ];
+    let board_unpaired = [
+        card(Rank::King, Suit::Spades),
+        card(Rank::Nine, Suit::Hearts),
+        card(Rank::Four, Suit::Diamonds),
+    ];
+    let hole_low_set = [
+        card(Rank::Four, Suit::Clubs),
+        card(Rank::Four, Suit::Spades),
+    ];
+
+    let b_trips = postflop_equity_bucket(&hole_trips_top, &board_paired);
+    let b_set = postflop_equity_bucket(&hole_low_set, &board_unpaired);
+    assert!(
+        (65..=67).contains(&b_trips),
+        "Visible trips without flush redraw must be in 65..=67, got {}",
+        b_trips
+    );
+    assert!(
+        (68..=72).contains(&b_set),
+        "Disguised pocket-pair set must be in 68..=72, got {}",
+        b_set
+    );
+    assert!(
+        b_set > b_trips,
+        "Disguised low set ({}) must rank strictly higher than visible top-kicker trips ({})",
+        b_set,
+        b_trips
+    );
+}

@@ -182,7 +182,7 @@ fn bucket_straight(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) ->
     let board_trips = rank_counts.iter().any(|&cnt| cnt >= 3);
 
     if board_trips || board_pairs >= 2 {
-        /* On a double-paired or trips board (e.g. 4-3-2-4-2 in Match 2),
+        /* On a double-paired or trips board,
          * full houses and quads crush any straight; straight is merely a bluff-catcher */
         52
     } else if super::texture::is_four_flush_board(board) {
@@ -215,20 +215,22 @@ fn bucket_trips_or_set(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]
     let four_flush_board = super::texture::is_four_flush_board(board);
 
     if is_pocket_pair {
-        /* Disguised Monster Set */
+        /* Disguised Monster Set (strictly 68..=72, never overlapping visible trips 65..=67) */
         if board.len() < 5 && draws.is_flush_draw {
             72 /* Monster Set + Flush Redraw */
         } else if four_flush_board {
             50 /* Set on 4-flush board without flush is a bluff-catcher */
         } else if dangerous_board {
-            69 /* Vulnerable Set on 3-flush / 4-straight board */
+            68 /* Vulnerable Set on 3-flush / 4-straight board */
         } else if trips_rank >= 6 {
-            71 /* Mid/Top Set (88..AA) */
+            71 /* High/Top Set (88..AA) */
+        } else if trips_rank >= 3 {
+            70 /* Mid Set (55..77) */
         } else {
-            70 /* Low Set (22..77) */
+            69 /* Low Set (22..44) */
         }
     } else if hole_hit_trips {
-        /* Visible Trips (player holds one trips card) */
+        /* Visible Trips (player holds one trips card, strictly 65..=67 without flush redraw) */
         let kicker = if hole[0].rank as usize == trips_rank {
             hole[1].rank as usize
         } else {
@@ -241,11 +243,11 @@ fn bucket_trips_or_set(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]
         } else if dangerous_board {
             65 /* Vulnerable Trips on 3-flush / 4-straight board */
         } else if kicker >= 11 {
-            68 /* Trips Top Kicker (Ace, King) */
+            67 /* Trips Top Kicker (Ace, King) */
         } else if kicker >= 7 {
-            67 /* Trips Mid Kicker */
+            66 /* Trips Mid Kicker */
         } else {
-            66 /* Trips Weak Kicker */
+            65 /* Trips Weak Kicker */
         }
     } else {
         /* All three trips cards are on the board; player only has unpaired high card (0..=10) */
@@ -535,11 +537,12 @@ fn bucket_one_pair(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) ->
             if board.len() < 5 && draws.is_flush_draw && !is_four_fl {
                 49 /* Top Pair + Flush Draw */
             } else if board.len() < 5
-                && (draws.is_straight_draw || draws.is_gutshot)
+                && (draws.is_straight_draw || (draws.is_gutshot && !is_vulnerable_texture))
                 && !is_four_st
                 && !is_four_fl
+                && !is_three_fl
             {
-                48 /* Top Pair + Straight/Gutshot Draw */
+                48 /* Top Pair + OESD (or Dry Top Pair + Gutshot) */
             } else if !kicker_plays {
                 39 /* Top Pair with completely counterfeited kicker (e.g. Q3 on T-9-5-4-Q) */
             } else if is_four_fl || is_four_st {
@@ -640,9 +643,47 @@ fn bucket_high_card_or_draw(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> us
     let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
     let overcards = (hole[0].rank as usize > max_board_rank) as usize
         + (hole[1].rank as usize > max_board_rank) as usize;
-    let has_backdoor_fd = board.len() == 3
-        && hole[0].suit == hole[1].suit
-        && board.iter().any(|c| c.suit == hole[0].suit);
+    let (has_backdoor_fd, has_nut_backdoor_fd, has_backdoor_sd) = if board.len() == 3 {
+        let mut bdfd = false;
+        let mut nut_bdfd = false;
+        for s in 0..4u8 {
+            let hole_suit_cnt =
+                (hole[0].suit as u8 == s) as usize + (hole[1].suit as u8 == s) as usize;
+            let board_suit_cnt = board.iter().filter(|c| c.suit as u8 == s).count();
+            if hole_suit_cnt >= 1 && board_suit_cnt <= 2 && hole_suit_cnt + board_suit_cnt == 3 {
+                bdfd = true;
+                let has_ace = (hole[0].suit as u8 == s && hole[0].rank as usize == 12)
+                    || (hole[1].suit as u8 == s && hole[1].rank as usize == 12);
+                let has_king_with_board_ace = ((hole[0].suit as u8 == s
+                    && hole[0].rank as usize == 11)
+                    || (hole[1].suit as u8 == s && hole[1].rank as usize == 11))
+                    && board
+                        .iter()
+                        .any(|c| c.suit as u8 == s && c.rank as usize == 12);
+                if has_ace || has_king_with_board_ace {
+                    nut_bdfd = true;
+                }
+            }
+        }
+        let mut rank_mask = 0u16;
+        let mut hole_mask = 0u16;
+        for c in board {
+            rank_mask |= 1 << (c.rank as usize);
+        }
+        for c in hole {
+            let r = c.rank as usize;
+            rank_mask |= 1 << r;
+            hole_mask |= 1 << r;
+        }
+        let bdsd = (0..=8).any(|start| {
+            let win = (rank_mask >> start) & 0x1F;
+            let h_win = (hole_mask >> start) & 0x1F;
+            win.count_ones() >= 3 && h_win != 0
+        });
+        (bdfd, nut_bdfd, bdsd)
+    } else {
+        (false, false, false)
+    };
 
     if board.len() < 5 {
         let draws = detect_draws_detailed(hole, board);
@@ -679,7 +720,9 @@ fn bucket_high_card_or_draw(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> us
                 15 /* Low/Mid OESD */
             }
         } else if draws.is_gutshot {
-            if overcards == 2 || hole_high >= 11 {
+            if has_backdoor_fd && overcards >= 1 {
+                14 /* Gutshot + Backdoor Flush Draw + Overcard */
+            } else if overcards == 2 || hole_high >= 11 {
                 13 /* Gutshot with Two Overcards */
             } else if overcards == 1 || hole_high >= 9 {
                 12 /* Gutshot with One Overcard */
@@ -688,6 +731,12 @@ fn bucket_high_card_or_draw(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> us
             }
         } else if overcards == 2 && has_backdoor_fd && hole_high >= 11 {
             14 /* Two Broadway Overcards + Backdoor Flush Draw */
+        } else if has_backdoor_fd
+            && (overcards == 2 || (has_nut_backdoor_fd && has_backdoor_sd && overcards >= 1))
+        {
+            12 /* Flop Backdoor Flush Draw + 2 Overcards (or Nut Backdoor FD + Backdoor SD + Overcard) */
+        } else if has_nut_backdoor_fd && (overcards >= 1 || has_backdoor_sd) {
+            11 /* Flop Nut Backdoor Flush Draw + Overcard / Backdoor SD */
         } else {
             /* Pure High Card without draw on Flop/Turn */
             match hole_high {

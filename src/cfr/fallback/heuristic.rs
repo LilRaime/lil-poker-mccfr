@@ -23,7 +23,7 @@ pub fn get_holdem_fallback_strategy(
 ) -> [f64; HOLDEM_NUM_ACTIONS] {
     let raw = if round == 1 {
         let (pf_idx, _) = preflop_bucket(hole[0], hole[1]);
-        preflop_fallback(pf_idx, to_call)
+        preflop_fallback(pf_idx, to_call, pot)
     } else {
         let bucket = postflop_equity_bucket(hole, board);
         postflop_fallback(bucket, round, to_call, pot)
@@ -56,9 +56,19 @@ pub fn get_holdem_fallback_strategy(
 }
 
 /* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers (1..=8) */
-fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
+fn preflop_fallback(idx: usize, to_call: i32, pot: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
     let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
     let tier = preflop_strength_tier(idx);
+    let eff_bb = if pot > 0 && pot < BIG_BLIND + SMALL_BLIND {
+        ((pot - to_call).max(1) * 2 / 3).max(1)
+    } else {
+        BIG_BLIND
+    };
+    let pf_tier1_call_max = eff_bb * 8;
+    let pf_tier2_call_max = eff_bb * 4;
+    let pf_tier3_cheap_call_max = eff_bb * 2;
+    let pf_tier3_fold_boundary = eff_bb * 6;
+    let pf_tier4_call_max = eff_bb * 2;
 
     match tier {
         1 => {
@@ -69,7 +79,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
                 s[RAISE_THIRD_POT as usize] = 0.35;
                 s[RAISE_HALF_POT as usize] = 0.40;
                 s[ALL_IN as usize] = 0.05;
-            } else if to_call <= PF_TIER1_CALL_MAX {
+            } else if to_call <= pf_tier1_call_max {
                 s[CALL_CHECK as usize] = 0.30;
                 s[RAISE_MIN as usize] = 0.15;
                 s[RAISE_THIRD_POT as usize] = 0.20;
@@ -88,7 +98,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
                 s[RAISE_MIN as usize] = 0.25;
                 s[RAISE_THIRD_POT as usize] = 0.35;
                 s[RAISE_HALF_POT as usize] = 0.25;
-            } else if to_call <= PF_TIER2_CALL_MAX {
+            } else if to_call <= pf_tier2_call_max {
                 s[CALL_CHECK as usize] = 0.65;
                 s[RAISE_MIN as usize] = 0.15;
                 s[RAISE_THIRD_POT as usize] = 0.15;
@@ -106,12 +116,12 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
                 s[RAISE_MIN as usize] = 0.25;
                 s[RAISE_THIRD_POT as usize] = 0.25;
                 s[RAISE_HALF_POT as usize] = 0.05;
-            } else if to_call <= PF_TIER3_CHEAP_CALL_MAX {
+            } else if to_call <= pf_tier3_cheap_call_max {
                 s[CALL_CHECK as usize] = 0.70;
                 s[RAISE_MIN as usize] = 0.10;
                 s[RAISE_THIRD_POT as usize] = 0.05;
                 s[FOLD as usize] = 0.15;
-            } else if to_call <= PF_TIER3_FOLD_BOUNDARY {
+            } else if to_call <= pf_tier3_fold_boundary {
                 s[CALL_CHECK as usize] = 0.40;
                 s[FOLD as usize] = 0.60;
             } else {
@@ -125,7 +135,7 @@ fn preflop_fallback(idx: usize, to_call: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
             if to_call == 0 {
                 s[CALL_CHECK as usize] = 0.85;
                 s[RAISE_MIN as usize] = 0.15;
-            } else if to_call <= PF_TIER4_CALL_MAX {
+            } else if to_call <= pf_tier4_call_max {
                 s[CALL_CHECK as usize] = 0.40;
                 s[FOLD as usize] = 0.60;
             } else {
@@ -226,7 +236,7 @@ fn postflop_fallback(
             s[RAISE_HALF_POT as usize] = 0.15;
         }
     } else if round < 4 && (bucket == 33 || bucket == 38) {
-        /* Pair + Strong Draw (Bottom/Middle/Pocket Pair + Flush Draw or OESD: 10-14 outs + pair showdown value, Hand 4: 33 on 2-2-5-4) */
+        /* Pair + Strong Draw (Bottom/Middle/Pocket Pair + Flush Draw or OESD: 10-14 outs + pair showdown value) */
         if to_call == 0 {
             s[CALL_CHECK as usize] = 0.75;
             s[RAISE_THIRD_POT as usize] = 0.20;

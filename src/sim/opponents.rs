@@ -225,6 +225,66 @@ pub fn sample_opponent_action(
                 }
             }
         }
+        "shove_bot" | "push_bot" | "allin_bot" => {
+            if game.round == 1 {
+                let (idx, _) = preflop_bucket(hole[0], hole[1]);
+                let tier = preflop_strength_tier(idx);
+                if tier <= 5 || rng.gen_bool(0.35) {
+                    pick_preferred_action(&legal, &[ALL_IN, RAISE_HALF_POT, RAISE_MIN], rng)
+                } else if opp_to_call == 0 {
+                    CALL_CHECK
+                } else {
+                    H_FOLD
+                }
+            } else {
+                let bucket = postflop_equity_bucket(hole, board);
+                let (has_fd, has_sd) = detect_draws(hole, board);
+                if bucket >= 28 || has_fd || has_sd || rng.gen_bool(0.25) {
+                    pick_preferred_action(&legal, &[ALL_IN, RAISE_HALF_POT, RAISE_MIN], rng)
+                } else if opp_to_call == 0 {
+                    CALL_CHECK
+                } else {
+                    H_FOLD
+                }
+            }
+        }
+        "trapper" | "check_raiser" => {
+            if game.round == 1 {
+                let (idx, _) = preflop_bucket(hole[0], hole[1]);
+                let tier = preflop_strength_tier(idx);
+                if tier <= 3 {
+                    if opp_to_call == 0 {
+                        CALL_CHECK
+                    } else {
+                        pick_preferred_action(&legal, &[CALL_CHECK, RAISE_MIN], rng)
+                    }
+                } else if (tier <= 5 && opp_to_call <= BIG_BLIND * 2) || opp_to_call == 0 {
+                    CALL_CHECK
+                } else {
+                    H_FOLD
+                }
+            } else {
+                let bucket = postflop_equity_bucket(hole, board);
+                let (has_fd, has_sd) = detect_draws(hole, board);
+                if opp_to_call == 0 {
+                    if game.round >= 3 && (bucket >= 40 || (bucket < 20 && rng.gen_bool(0.30))) {
+                        pick_preferred_action(
+                            &legal,
+                            &[RAISE_HALF_POT, ALL_IN, RAISE_THIRD_POT],
+                            rng,
+                        )
+                    } else {
+                        CALL_CHECK
+                    }
+                } else if bucket >= 36 || has_fd || has_sd || rng.gen_bool(0.20) {
+                    pick_preferred_action(&legal, &[RAISE_HALF_POT, ALL_IN, CALL_CHECK], rng)
+                } else if bucket >= 28 && opp_to_call <= BIG_BLIND * 3 {
+                    CALL_CHECK
+                } else {
+                    H_FOLD
+                }
+            }
+        }
         "self" | "model" => {
             if let Some(strat) = opp_strategy {
                 let probs = if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(

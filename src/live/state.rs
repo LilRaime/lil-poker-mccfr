@@ -116,10 +116,13 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
     let mut my_is_sb = false;
     let mut my_is_bb = false;
     let mut opp_is_sb = false;
+    let mut sb_posted_bet = 0i32;
+    let mut bb_posted_bet = 0i32;
     let mut opp_name = String::new();
     let mut active_opps = 0usize;
     let mut total_opps = 0usize;
     let mut best_opp_score = i64::MIN;
+    let mut opp_bets = Vec::new();
 
     if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
         for p in players {
@@ -141,6 +144,12 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
                 .get("is_big_blind")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            if is_sb && p_bet > 0 {
+                sb_posted_bet = p_bet;
+            }
+            if is_bb && p_bet > 0 {
+                bb_posted_bet = p_bet;
+            }
             let p_chips = parse_json_i32(
                 p.get("chips")
                     .or_else(|| p.get("stack"))
@@ -156,6 +165,7 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
                 my_is_bb = is_bb;
             } else {
                 total_opps += 1;
+                opp_bets.push(p_bet);
                 let is_folded = p
                     .get("folded")
                     .or_else(|| p.get("is_folded"))
@@ -217,15 +227,30 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
     let current_bet = max_bet_on_table.max(state_bet);
     let raw_to_call = (current_bet - my_bet).max(0);
     /* Stack-clamp to_call so effective pot odds reflect actual remaining stack (e.g. 452 chips vs 6210 bet)
-     * and subtract uncallable overbet chips from pot (Item F). */
+     * and subtract uncallable overbet chips across ALL opponents from pot without wiping prior pot. */
     let to_call = if my_chips > 0 {
         raw_to_call.min(my_chips)
     } else {
         raw_to_call
     };
     let raw_pot = parse_json_i32(state.get("pot"));
-    let uncallable = raw_to_call.saturating_sub(to_call);
-    let pot = raw_pot.saturating_sub(uncallable).max(0);
+    let single_uncallable = raw_to_call.saturating_sub(to_call);
+    let total_uncallable = if my_chips > 0 {
+        let my_max_street_bet = my_bet + my_chips;
+        let multi_uncallable: i32 = opp_bets
+            .iter()
+            .filter(|&&b| b > my_max_street_bet)
+            .map(|&b| b - my_max_street_bet)
+            .sum();
+        multi_uncallable.max(single_uncallable)
+    } else {
+        single_uncallable
+    };
+    let pot = if raw_pot > total_uncallable + to_call {
+        raw_pot - total_uncallable
+    } else {
+        raw_pot.max(to_call)
+    };
     let phase = state
         .get("phase")
         .and_then(|v| v.as_str())
@@ -258,15 +283,29 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
         .unwrap_or(0);
 
     let big_blind = {
-        let bb = parse_json_i32(state.get("big_blind").or_else(|| state.get("bigBlind")));
+        let bb = parse_json_i32(
+            state
+                .get("big_blind")
+                .or_else(|| state.get("bigBlind"))
+                .or_else(|| state.get("bb"))
+                .or_else(|| state.get("min_bet"))
+                .or_else(|| state.get("minBet")),
+        );
         if bb > 0 {
             bb
+        } else if board.is_empty() && sb_posted_bet > 0 && bb_posted_bet == sb_posted_bet * 2 {
+            bb_posted_bet
         } else {
             BIG_BLIND
         }
     };
     let small_blind = {
-        let sb = parse_json_i32(state.get("small_blind").or_else(|| state.get("smallBlind")));
+        let sb = parse_json_i32(
+            state
+                .get("small_blind")
+                .or_else(|| state.get("smallBlind"))
+                .or_else(|| state.get("sb")),
+        );
         if sb > 0 {
             sb
         } else {

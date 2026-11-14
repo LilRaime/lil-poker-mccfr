@@ -18,7 +18,7 @@ use crate::sim::opponents::sample_opponent_action;
 /* Simulate a single hand to completion */
 #[allow(clippy::too_many_arguments)]
 pub fn simulate_holdem_hand(
-    mut game: TexasHoldemGame,
+    game: TexasHoldemGame,
     my_player: usize,
     strategy: &Option<HoldemStrategy>,
     strategy_index: Option<&StrategyLookupIndex>,
@@ -32,6 +32,41 @@ pub fn simulate_holdem_hand(
     show_logs: bool,
     label: &str,
 ) -> f64 {
+    simulate_holdem_hand_traced(
+        game,
+        my_player,
+        strategy,
+        strategy_index,
+        opp_archetype,
+        opp_strategy,
+        subgame_solver,
+        enable_subgame_search,
+        opp_tracker,
+        rng,
+        delay_ms,
+        show_logs,
+        label,
+    )
+    .0
+}
+
+/* Simulate a single hand to completion and return net chips along with triggered guard reasons */
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_holdem_hand_traced(
+    mut game: TexasHoldemGame,
+    my_player: usize,
+    strategy: &Option<HoldemStrategy>,
+    strategy_index: Option<&StrategyLookupIndex>,
+    opp_archetype: &str,
+    opp_strategy: &Option<HoldemStrategy>,
+    subgame_solver: &SubgameSolver,
+    enable_subgame_search: bool,
+    opp_tracker: &mut OpponentTracker,
+    rng: &mut SmallRng,
+    delay_ms: u64,
+    show_logs: bool,
+    label: &str,
+) -> (f64, Vec<&'static str>) {
     if show_logs {
         println!("\n--- {} ---", label);
     }
@@ -43,6 +78,8 @@ pub fn simulate_holdem_hand(
     let mut step_count = 0;
     let mut cumulative_reward = 0.0f64;
     let mut prev_my_contrib = game.contributions[my_player];
+    let mut hand_guard_reasons: Vec<&'static str> = Vec::new();
+    let mut subgame_ctx = crate::cfr::subgame::SubgameContext::new();
 
     while !game.is_terminal() {
         let cp = game.current_player();
@@ -75,7 +112,17 @@ pub fn simulate_holdem_hand(
             let raw_probs = if enable_subgame_search
                 && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT))
             {
-                subgame_solver.solve_with_state(
+                let obs_vpip = if opp_tracker.total_hands >= 6 {
+                    Some(opp_tracker.vpip_ratio())
+                } else {
+                    None
+                };
+                let obs_pfr = if opp_tracker.total_hands >= 6 {
+                    Some(opp_tracker.pfr_ratio())
+                } else {
+                    None
+                };
+                subgame_solver.solve_with_stats(
                     &game.hole[my_player],
                     &game.board,
                     game.round,
@@ -83,6 +130,10 @@ pub fn simulate_holdem_hand(
                     my_player,
                     game.contributions,
                     game.raises_this_round,
+                    &mut subgame_ctx,
+                    None,
+                    obs_vpip,
+                    obs_pfr,
                 )
             } else if let Some(ref strat) = strategy {
                 if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(
@@ -133,7 +184,7 @@ pub fn simulate_holdem_hand(
             };
 
             /* 3. Sample action with Purification, Opponent Exploitation, and All-in Defense */
-            let act = opp_tracker.select_action_purified_context(
+            let (act, trace) = opp_tracker.select_action_purified_traced(
                 &raw_probs,
                 &legal,
                 current_bucket,
@@ -142,8 +193,15 @@ pub fn simulate_holdem_hand(
                 pot,
                 Some(&game.hole[my_player]),
                 Some(&game.board),
+                1,
+                BIG_BLIND,
                 rng,
             );
+            for r in trace.guard_reasons {
+                if !hand_guard_reasons.contains(&r) {
+                    hand_guard_reasons.push(r);
+                }
+            }
 
             let act_name = match act {
                 H_FOLD => "FOLD",
@@ -188,10 +246,20 @@ pub fn simulate_holdem_hand(
                 break;
             }
             let facing_cbet = game.round == 2 && game.raises_this_round > 0;
+            let prev_opp_contrib = game.contributions[cp];
+            let prev_pot = game.contributions[0] + game.contributions[1];
+            let round_before = game.round;
             let act = sample_opponent_action(opp_archetype, opp_strategy, &game, cp, rng);
-            /* Record opponent action for opponent modeling tracker */
-            opp_tracker.record_action_street(act, game.round, facing_cbet);
             game = game.apply_action(act);
+            let bet_added = (game.contributions[cp] - prev_opp_contrib).max(0);
+            /* Record opponent action with detailed bet sizing for opponent modeling tracker */
+            opp_tracker.record_action_street_detailed(
+                act,
+                round_before,
+                facing_cbet,
+                bet_added,
+                prev_pot,
+            );
         }
     }
 
@@ -244,5 +312,5 @@ pub fn simulate_holdem_hand(
         );
     }
 
-    final_ret
+    (final_ret, hand_guard_reasons)
 }

@@ -265,7 +265,9 @@ impl TexasHoldemGame {
         let round_over = n >= 2 && {
             let last = hist[n - 1];
             let prev = hist[n - 2];
-            (last == CALL_CHECK && prev == CALL_CHECK) || (last == CALL_CHECK && prev >= RAISE_MIN)
+            (last == CALL_CHECK && prev == CALL_CHECK)
+                || (last == CALL_CHECK && prev >= RAISE_MIN)
+                || (last == CALL_CHECK && prev == FOLD)
         };
 
         if round_over {

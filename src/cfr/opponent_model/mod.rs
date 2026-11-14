@@ -8,4 +8,5 @@ pub mod station;
 pub mod tracker;
 
 pub use classifier::*;
+pub use policy::DecisionTrace;
 pub use tracker::*;

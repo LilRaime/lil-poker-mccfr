@@ -33,7 +33,7 @@ impl OpponentTracker {
             let is_offsuit = bucket >= 91;
 
             if pf_tier >= 6 || (pf_tier == 5 && is_offsuit && active_opponents >= 2) {
-                /* Pure trash, steal-tier, or weak offsuit in multi-way pot (Hand G2-1: 6d 3s):
+                /* Pure trash, steal-tier, or weak offsuit in multi-way pot:
                  * never raise and never open-limp; fold to any bet unless priced in from BB (pot_odds <= 0.22)! */
                 let mut removed_raise = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
@@ -189,7 +189,7 @@ impl OpponentTracker {
                 }
             }
 
-            /* 4) Multi-way 4-Flush Board & Cold-Shove Defense (all buckets, Match 6):
+            /* 4) Multi-way 4-Flush Board & Cold-Shove Defense (all buckets):
              *    - On a 4-flush board against multiple opponents, anything weaker than 2nd-Nut Flush (bucket < 82)
              *      must NEVER bet/raise, and must fold to any meaningful bet (>= 4 BB or pot_odds >= 0.18).
              *    - Facing a massive multi-way shove (to_call >= 15 BB and pot_odds > 0.18), require at least

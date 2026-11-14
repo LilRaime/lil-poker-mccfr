@@ -147,6 +147,134 @@ pub fn preflop_strength_tier(idx: usize) -> u8 {
     }
 }
 
+/* Nash-calibrated maximum effective stack (in BB) for open-pushing from SB / late position in an unopened pot */
+pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
+    let tier = preflop_strength_tier(idx);
+    let hu_max = match idx {
+        0..=9 | 13..=28 | 36..=37 | 46 | 91..=95 | 103..=105 | 114 => 15,
+        10..=12
+        | 29..=32
+        | 38..=39
+        | 47..=48
+        | 55..=56
+        | 63..=64
+        | 70
+        | 76
+        | 96..=99
+        | 106
+        | 115
+        | 124
+        | 133 => 12,
+        100..=102 => 10,
+        _ if tier == 6 => 8,
+        _ if tier == 7 && idx < 91 => 4,
+        _ => 0,
+    };
+    if active_opponents <= 1 {
+        hu_max
+    } else {
+        let penalty = ((active_opponents - 1).min(4) as i32) * 3;
+        (hu_max - penalty).max(0)
+    }
+}
+
+/* Nash-calibrated maximum call size (in BB) when facing an all-in preflop shove */
+pub fn nash_call_shove_max_bb(idx: usize, active_opponents: usize, is_maniac: bool) -> i32 {
+    let tier = preflop_strength_tier(idx);
+    match idx {
+        0..=1 => 200,
+        2 | 13 => {
+            if active_opponents <= 1 {
+                100
+            } else {
+                50
+            }
+        }
+        91 => {
+            if is_maniac {
+                60
+            } else if active_opponents <= 1 {
+                39
+            } else {
+                30
+            }
+        }
+        3 | 14 => {
+            if is_maniac {
+                45
+            } else if active_opponents <= 1 {
+                38
+            } else {
+                28
+            }
+        }
+        4..=5 | 15 | 25 | 92 => {
+            if is_maniac {
+                38
+            } else if active_opponents <= 1 {
+                30
+            } else {
+                20
+            }
+        }
+        6..=7 => {
+            if is_maniac {
+                26
+            } else if active_opponents <= 1 {
+                20
+            } else {
+                14
+            }
+        }
+        16..=18 | 21 | 26..=27 | 36 | 93 | 103 => {
+            if is_maniac {
+                20
+            } else if active_opponents <= 1 {
+                15
+            } else {
+                10
+            }
+        }
+        8..=11 => {
+            if is_maniac {
+                18
+            } else if active_opponents <= 1 {
+                13
+            } else {
+                9
+            }
+        }
+        12 | 19..=20 | 22..=24 | 28 | 37 | 46 | 94..=95 | 104..=105 | 114 => {
+            if is_maniac {
+                11
+            } else if active_opponents <= 1 {
+                9
+            } else {
+                6
+            }
+        }
+        _ if tier <= 5 => {
+            if is_maniac {
+                9
+            } else if active_opponents <= 1 {
+                6
+            } else {
+                4
+            }
+        }
+        _ if tier == 6 => {
+            if is_maniac {
+                5
+            } else if active_opponents <= 1 {
+                3
+            } else {
+                2
+            }
+        }
+        _ => 2,
+    }
+}
+
 /* Inverse lookup: canonical preflop hand name ("AA", "AKs", "72o") -> bucket index (0..168). */
 pub fn preflop_bucket_from_name(name: &str) -> Option<usize> {
     use crate::game::holdem::Suit;

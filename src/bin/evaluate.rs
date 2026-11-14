@@ -46,6 +46,14 @@ struct Args {
     #[arg(long, default_value_t = 0.70)]
     exploit_factor: f64,
 
+    /* Optional deterministic RNG seed for reproducible benchmarks */
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /* Optional comma-separated list of guard reason codes to disable (for ablation) */
+    #[arg(long)]
+    disable_guard: Option<String>,
+
     /* Show detailed strategy profile table for key infosets */
     #[arg(short, long)]
     verbose: bool,
@@ -69,10 +77,10 @@ fn main() {
 
     if is_holdem {
         let strategy_path = args.strategy.unwrap_or_else(|| {
-            if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
-                "models/holdem_strategy_distilled.bin".to_string()
-            } else if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
+            if std::path::Path::new("models/holdem_abstract_strategy.bin").exists() {
                 "models/holdem_abstract_strategy.bin".to_string()
+            } else if std::path::Path::new("models/holdem_strategy_distilled.bin").exists() {
+                "models/holdem_strategy_distilled.bin".to_string()
             } else if std::path::Path::new("models/holdem_strategy.json").exists() {
                 "models/holdem_strategy.json".to_string()
             } else {
@@ -103,9 +111,64 @@ fn main() {
             if args.subgame { "Enabled" } else { "Disabled" }
         );
         println!("Exploitation Factor   : {:.2}", args.exploit_factor);
+        if let Some(s) = args.seed {
+            println!("Deterministic Seed    : {}", s);
+        }
+        let disabled_guards: Vec<String> = args
+            .disable_guard
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !disabled_guards.is_empty() {
+            println!("Disabled Guards       : {:?}", disabled_guards);
+        }
         println!("============================================================\n");
 
-        let _res = lil_poker_mccfr::sim::run_holdem_benchmark(
+        if args.opponent.eq_ignore_ascii_case("ablate")
+            || args.opponent.eq_ignore_ascii_case("ablation")
+        {
+            lil_poker_mccfr::sim::run_holdem_ablation_benchmark(
+                &strategy_path,
+                hands,
+                args.subgame,
+                args.exploit_factor,
+                args.seed,
+            );
+            return;
+        }
+
+        if args.opponent.eq_ignore_ascii_case("multiway")
+            || args.opponent.eq_ignore_ascii_case("6max")
+        {
+            let _ = lil_poker_mccfr::sim::run_holdem_multiway_benchmark(
+                &strategy_path,
+                hands,
+                args.subgame,
+                args.exploit_factor,
+                args.seed,
+            );
+            return;
+        }
+
+        if args.opponent.eq_ignore_ascii_case("gauntlet")
+            || args.opponent.eq_ignore_ascii_case("all")
+        {
+            let _ = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_seeded(
+                &strategy_path,
+                hands,
+                args.subgame,
+                args.exploit_factor,
+                args.seed.or(Some(2026)),
+                &disabled_guards,
+                false,
+            );
+            return;
+        }
+
+        let _res = lil_poker_mccfr::sim::run_holdem_benchmark_seeded(
             &strategy_path,
             hands,
             0,
@@ -116,6 +179,8 @@ fn main() {
             args.duplicate,
             args.exploit_factor,
             false,
+            args.seed,
+            &disabled_guards,
         );
         return;
     }

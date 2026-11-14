@@ -14,6 +14,7 @@ pub struct LiveRoundTracker {
     pub live_history: [RoundHistory; NUM_ROUNDS],
     pub last_opp_bet: i32,
     pub estimated_my_chips: i32,
+    pub last_big_blind: i32,
 }
 
 impl Default for LiveRoundTracker {
@@ -30,6 +31,7 @@ impl LiveRoundTracker {
             live_history: [RoundHistory::new(); NUM_ROUNDS],
             last_opp_bet: 0,
             estimated_my_chips: STACK_SIZE,
+            last_big_blind: BIG_BLIND,
         }
     }
 
@@ -111,12 +113,21 @@ impl LiveRoundTracker {
         let round_idx = self.current_round_idx;
         let hist = &mut self.live_history[round_idx];
         let mut rng = rand::thread_rng();
+        let bb = if snapshot.big_blind > 0 {
+            snapshot.big_blind
+        } else if self.last_big_blind > 0 {
+            self.last_big_blind
+        } else {
+            BIG_BLIND
+        };
+        self.last_big_blind = bb;
+        let scaled_allin_thresh = (bb * 35).max(1);
         let eff_allin_thresh = if snapshot.opp_chips == 0 && snapshot.opp_bet > 0 {
             snapshot.opp_bet
         } else {
-            ALLIN_BET_THRESHOLD
+            scaled_allin_thresh
         };
-        let eff_limp_thresh = snapshot.big_blind.max(LIMP_THRESHOLD);
+        let eff_limp_thresh = (bb * 2).max(1);
 
         if hist.is_empty() {
             if round_idx == 0 {
@@ -212,7 +223,12 @@ impl LiveRoundTracker {
 
     pub fn compute_engine_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
         let num_players = (snapshot.active_opponents + 1).max(2);
-        let my_contrib = ((snapshot.pot - snapshot.to_call) / num_players as i32).max(SMALL_BLIND);
+        let sb_floor = if snapshot.small_blind > 0 {
+            snapshot.small_blind
+        } else {
+            (snapshot.big_blind.max(1) / 2).max(1)
+        };
+        let my_contrib = ((snapshot.pot - snapshot.to_call) / num_players as i32).max(sb_floor);
         let opp_contrib = my_contrib + snapshot.to_call;
         let engine_contributions = if snapshot.my_player == 0 {
             [my_contrib, opp_contrib]
@@ -242,10 +258,20 @@ impl LiveRoundTracker {
         } else {
             snapshot.my_chips
         };
-        let eff_total = (my_c + eff_rem).max(opp_c).max(BIG_BLIND * 2);
+        let max_c = my_c.max(opp_c);
+        let eff_total = (max_c + eff_rem.saturating_sub(opp_c.saturating_sub(my_c)))
+            .max(max_c)
+            .max(BIG_BLIND * 2);
         let scale = STACK_SIZE as f64 / eff_total as f64;
-        let scaled_my = ((my_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
-        let scaled_opp = ((opp_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
+        let mut scaled_my = ((my_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
+        let mut scaled_opp = ((opp_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
+        if opp_c > my_c && scaled_opp <= scaled_my {
+            if scaled_opp < STACK_SIZE {
+                scaled_opp = scaled_my + 1;
+            } else {
+                scaled_my = (STACK_SIZE - 1).max(SMALL_BLIND);
+            }
+        }
         let scaled = if snapshot.my_player == 0 {
             [scaled_my, scaled_opp]
         } else {
@@ -255,14 +281,25 @@ impl LiveRoundTracker {
     }
 
     pub fn record_bot_action(&mut self, chosen_action: &str, amount: i32, pot: i32) {
+        let bb = if self.last_big_blind > 0 {
+            self.last_big_blind
+        } else {
+            BIG_BLIND
+        };
+        let sb = (bb / 2).max(1);
+        let allin_thresh = (bb * 35).max(1);
+        let open_min_total = (bb * 5 / 2).max(bb * 2);
         let bot_act = match chosen_action {
             "fold" => FOLD,
             "check" | "call" => CALL_CHECK,
             "raise" | "bet" => {
-                if amount >= ALLIN_BET_THRESHOLD {
+                if amount > 0 && self.estimated_my_chips > amount {
+                    self.estimated_my_chips -= amount;
+                }
+                if amount >= allin_thresh {
                     ALL_IN
                 } else if self.current_round_idx == 0 {
-                    if amount == PREFLOP_OPEN_MIN_TOTAL && pot <= SMALL_BLIND + BIG_BLIND {
+                    if amount == open_min_total && pot <= sb + bb {
                         RAISE_MIN
                     } else if amount >= pot / 2 {
                         RAISE_HALF_POT
@@ -272,8 +309,8 @@ impl LiveRoundTracker {
                         RAISE_MIN
                     }
                 } else {
-                    let half_thresh = (pot / 2).max(RAISE_HALF_POT_FLOOR_DRY);
-                    let third_thresh = (pot / 3).max(RAISE_THIRD_POT_FLOOR);
+                    let half_thresh = (pot / 2).max(bb);
+                    let third_thresh = (pot / 3).max(bb);
                     if amount >= half_thresh {
                         RAISE_HALF_POT
                     } else if amount >= third_thresh {

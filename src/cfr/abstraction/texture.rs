@@ -182,7 +182,7 @@ pub fn is_dangerous_board(board: &[Card]) -> bool {
         return true;
     }
     /* Coordinated paired board: paired board that also has 3 ranks within a 4-card straight span
-     * (e.g. 5c 8s 4h 3h 4s in Match 2 where 3-4-5 + paired 4s creates high trips/straight danger) */
+     * (where connected ranks + board pair create high trips/straight/full-house danger) */
     if board.len() >= 4 {
         let mut r_freq = [0u8; 13];
         for &c in board {

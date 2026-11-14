@@ -382,6 +382,9 @@ impl RoundHistory {
         if (self.len as usize) < MAX_ROUND_ACTIONS {
             self.actions[self.len as usize] = action;
             self.len += 1;
+        } else if MAX_ROUND_ACTIONS > 0 {
+            self.actions.copy_within(1..MAX_ROUND_ACTIONS, 0);
+            self.actions[MAX_ROUND_ACTIONS - 1] = action;
         }
     }
 

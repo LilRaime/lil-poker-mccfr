@@ -379,8 +379,7 @@ fn test_bot_value_bets_straight_in_live_game() {
     use lil_poker_mccfr::live::state::derive_legal_actions;
     use std::collections::HashMap;
 
-    /* Recreate exact hand from user screenshot:
-     * Bot holds [10s, 8d], Board on Turn is [Qd, 10c, Js, 9d] -> Straight, Queen High! */
+    /* Bot holds [10s, 8d], Board on Turn is [Qd, 10c, Js, 9d] -> Straight, Queen High! */
     let hole = [
         Card::new(Rank::Ten, Suit::Spades),
         Card::new(Rank::Eight, Suit::Diamonds),
@@ -722,5 +721,113 @@ fn test_short_stack_bb_check_and_pot_commitment() {
     assert_ne!(
         act_micro_call, "fold",
         "Facing a 2-chip bet into a 10,940 pot must never fold!"
+    );
+}
+
+#[test]
+fn test_uncallable_overbet_pot_preservation_and_bb_defense() {
+    use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+    use lil_poker_mccfr::game::holdem::{Card, RoundHistory};
+    use lil_poker_mccfr::live::decision::decide_action_multiway_context;
+    use lil_poker_mccfr::live::state::parse_live_state;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    /* 1. When server pot does not yet include an opponent's massive overbet jam (e.g. pot = 9112, opp bet = 10887, hero chips = 1),
+     * parse_live_state must NOT wipe snapshot.pot to 0 via saturating_sub! */
+    let overbet_json = json!({
+        "type": "state",
+        "hand": 10,
+        "round": "flop",
+        "pot": 9112,
+        "current_bet": 10887,
+        "big_blind": 200,
+        "active_player_id": "hero_bot",
+        "board": ["Ks", "Kd", "6s"],
+        "players": [
+            { "id": "hero_bot", "name": "hero_bot", "chips": 1, "bet": 0, "folded": false, "all_in": false, "hole": ["9d", "7c"] },
+            { "id": "villain", "name": "villain", "chips": 0, "bet": 10887, "folded": false, "all_in": true }
+        ]
+    });
+    let snap = parse_live_state(&overbet_json, "hero_bot").expect("must parse state");
+    assert_eq!(snap.to_call, 1);
+    assert_eq!(
+        snap.pot, 9112,
+        "Pot must not be wiped to zero when uncallable overbet exceeds raw pot"
+    );
+
+    let tracker = OpponentTracker::new();
+    let history = [RoundHistory::new(); NUM_ROUNDS];
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let hole_97o = [
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+    ];
+    let board_kk6 = vec![
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Spades),
+    ];
+    let legal_call = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
+    let (act_one_chip, _) = decide_action_multiway_context(
+        &hole_97o,
+        &board_kk6,
+        &legal_call,
+        snap.to_call,
+        snap.pot,
+        &strategy_map,
+        true,
+        &tracker,
+        &history,
+        0,
+        [4556, 4557],
+        0,
+        None,
+        None,
+        None,
+        1,
+        200,
+        snap.my_chips,
+    );
+    assert_ne!(
+        act_one_chip, "fold",
+        "Must never fold for 1 chip into a 9,112 pot!"
+    );
+
+    /* 2. In BB at ~10 BB (my_chips = 1950, bb = 200) facing a 2x min-raise (to_call = 200, pot = 600)
+     * with offsuit Ace-rag (A4o, Tier 4), bot should flat call to see the flop rather than open-jamming all-in! */
+    let hole_a4o = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let legal_pf = vec![
+        "fold".to_string(),
+        "call".to_string(),
+        "raise".to_string(),
+        "allin".to_string(),
+    ];
+    let (act_bb_defend, _) = decide_action_multiway_context(
+        &hole_a4o,
+        &[],
+        &legal_pf,
+        200,
+        600,
+        &strategy_map,
+        true,
+        &tracker,
+        &history,
+        1,
+        [200, 400],
+        0,
+        None,
+        None,
+        None,
+        1,
+        200,
+        1950,
+    );
+    assert_eq!(
+        act_bb_defend, "call",
+        "In BB at ~10 BB facing a 2x min-raise with A4o, bot should flat-call rather than jam all-in"
     );
 }

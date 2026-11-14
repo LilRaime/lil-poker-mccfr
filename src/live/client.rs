@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use super::decision::decide_action_multiway_context;
+use super::decision::decide_action_traced;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{parse_live_state, process_showdown, LiveRoundTracker};
 use crate::cfr::opponent_model::OpponentTracker;
@@ -348,9 +348,9 @@ pub async fn run_live_bot(
             round_tracker.estimated_my_chips
         };
 
-        let (chosen_action, raw_amount) = tokio::task::spawn_blocking(move || {
+        let (chosen_action, raw_amount, trace) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
-            decide_action_multiway_context(
+            decide_action_traced(
                 &hole,
                 &board_cards_clone,
                 &legal_actions,
@@ -400,21 +400,25 @@ pub async fn run_live_bot(
             } else {
                 None
             };
-            /* Postflop Air Stack-Risk Guard (b1.md Item B, Hand 5):
+            /* Postflop Air Stack-Risk Guard:
              * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11). */
             if let Some(b_idx) = post_bucket {
                 if b_idx < 11 && bet_add * 20 >= eff_chips * 7 {
                     if snapshot.to_call == 0 {
                         ("check".to_string(), 0)
+                    } else if snapshot.to_call <= snapshot.big_blind
+                        || snapshot.to_call * 6 <= snapshot.pot
+                        || eff_chips <= snapshot.big_blind
+                    {
+                        ("call".to_string(), 0)
                     } else {
                         ("fold".to_string(), 0)
                     }
                 } else {
                     let strong_postflop = b_idx >= 40 || (19..=27).contains(&b_idx);
-                    let commits_stack = remaining_behind > 0
-                        && (remaining_behind * 4 <= new_pot
-                            || remaining_behind <= snapshot.big_blind * 3
-                            || (strong_postflop && remaining_behind * 2 <= new_pot));
+                    let commits_stack = remaining_behind * 4 <= new_pot
+                        || remaining_behind <= snapshot.big_blind * 3
+                        || (strong_postflop && remaining_behind * 2 <= new_pot);
                     if commits_stack {
                         if snapshot
                             .legal_actions
@@ -436,13 +440,12 @@ pub async fn run_live_bot(
                     }
                 }
             } else {
-                /* Preflop Stack-Commit Guard (Item N & b1.md Item A):
+                /* Preflop Stack-Commit Guard:
                  * Convert raises that leave <= 25% of the new pot behind, leave <= 3 BB behind,
-                 * or commit >= 35% of total stack on preflop directly into an all-in shove! */
-                let commits_stack = remaining_behind > 0
-                    && (remaining_behind * 4 <= new_pot
-                        || remaining_behind <= snapshot.big_blind * 3
-                        || capped * 20 >= max_total * 7);
+                 * or commit >= 55% of total stack on preflop directly into an all-in shove! */
+                let commits_stack = remaining_behind * 4 <= new_pot
+                    || remaining_behind <= snapshot.big_blind * 3
+                    || capped * 20 >= max_total * 11;
                 if commits_stack {
                     if snapshot
                         .legal_actions
@@ -529,6 +532,15 @@ pub async fn run_live_bot(
             hole_str,
             board_str,
             snapshot.phase
+        );
+        println!(
+            "   [trace] round={} bucket={} pot_odds={:.1}% raw_act={} -> final_act={} reasons={:?}",
+            trace.round,
+            trace.bucket,
+            trace.pot_odds_bps as f64 / 100.0,
+            trace.raw_top_action,
+            trace.final_action,
+            trace.guard_reasons
         );
 
         last_action_key = snapshot.action_seq_key;
