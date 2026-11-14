@@ -149,11 +149,5 @@ pub fn detect_river_nut_blocker(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -
     }
     let broadway_count = board.iter().filter(|c| c.rank as usize >= 8).count();
     let ace_on_board = board.iter().any(|c| c.rank == Rank::Ace);
-    if broadway_count >= 3
-        && !ace_on_board
-        && (hole[0].rank == Rank::Ace || hole[1].rank == Rank::Ace)
-    {
-        return true;
-    }
-    false
+    broadway_count >= 3 && !ace_on_board && (hole[0].rank == Rank::Ace || hole[1].rank == Rank::Ace)
 }

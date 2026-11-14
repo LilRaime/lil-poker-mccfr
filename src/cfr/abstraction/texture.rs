@@ -146,10 +146,7 @@ pub fn is_four_straight_board(board: &[Card]) -> bool {
         }
     }
     let ace_low = [12, 0, 1, 2, 3];
-    if ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4 {
-        return true;
-    }
-    false
+    ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4
 }
 
 /* Detects if community cards form a dangerous, highly coordinated board
