@@ -149,13 +149,19 @@ impl OpponentTracker {
             }
         } else if round >= 3
             && to_call == 0
-            && bucket < 28
+            && (bucket < 15 || (round == 4 && bucket < 28))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             if let Some(hp_i) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
                 probs[hp_i] = 0.0;
             }
-            if (pot >= bb * 6 || is_three_flush) && !has_river_nut_blocker {
+            let air_pot_cap = if bucket < 11 { bb * 8 } else { bb * 18 };
+            let should_cap_bluff = (is_passive_station
+                || active_opponents >= 2
+                || pot >= air_pot_cap
+                || (is_three_flush && bucket < 15))
+                && !has_river_nut_blocker;
+            if should_cap_bluff {
                 let mut shifted = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a >= RAISE_MIN {
@@ -165,6 +171,28 @@ impl OpponentTracker {
                 }
                 if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
                     probs[c_i] = (probs[c_i] + shifted).max(0.95);
+                }
+            }
+        } else if round == 3
+            && to_call == 0
+            && (15..=27).contains(&bucket)
+            && (is_passive_station || active_opponents >= 2)
+            && self.is_guard_enabled("POST_POT_CONTROL_CAP")
+        {
+            /* Semi-bluff draws freely HU vs non-stations; only cap all-in/half-pot vs stations or multiway */
+            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                probs[ai_i] = 0.0;
+            }
+            if is_passive_station && is_three_flush {
+                let mut shifted = 0.0f64;
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a >= RAISE_MIN {
+                        shifted += probs[i];
+                        probs[i] = 0.0;
+                    }
+                }
+                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] = (probs[c_i] + shifted).max(0.90);
                 }
             }
         } else if round >= 3

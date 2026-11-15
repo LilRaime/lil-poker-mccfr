@@ -34,11 +34,16 @@ impl OpponentTracker {
         let is_preflop = round == 1;
         let is_passive_station = self.is_passive_station();
         let is_four_flush_board_now = board.map(is_four_flush_board).unwrap_or(false);
+        let is_paired_board_now = board
+            .map(|b| crate::cfr::abstraction::detect_board_texture(b).is_paired)
+            .unwrap_or(false);
         let is_four_board_danger = board
             .map(|b| is_four_straight_board(b) || is_four_flush_board(b))
             .unwrap_or(false);
         let never_fold_postflop = !is_preflop
-            && (bucket >= 83 || (bucket == 82 && !is_four_flush_board_now && to_call < pot * 2));
+            && (bucket >= 83
+                || (bucket == 82 && !is_four_flush_board_now && to_call < pot * 2)
+                || (bucket == 81 && !is_four_flush_board_now && !is_paired_board_now));
         let allow_pot_commit_rescue =
             !(is_preflop && preflop_strength_tier(bucket) >= 7 && to_call > bb * 2);
 

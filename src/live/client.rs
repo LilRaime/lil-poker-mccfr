@@ -8,14 +8,16 @@ use futures_util::StreamExt;
 use reqwest::cookie::CookieStore;
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE};
 use serde_json::Value;
-use tokio_tungstenite::connect_async;
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::decision::decide_action_traced_with_bet;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{
-    parse_live_state, process_showdown_multiway, LiveRoundTracker, LiveTableTracker,
+    parse_live_state, process_showdown_multiway, LiveRoundTracker, LiveSnapshot, LiveTableTracker,
 };
+use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
 
@@ -68,34 +70,46 @@ pub fn load_live_strategy(path: &str) -> HashMap<String, Vec<f64>> {
     HashMap::new()
 }
 
-pub async fn run_live_bot(
+struct LiveSession {
+    url: String,
+    room: String,
+    player_id: String,
+    client: reqwest::Client,
+    subgame_search: bool,
+    profiles_path: &'static str,
+    trackers: HashMap<String, OpponentTracker>,
+    current_opp_name: String,
+    last_action_key: String,
+    last_hole: Option<[crate::game::holdem::Card; 2]>,
+    last_board_len: usize,
+    hand_active: bool,
+    last_seen_hand_id: u64,
+    round_tracker: LiveRoundTracker,
+    table_tracker: LiveTableTracker,
+    subgame_solver: Arc<SubgameSolver>,
+    strategy_index: Arc<StrategyLookupIndex>,
+    strategy_arc: Arc<HashMap<String, Vec<f64>>>,
+}
+
+async fn connect_live_ws(
     url: &str,
     room: &str,
     name: &str,
-    strategy_path: &str,
-    subgame_search: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== lil-poker-mccfr Live Rust Bot Client ===");
-    println!("Server URL: {}", url);
-    println!("Room ID:    {}", room);
-    println!("Bot Name:   {}", name);
-
-    /* 1. Load Strategy Model (Target: <= 400MB RAM) */
-    let strategy_map = load_live_strategy(strategy_path);
-    let ram_mb = (strategy_map.len() * 140) as f64 / (1024.0 * 1024.0);
-    println!(
-        "Loaded strategy with {} infosets (RAM footprint: ~{:.1} MB).",
-        strategy_map.len(),
-        ram_mb
-    );
-
-    /* 2. Guest Login */
+) -> Result<
+    Option<(
+        reqwest::Client,
+        String,
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+    )>,
+    Box<dyn std::error::Error>,
+> {
     let jar = Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::Client::builder()
         .cookie_provider(Arc::clone(&jar))
         .build()?;
 
-    let login_url = format!("{}/api/auth/guest", url.trim_end_matches('/'));
+    let base_url = url.trim_end_matches('/');
+    let login_url = format!("{}/api/auth/guest", base_url);
     let resp = client
         .post(&login_url)
         .json(&serde_json::json!({ "username": name }))
@@ -104,7 +118,7 @@ pub async fn run_live_bot(
 
     if !resp.status().is_success() {
         eprintln!("Failed guest login: status {}", resp.status());
-        return Ok(());
+        return Ok(None);
     }
 
     let user_info: GuestResponse = resp.json().await?;
@@ -114,12 +128,7 @@ pub async fn run_live_bot(
         player_id, user_info.chips
     );
 
-    /* 3. Join Room */
-    let join_url = format!(
-        "{}/api/game/players?room={}",
-        url.trim_end_matches('/'),
-        room
-    );
+    let join_url = format!("{}/api/game/players?room={}", base_url, room);
     let _ = client
         .post(&join_url)
         .json(&JoinRoomPayload {
@@ -133,10 +142,9 @@ pub async fn run_live_bot(
     );
 
     /* Trigger initial start in case table is waiting */
-    let start_url = format!("{}/api/game/start?room={}", url.trim_end_matches('/'), room);
+    let start_url = format!("{}/api/game/start?room={}", base_url, room);
     let _ = client.post(&start_url).send().await;
 
-    /* 4. Connect WebSocket */
     let ws_scheme = if url.starts_with("https://") {
         "wss"
     } else {
@@ -160,128 +168,283 @@ pub async fn run_live_bot(
 
     let (ws_stream, _) = connect_async(request).await?;
     println!("WebSocket connected successfully! Listening for hand events...");
+    Ok(Some((client, player_id, ws_stream)))
+}
 
-    let (_, mut read) = ws_stream.split();
-    let mut trackers: HashMap<String, OpponentTracker> = HashMap::new();
-    let mut current_opp_name = String::new();
-    let profiles_path = "models/opponent_profiles.json";
-    let mut last_action_key = String::new();
-    let mut last_hole: Option<[crate::game::holdem::Card; 2]> = None;
-    let mut last_board_len: usize = 0;
-    let mut hand_active = false;
-    let subgame_solver = Arc::new(SubgameSolver::default());
-    let strategy_index = Arc::new(crate::cfr::fallback::StrategyLookupIndex::build_from_map(
-        &strategy_map,
-    ));
-    let strategy_arc = Arc::new(strategy_map);
+fn prefer_all_in_action(
+    legal_actions: &[String],
+    fallback_action: String,
+    fallback_amount: i32,
+) -> (String, i32) {
+    if legal_actions
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case("all_in"))
+    {
+        ("all_in".to_string(), 0)
+    } else if legal_actions
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case("allin"))
+    {
+        ("allin".to_string(), 0)
+    } else {
+        (fallback_action, fallback_amount)
+    }
+}
 
-    let mut round_tracker = LiveRoundTracker::new();
-    let mut table_tracker = LiveTableTracker::new();
-    let mut last_seen_hand_id: u64 = 0;
-
-    /* 5. Main Game Loop */
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("WebSocket error: {}", e);
-                break;
-            }
+fn apply_live_commit_guards(
+    chosen_action: String,
+    raw_amount: i32,
+    snapshot: &LiveSnapshot,
+    eff_chips: i32,
+) -> (String, i32) {
+    let hole = &snapshot.hole;
+    if (chosen_action == "raise" || chosen_action == "bet") && eff_chips > 0 {
+        let max_total = eff_chips + snapshot.my_bet;
+        let min_legal_total = if snapshot.current_bet > 0 {
+            snapshot.current_bet + snapshot.to_call.max(snapshot.big_blind)
+        } else {
+            snapshot.big_blind
         };
+        let capped = raw_amount.max(min_legal_total).min(max_total);
+        let bet_add = (capped - snapshot.my_bet).max(0);
+        let remaining_behind = max_total - capped;
+        let new_pot = snapshot.pot + bet_add;
+        let post_bucket = if !snapshot.board.is_empty() {
+            Some(crate::cfr::abstraction::postflop_equity_bucket(
+                hole,
+                &snapshot.board,
+            ))
+        } else {
+            None
+        };
+        /* Postflop Air Stack-Risk Guard:
+         * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11). */
+        if let Some(b_idx) = post_bucket {
+            if b_idx < 11 && bet_add * 20 >= eff_chips * 7 {
+                if snapshot.to_call == 0 {
+                    ("check".to_string(), 0)
+                } else if snapshot.to_call <= snapshot.big_blind
+                    || snapshot.to_call * 6 <= snapshot.pot
+                    || eff_chips <= snapshot.big_blind
+                {
+                    ("call".to_string(), 0)
+                } else {
+                    ("fold".to_string(), 0)
+                }
+            } else {
+                let strong_postflop = b_idx >= 40 || (19..=27).contains(&b_idx);
+                let commits_stack = remaining_behind * 4 <= new_pot
+                    || remaining_behind <= snapshot.big_blind * 3
+                    || (strong_postflop && remaining_behind * 2 <= new_pot);
+                if commits_stack {
+                    prefer_all_in_action(&snapshot.legal_actions, chosen_action, max_total)
+                } else {
+                    (chosen_action, capped)
+                }
+            }
+        } else {
+            /* Preflop Stack-Commit Guard:
+             * Convert raises that leave <= 25% of the new pot behind, leave <= 3 BB behind,
+             * or commit >= 55% of total stack on preflop directly into an all-in shove! */
+            let commits_stack = remaining_behind * 4 <= new_pot
+                || remaining_behind <= snapshot.big_blind * 3
+                || capped * 20 >= max_total * 11;
+            if commits_stack {
+                prefer_all_in_action(&snapshot.legal_actions, chosen_action, max_total)
+            } else {
+                (chosen_action, capped)
+            }
+        }
+    } else if chosen_action == "call"
+        && eff_chips > snapshot.to_call
+        && snapshot.to_call > 0
+        && !snapshot.board.is_empty()
+    {
+        /* Postflop Call Stack-Commit Guard:
+         * If calling a Flop/Turn raise with a strong hand (bucket >= 45)
+         * leaves <= 3 BB and <= 15% of the new pot behind, push all-in immediately! */
+        let rem_after_call = eff_chips - snapshot.to_call;
+        let new_pot = snapshot.pot + snapshot.to_call;
+        let b_idx = crate::cfr::abstraction::postflop_equity_bucket(hole, &snapshot.board);
+        if b_idx >= 45 && rem_after_call <= snapshot.big_blind * 3 && rem_after_call * 6 <= new_pot
+        {
+            if snapshot
+                .legal_actions
+                .iter()
+                .any(|l| l.eq_ignore_ascii_case("all_in") || l.eq_ignore_ascii_case("allin"))
+            {
+                prefer_all_in_action(&snapshot.legal_actions, chosen_action, raw_amount)
+            } else if snapshot
+                .legal_actions
+                .iter()
+                .any(|l| l.eq_ignore_ascii_case("raise"))
+            {
+                ("raise".to_string(), eff_chips + snapshot.my_bet)
+            } else {
+                (chosen_action, raw_amount)
+            }
+        } else {
+            (chosen_action, raw_amount)
+        }
+    } else {
+        (chosen_action, raw_amount)
+    }
+}
 
-        if !msg.is_text() {
-            continue;
+fn format_hand_cards(
+    hole: &[crate::game::holdem::Card; 2],
+    board: &[crate::game::holdem::Card],
+) -> (String, String) {
+    let hole_str = format!(
+        "[{} {}]",
+        hole[0].to_string().trim_matches('\''),
+        hole[1].to_string().trim_matches('\'')
+    );
+    let board_str = if board.is_empty() {
+        "[]".to_string()
+    } else {
+        let cards: Vec<String> = board
+            .iter()
+            .map(|c| c.to_string().trim_matches('\'').to_string())
+            .collect();
+        format!("[{}]", cards.join(" "))
+    };
+    (hole_str, board_str)
+}
+
+impl LiveSession {
+    fn save_all_profiles(&self) {
+        for (name, opp_t) in self.trackers.iter() {
+            let _ = opp_t.save_profile(self.profiles_path, name);
+        }
+    }
+
+    fn record_hu_opp_fold_if_unshown(&mut self, create_if_missing: bool) {
+        let Some(&last_act) =
+            self.round_tracker.live_history[self.round_tracker.current_round_idx].last()
+        else {
+            return;
+        };
+        if last_act < crate::game::config::RAISE_MIN || self.current_opp_name.is_empty() {
+            return;
+        }
+        let r_num = (self.round_tracker.current_round_idx + 1) as u8;
+        let opp_t = if create_if_missing {
+            Some(
+                self.trackers
+                    .entry(self.current_opp_name.clone())
+                    .or_default(),
+            )
+        } else {
+            self.trackers.get_mut(&self.current_opp_name)
+        };
+        if let Some(t) = opp_t {
+            t.record_action_street_detailed(crate::game::config::FOLD, r_num, r_num >= 2, 0, 0);
+            if self.round_tracker.current_round_idx == 0
+                && self.round_tracker.bot_3bet_preflop
+                && !self.round_tracker.faced_3bet_recorded_this_hand
+            {
+                t.record_facing_3bet(true);
+                self.round_tracker.faced_3bet_recorded_this_hand = true;
+            }
+        }
+    }
+
+    fn finalize_and_save_hand(&mut self) {
+        self.table_tracker
+            .finalize_hand(&mut self.trackers, &self.current_opp_name);
+        self.save_all_profiles();
+    }
+
+    async fn handle_terminal_phase(&mut self, state: &Value, phase: &str) {
+        if self.hand_active {
+            if phase.eq_ignore_ascii_case("Showdown") {
+                process_showdown_multiway(
+                    state,
+                    &self.player_id,
+                    &mut self.trackers,
+                    &self.current_opp_name,
+                    &self.round_tracker.live_history[3],
+                    self.round_tracker.last_opp_bet,
+                );
+            } else if self.table_tracker.last_player_count <= 2 {
+                /* HU hand ended without Showdown after bot bet/raise -> opponent folded */
+                self.record_hu_opp_fold_if_unshown(true);
+            }
+            self.finalize_and_save_hand();
+            self.round_tracker.reset_hand(0);
+            self.table_tracker.reset_hand(0);
+            self.last_action_key.clear();
+            self.last_hole = None;
+            self.last_board_len = 0;
+            self.hand_active = false;
+            self.last_seen_hand_id = 0;
+        } else if phase.eq_ignore_ascii_case("Waiting") && self.last_seen_hand_id != 0 {
+            /* Hand started and ended before Hero ever had an active turn (e.g. walk on BB when SB folds HU) */
+            if !self.current_opp_name.is_empty() {
+                if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
+                    if players.len() == 2 {
+                        let opp_t = self
+                            .trackers
+                            .entry(self.current_opp_name.clone())
+                            .or_default();
+                        opp_t.record_action_street_detailed(
+                            crate::game::config::FOLD,
+                            1,
+                            false,
+                            0,
+                            0,
+                        );
+                        opp_t.record_preflop_positional(true, false, false);
+                        opp_t.end_hand();
+                        let _ = opp_t.save_profile(self.profiles_path, &self.current_opp_name);
+                    }
+                }
+            }
+            self.table_tracker.reset_hand(0);
+            self.last_seen_hand_id = 0;
         }
 
-        let text = msg.to_text()?;
-        let state: Value = match serde_json::from_str(text) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        if phase.eq_ignore_ascii_case("Waiting") {
+            if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
+                if players.len() >= 2 {
+                    let start_url = format!(
+                        "{}/api/game/start?room={}",
+                        self.url.trim_end_matches('/'),
+                        self.room
+                    );
+                    let _ = self.client.post(&start_url).send().await;
+                }
+            }
+        }
+    }
 
+    fn ensure_current_opponent_cached(&mut self, opp_name: &str) {
+        if opp_name.is_empty() {
+            return;
+        }
+        self.current_opp_name = opp_name.to_string();
+        if !self.trackers.contains_key(&self.current_opp_name) {
+            if let Some(loaded) =
+                OpponentTracker::load_profile(self.profiles_path, &self.current_opp_name)
+            {
+                println!(
+                    "Loaded persistent profile for opponent '{}' ({} prior hands).",
+                    self.current_opp_name, loaded.total_hands
+                );
+                self.trackers.insert(self.current_opp_name.clone(), loaded);
+            } else {
+                self.trackers
+                    .insert(self.current_opp_name.clone(), OpponentTracker::new());
+            }
+        }
+    }
+
+    async fn decide_and_submit(&mut self, state: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let phase = state.get("phase").and_then(|v| v.as_str()).unwrap_or("");
         if phase.eq_ignore_ascii_case("Showdown") || phase.eq_ignore_ascii_case("Waiting") {
-            if hand_active {
-                if phase.eq_ignore_ascii_case("Showdown") {
-                    process_showdown_multiway(
-                        &state,
-                        &player_id,
-                        &mut trackers,
-                        &current_opp_name,
-                        &round_tracker.live_history[3],
-                        round_tracker.last_opp_bet,
-                    );
-                } else if table_tracker.last_player_count <= 2 {
-                    if let Some(&last_act) =
-                        round_tracker.live_history[round_tracker.current_round_idx].last()
-                    {
-                        if last_act >= crate::game::config::RAISE_MIN
-                            && !current_opp_name.is_empty()
-                        {
-                            /* HU hand ended without Showdown after bot bet/raise -> opponent folded */
-                            let r_num = (round_tracker.current_round_idx + 1) as u8;
-                            let opp_t = trackers.entry(current_opp_name.clone()).or_default();
-                            opp_t.record_action_street_detailed(
-                                crate::game::config::FOLD,
-                                r_num,
-                                r_num >= 2,
-                                0,
-                                0,
-                            );
-                            if round_tracker.current_round_idx == 0
-                                && round_tracker.bot_3bet_preflop
-                                && !round_tracker.faced_3bet_recorded_this_hand
-                            {
-                                opp_t.record_facing_3bet(true);
-                                round_tracker.faced_3bet_recorded_this_hand = true;
-                            }
-                        }
-                    }
-                }
-                table_tracker.finalize_hand(&mut trackers, &current_opp_name);
-                for (name, opp_t) in trackers.iter() {
-                    let _ = opp_t.save_profile(profiles_path, name);
-                }
-                round_tracker.reset_hand(0);
-                table_tracker.reset_hand(0);
-                last_action_key.clear();
-                last_hole = None;
-                last_board_len = 0;
-                hand_active = false;
-                last_seen_hand_id = 0;
-            } else if phase.eq_ignore_ascii_case("Waiting") && last_seen_hand_id != 0 {
-                /* Hand started and ended before Hero ever had an active turn (e.g. walk on BB when SB folds HU) */
-                if !current_opp_name.is_empty() {
-                    if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-                        if players.len() == 2 {
-                            let opp_t = trackers.entry(current_opp_name.clone()).or_default();
-                            opp_t.record_action_street_detailed(
-                                crate::game::config::FOLD,
-                                1,
-                                false,
-                                0,
-                                0,
-                            );
-                            opp_t.record_preflop_positional(true, false, false);
-                            opp_t.end_hand();
-                            let _ = opp_t.save_profile(profiles_path, &current_opp_name);
-                        }
-                    }
-                }
-                table_tracker.reset_hand(0);
-                last_seen_hand_id = 0;
-            }
-
-            if phase.eq_ignore_ascii_case("Waiting") {
-                if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-                    if players.len() >= 2 {
-                        let start_url =
-                            format!("{}/api/game/start?room={}", url.trim_end_matches('/'), room);
-                        let _ = client.post(&start_url).send().await;
-                    }
-                }
-            }
-            continue;
+            self.handle_terminal_phase(state, phase).await;
+            return Ok(());
         }
 
         let msg_hand_id = state
@@ -291,160 +454,107 @@ pub async fn run_live_bot(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if msg_hand_id > 0 {
-            last_seen_hand_id = msg_hand_id;
+            self.last_seen_hand_id = msg_hand_id;
         } else if !phase.is_empty() {
             /* Track active hand even if server sends hand_id == 0 */
-            last_seen_hand_id = last_seen_hand_id.max(1);
+            self.last_seen_hand_id = self.last_seen_hand_id.max(1);
         }
 
         /* Detect hand transitions across all table updates (including non-Hero turns at 6-max) */
-        if hand_active
+        if self.hand_active
             && msg_hand_id > 0
-            && msg_hand_id != table_tracker.hand_id
-            && table_tracker.hand_id > 0
+            && msg_hand_id != self.table_tracker.hand_id
+            && self.table_tracker.hand_id > 0
         {
-            if table_tracker.last_player_count <= 2 {
-                if let Some(&last_act) =
-                    round_tracker.live_history[round_tracker.current_round_idx].last()
-                {
-                    if last_act >= crate::game::config::RAISE_MIN && !current_opp_name.is_empty() {
-                        let r_num = (round_tracker.current_round_idx + 1) as u8;
-                        if let Some(t) = trackers.get_mut(&current_opp_name) {
-                            t.record_action_street_detailed(
-                                crate::game::config::FOLD,
-                                r_num,
-                                r_num >= 2,
-                                0,
-                                0,
-                            );
-                            if round_tracker.current_round_idx == 0
-                                && round_tracker.bot_3bet_preflop
-                                && !round_tracker.faced_3bet_recorded_this_hand
-                            {
-                                t.record_facing_3bet(true);
-                                round_tracker.faced_3bet_recorded_this_hand = true;
-                            }
-                        }
-                    }
-                }
+            if self.table_tracker.last_player_count <= 2 {
+                self.record_hu_opp_fold_if_unshown(false);
             }
-            table_tracker.finalize_hand(&mut trackers, &current_opp_name);
-            for (name, opp_t) in trackers.iter() {
-                let _ = opp_t.save_profile(profiles_path, name);
-            }
-            round_tracker.reset_hand(msg_hand_id);
-            table_tracker.reset_hand(msg_hand_id);
-            hand_active = false;
-        } else if msg_hand_id > 0 && table_tracker.hand_id == 0 {
-            table_tracker.hand_id = msg_hand_id;
+            self.finalize_and_save_hand();
+            self.round_tracker.reset_hand(msg_hand_id);
+            self.table_tracker.reset_hand(msg_hand_id);
+            self.hand_active = false;
+        } else if msg_hand_id > 0 && self.table_tracker.hand_id == 0 {
+            self.table_tracker.hand_id = msg_hand_id;
         }
 
         /* Observe every table broadcast so all 6-max opponents are tracked individually */
-        let table_players =
-            table_tracker.observe_state(&state, &player_id, &mut trackers, Some(profiles_path));
+        let table_players = self.table_tracker.observe_state(
+            state,
+            &self.player_id,
+            &mut self.trackers,
+            Some(self.profiles_path),
+        );
 
-        let snapshot = match parse_live_state(&state, &player_id) {
-            Some(s) => s,
-            None => continue,
+        let Some(snapshot) = parse_live_state(state, &self.player_id) else {
+            return Ok(());
         };
 
-        /* In-memory opponent profile caching across seats and multi-way changes */
-        if !snapshot.opp_name.is_empty() {
-            current_opp_name = snapshot.opp_name.clone();
-            if !trackers.contains_key(&current_opp_name) {
-                if let Some(loaded) =
-                    OpponentTracker::load_profile(profiles_path, &current_opp_name)
-                {
-                    println!(
-                        "Loaded persistent profile for opponent '{}' ({} prior hands).",
-                        current_opp_name, loaded.total_hands
-                    );
-                    trackers.insert(current_opp_name.clone(), loaded);
-                } else {
-                    trackers.insert(current_opp_name.clone(), OpponentTracker::new());
-                }
-            }
-        }
+        self.ensure_current_opponent_cached(&snapshot.opp_name);
 
         /* Prevent duplicate action execution on identical state updates */
-        if snapshot.action_seq_key == last_action_key {
-            continue;
+        if snapshot.action_seq_key == self.last_action_key {
+            return Ok(());
         }
 
         /* Detect hand or street transitions for round history (works even when server hand_id == 0) */
-        let is_new_hand = snapshot.hand_id != round_tracker.current_hand_id
-            || (last_hole.is_some() && last_hole != Some(snapshot.hole))
-            || snapshot.board.len() < last_board_len;
+        let is_new_hand = snapshot.hand_id != self.round_tracker.current_hand_id
+            || (self.last_hole.is_some() && self.last_hole != Some(snapshot.hole))
+            || snapshot.board.len() < self.last_board_len;
 
         if is_new_hand {
-            if hand_active {
+            if self.hand_active {
                 if table_players <= 2 {
-                    if let Some(&last_act) =
-                        round_tracker.live_history[round_tracker.current_round_idx].last()
-                    {
-                        if last_act >= crate::game::config::RAISE_MIN
-                            && !current_opp_name.is_empty()
-                        {
-                            let r_num = (round_tracker.current_round_idx + 1) as u8;
-                            if let Some(t) = trackers.get_mut(&current_opp_name) {
-                                t.record_action_street_detailed(
-                                    crate::game::config::FOLD,
-                                    r_num,
-                                    r_num >= 2,
-                                    0,
-                                    0,
-                                );
-                                if round_tracker.current_round_idx == 0
-                                    && round_tracker.bot_3bet_preflop
-                                    && !round_tracker.faced_3bet_recorded_this_hand
-                                {
-                                    t.record_facing_3bet(true);
-                                    round_tracker.faced_3bet_recorded_this_hand = true;
-                                }
-                            }
-                        }
-                    }
+                    self.record_hu_opp_fold_if_unshown(false);
                 }
-                table_tracker.finalize_hand(&mut trackers, &current_opp_name);
-                for (name, opp_t) in trackers.iter() {
-                    let _ = opp_t.save_profile(profiles_path, name);
-                }
-                table_tracker.reset_hand(snapshot.hand_id);
-                let _ = table_tracker.observe_state(
-                    &state,
-                    &player_id,
-                    &mut trackers,
-                    Some(profiles_path),
+                self.finalize_and_save_hand();
+                self.table_tracker.reset_hand(snapshot.hand_id);
+                let _ = self.table_tracker.observe_state(
+                    state,
+                    &self.player_id,
+                    &mut self.trackers,
+                    Some(self.profiles_path),
                 );
             }
-            round_tracker.reset_hand(snapshot.hand_id);
+            self.round_tracker.reset_hand(snapshot.hand_id);
         }
-        last_hole = Some(snapshot.hole);
-        last_board_len = snapshot.board.len();
-        hand_active = true;
+        self.last_hole = Some(snapshot.hole);
+        self.last_board_len = snapshot.board.len();
+        self.hand_active = true;
 
-        let active_tracker = trackers.entry(current_opp_name.clone()).or_default();
+        let active_tracker = self
+            .trackers
+            .entry(self.current_opp_name.clone())
+            .or_default();
         active_tracker.observe_blind_level(snapshot.big_blind);
         if table_players > 2 {
             /* In 6-max, LiveTableTracker records each opponent's exact actions individually;
              * keep round_tracker synced for live_history without cross-contaminating trackers. */
-            round_tracker.update_street_with_tracker(snapshot.board.len(), None);
-            round_tracker.infer_opponent_history_only(&snapshot);
+            self.round_tracker
+                .update_street_with_tracker(snapshot.board.len(), None);
+            self.round_tracker.infer_opponent_history_only(&snapshot);
         } else {
-            round_tracker.update_street_with_tracker(snapshot.board.len(), Some(active_tracker));
-            round_tracker.infer_and_record_opponent_action(&snapshot, active_tracker);
+            self.round_tracker
+                .update_street_with_tracker(snapshot.board.len(), Some(active_tracker));
+            self.round_tracker
+                .infer_and_record_opponent_action(&snapshot, active_tracker);
         }
 
-        let (engine_contributions, raises_this_round) =
-            round_tracker.compute_scaled_subgame_contributions(&snapshot);
+        let (engine_contributions, raises_this_round) = self
+            .round_tracker
+            .compute_scaled_subgame_contributions(&snapshot);
 
-        let strat_clone = Arc::clone(&strategy_arc);
-        let index_clone = Arc::clone(&strategy_index);
-        let solver_arc = Arc::clone(&subgame_solver);
-        let subgame = subgame_search;
+        let eff_chips = if snapshot.my_chips > 0 {
+            snapshot.my_chips
+        } else {
+            self.round_tracker.estimated_my_chips
+        };
+        let strat_clone = Arc::clone(&self.strategy_arc);
+        let index_clone = Arc::clone(&self.strategy_index);
+        let solver_arc = Arc::clone(&self.subgame_solver);
+        let subgame = self.subgame_search;
         let tracker_clone = active_tracker.clone();
         let board_cards_clone = snapshot.board.clone();
-        let history_clone = round_tracker.live_history;
+        let history_clone = self.round_tracker.live_history;
         let hole = snapshot.hole;
         let legal_actions = snapshot.legal_actions.clone();
         let to_call = snapshot.to_call;
@@ -453,13 +563,8 @@ pub async fn run_live_bot(
         let active_opponents = snapshot.active_opponents;
         let big_blind = snapshot.big_blind;
         let current_bet_now = snapshot.current_bet;
-        let my_chips = if snapshot.my_chips > 0 {
-            snapshot.my_chips
-        } else {
-            round_tracker.estimated_my_chips
-        };
 
-        let (chosen_action, raw_amount, trace) = tokio::task::spawn_blocking(move || {
+        let (raw_action, raw_amount, trace) = tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
             decide_action_traced_with_bet(
                 &hole,
@@ -479,162 +584,15 @@ pub async fn run_live_bot(
                 Some(&mut ctx),
                 active_opponents,
                 big_blind,
-                my_chips,
+                eff_chips,
                 current_bet_now,
             )
         })
         .await?;
 
-        let eff_chips = if snapshot.my_chips > 0 {
-            snapshot.my_chips
-        } else {
-            round_tracker.estimated_my_chips
-        };
-        let (chosen_action, amount) = if (chosen_action == "raise" || chosen_action == "bet")
-            && eff_chips > 0
-        {
-            let max_total = eff_chips + snapshot.my_bet;
-            let min_legal_total = if snapshot.current_bet > 0 {
-                snapshot.current_bet + snapshot.to_call.max(snapshot.big_blind)
-            } else {
-                snapshot.big_blind
-            };
-            let capped = raw_amount.max(min_legal_total).min(max_total);
-            let bet_add = (capped - snapshot.my_bet).max(0);
-            let remaining_behind = max_total - capped;
-            let new_pot = snapshot.pot + bet_add;
-            let post_bucket = if !snapshot.board.is_empty() {
-                Some(crate::cfr::abstraction::postflop_equity_bucket(
-                    &hole,
-                    &snapshot.board,
-                ))
-            } else {
-                None
-            };
-            /* Postflop Air Stack-Risk Guard:
-             * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11). */
-            if let Some(b_idx) = post_bucket {
-                if b_idx < 11 && bet_add * 20 >= eff_chips * 7 {
-                    if snapshot.to_call == 0 {
-                        ("check".to_string(), 0)
-                    } else if snapshot.to_call <= snapshot.big_blind
-                        || snapshot.to_call * 6 <= snapshot.pot
-                        || eff_chips <= snapshot.big_blind
-                    {
-                        ("call".to_string(), 0)
-                    } else {
-                        ("fold".to_string(), 0)
-                    }
-                } else {
-                    let strong_postflop = b_idx >= 40 || (19..=27).contains(&b_idx);
-                    let commits_stack = remaining_behind * 4 <= new_pot
-                        || remaining_behind <= snapshot.big_blind * 3
-                        || (strong_postflop && remaining_behind * 2 <= new_pot);
-                    if commits_stack {
-                        if snapshot
-                            .legal_actions
-                            .iter()
-                            .any(|l| l.eq_ignore_ascii_case("all_in"))
-                        {
-                            ("all_in".to_string(), 0)
-                        } else if snapshot
-                            .legal_actions
-                            .iter()
-                            .any(|l| l.eq_ignore_ascii_case("allin"))
-                        {
-                            ("allin".to_string(), 0)
-                        } else {
-                            (chosen_action, max_total)
-                        }
-                    } else {
-                        (chosen_action, capped)
-                    }
-                }
-            } else {
-                /* Preflop Stack-Commit Guard:
-                 * Convert raises that leave <= 25% of the new pot behind, leave <= 3 BB behind,
-                 * or commit >= 55% of total stack on preflop directly into an all-in shove! */
-                let commits_stack = remaining_behind * 4 <= new_pot
-                    || remaining_behind <= snapshot.big_blind * 3
-                    || capped * 20 >= max_total * 11;
-                if commits_stack {
-                    if snapshot
-                        .legal_actions
-                        .iter()
-                        .any(|l| l.eq_ignore_ascii_case("all_in"))
-                    {
-                        ("all_in".to_string(), 0)
-                    } else if snapshot
-                        .legal_actions
-                        .iter()
-                        .any(|l| l.eq_ignore_ascii_case("allin"))
-                    {
-                        ("allin".to_string(), 0)
-                    } else {
-                        (chosen_action, max_total)
-                    }
-                } else {
-                    (chosen_action, capped)
-                }
-            }
-        } else if chosen_action == "call"
-            && eff_chips > snapshot.to_call
-            && snapshot.to_call > 0
-            && !snapshot.board.is_empty()
-        {
-            /* Postflop Call Stack-Commit Guard:
-             * If calling a Flop/Turn raise with a strong hand (bucket >= 45, e.g. 99 on 7-3-7)
-             * leaves <= 3 BB and <= 15% of the new pot behind, push all-in immediately! */
-            let rem_after_call = eff_chips - snapshot.to_call;
-            let new_pot = snapshot.pot + snapshot.to_call;
-            let b_idx = crate::cfr::abstraction::postflop_equity_bucket(&hole, &snapshot.board);
-            if b_idx >= 45
-                && rem_after_call <= snapshot.big_blind * 3
-                && rem_after_call * 6 <= new_pot
-            {
-                if snapshot
-                    .legal_actions
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case("all_in"))
-                {
-                    ("all_in".to_string(), 0)
-                } else if snapshot
-                    .legal_actions
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case("allin"))
-                {
-                    ("allin".to_string(), 0)
-                } else if snapshot
-                    .legal_actions
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case("raise"))
-                {
-                    ("raise".to_string(), eff_chips + snapshot.my_bet)
-                } else {
-                    (chosen_action, raw_amount)
-                }
-            } else {
-                (chosen_action, raw_amount)
-            }
-        } else {
-            (chosen_action, raw_amount)
-        };
-
-        let hole_str = format!(
-            "[{} {}]",
-            hole[0].to_string().trim_matches('\''),
-            hole[1].to_string().trim_matches('\'')
-        );
-        let board_str = if snapshot.board.is_empty() {
-            "[]".to_string()
-        } else {
-            let cards: Vec<String> = snapshot
-                .board
-                .iter()
-                .map(|c| c.to_string().trim_matches('\'').to_string())
-                .collect();
-            format!("[{}]", cards.join(" "))
-        };
+        let (chosen_action, amount) =
+            apply_live_commit_guards(raw_action, raw_amount, &snapshot, eff_chips);
+        let (hole_str, board_str) = format_hand_cards(&hole, &snapshot.board);
 
         println!(
             "-> Action: {:<5} (amt: {:>2}) | Hole: {:<7} | Board: {:<15} | Phase: {}",
@@ -654,125 +612,221 @@ pub async fn run_live_bot(
             trace.guard_reasons
         );
 
-        last_action_key = snapshot.action_seq_key;
+        self.last_action_key = snapshot.action_seq_key.clone();
+        self.submit_action_with_fallback(
+            &snapshot,
+            &chosen_action,
+            amount,
+            engine_contributions,
+            raises_this_round,
+            eff_chips,
+        )
+        .await;
+        Ok(())
+    }
 
-        let act_url = format!("{}/api/game/act?room={}", url.trim_end_matches('/'), room);
-        let resp = client
+    async fn submit_action_with_fallback(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        chosen_action: &str,
+        amount: i32,
+        engine_contributions: [i32; 2],
+        raises_this_round: u8,
+        my_chips: i32,
+    ) {
+        let act_url = format!(
+            "{}/api/game/act?room={}",
+            self.url.trim_end_matches('/'),
+            self.room
+        );
+        let resp = self
+            .client
             .post(&act_url)
             .json(&ActPayload {
-                player_id: player_id.clone(),
-                action: chosen_action.clone(),
+                player_id: self.player_id.clone(),
+                action: chosen_action.to_string(),
                 amount,
             })
             .send()
             .await;
 
-        if let Ok(r) = resp {
-            if r.status().is_success() {
-                /* Record bot's own action into live history only after server accepts it */
-                round_tracker.record_bot_action(&chosen_action, amount, snapshot.pot);
-                if chosen_action == "fold" && hand_active {
-                    table_tracker.finalize_hand(&mut trackers, &current_opp_name);
-                    for (name, opp_t) in trackers.iter() {
-                        let _ = opp_t.save_profile(profiles_path, name);
-                    }
-                    hand_active = false;
-                }
+        let Ok(r) = resp else {
+            if let Err(e) = resp {
+                eprintln!("Act HTTP network error: {}", e);
+                self.last_action_key.clear();
+            }
+            return;
+        };
+
+        if r.status().is_success() {
+            /* Record bot's own action into live history only after server accepts it */
+            self.round_tracker
+                .record_bot_action(chosen_action, amount, snapshot.pot);
+            if chosen_action == "fold" && self.hand_active {
+                self.finalize_and_save_hand();
+                self.hand_active = false;
+            }
+            return;
+        }
+
+        let status = r.status();
+        let err_text = r.text().await.unwrap_or_default();
+        eprintln!(
+            "⚠️ Act server notice ({}) [{}]: {}",
+            chosen_action, status, err_text
+        );
+        self.last_action_key.clear();
+
+        /* Automatic fallback retry if server rejected 'check' in favor of 'call',
+         * or if server rejected 'raise'/'bet' (re-evaluate non-raise call vs fold instead of blind call!) */
+        let fallback_act: Option<String> = if chosen_action == "check"
+            && (err_text.contains("cannot check") || err_text.contains("call"))
+        {
+            Some("call".to_string())
+        } else if chosen_action == "raise" || chosen_action == "bet" {
+            if snapshot.to_call == 0 {
+                Some("check".to_string())
             } else {
-                let status = r.status();
-                let err_text = r.text().await.unwrap_or_default();
-                eprintln!(
-                    "⚠️ Act server notice ({}) [{}]: {}",
-                    chosen_action, status, err_text
-                );
-                last_action_key.clear();
-
-                /* Automatic fallback retry if server rejected 'check' in favor of 'call',
-                 * or if server rejected 'raise'/'bet' (re-evaluate non-raise call vs fold instead of blind call!) */
-                let fallback_act: Option<String> = if chosen_action == "check"
-                    && (err_text.contains("cannot check") || err_text.contains("call"))
-                {
-                    Some("call".to_string())
-                } else if chosen_action == "raise" || chosen_action == "bet" {
-                    if snapshot.to_call == 0 {
-                        Some("check".to_string())
-                    } else {
-                        let non_raise_legal: Vec<String> = snapshot
-                            .legal_actions
-                            .iter()
-                            .filter(|a| {
-                                a.eq_ignore_ascii_case("fold")
-                                    || a.eq_ignore_ascii_case("call")
-                                    || a.eq_ignore_ascii_case("check")
-                            })
-                            .cloned()
-                            .collect();
-                        if non_raise_legal.is_empty() {
-                            None
-                        } else {
-                            let fb_tracker =
-                                trackers.get(&current_opp_name).cloned().unwrap_or_default();
-                            let (fb_act, _, _) = decide_action_traced_with_bet(
-                                &hole,
-                                &snapshot.board,
-                                &non_raise_legal,
-                                to_call,
-                                pot,
-                                &strategy_arc,
-                                false,
-                                &fb_tracker,
-                                &round_tracker.live_history,
-                                my_player,
-                                engine_contributions,
-                                raises_this_round,
-                                Some(&strategy_index),
-                                None,
-                                None,
-                                active_opponents,
-                                big_blind,
-                                my_chips,
-                                snapshot.current_bet,
-                            );
-                            Some(fb_act)
-                        }
-                    }
-                } else {
+                let non_raise_legal: Vec<String> = snapshot
+                    .legal_actions
+                    .iter()
+                    .filter(|a| {
+                        a.eq_ignore_ascii_case("fold")
+                            || a.eq_ignore_ascii_case("call")
+                            || a.eq_ignore_ascii_case("check")
+                    })
+                    .cloned()
+                    .collect();
+                if non_raise_legal.is_empty() {
                     None
-                };
-
-                if let Some(fb) = fallback_act {
-                    println!(
-                        "-> Auto-fallback: Retrying action {} (amt: 0)",
-                        fb.to_uppercase()
+                } else {
+                    let fb_tracker = self
+                        .trackers
+                        .get(&self.current_opp_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let (fb_act, _, _) = decide_action_traced_with_bet(
+                        &snapshot.hole,
+                        &snapshot.board,
+                        &non_raise_legal,
+                        snapshot.to_call,
+                        snapshot.pot,
+                        &self.strategy_arc,
+                        false,
+                        &fb_tracker,
+                        &self.round_tracker.live_history,
+                        snapshot.my_player,
+                        engine_contributions,
+                        raises_this_round,
+                        Some(&self.strategy_index),
+                        None,
+                        None,
+                        snapshot.active_opponents,
+                        snapshot.big_blind,
+                        my_chips,
+                        snapshot.current_bet,
                     );
-                    if let Ok(r_retry) = client
-                        .post(&act_url)
-                        .json(&ActPayload {
-                            player_id: player_id.clone(),
-                            action: fb.clone(),
-                            amount: 0,
-                        })
-                        .send()
-                        .await
-                    {
-                        if r_retry.status().is_success() {
-                            round_tracker.record_bot_action(&fb, 0, snapshot.pot);
-                        }
-                    }
+                    Some(fb_act)
                 }
             }
-        } else if let Err(e) = resp {
-            eprintln!("Act HTTP network error: {}", e);
-            last_action_key.clear();
+        } else {
+            None
+        };
+
+        if let Some(fb) = fallback_act {
+            println!(
+                "-> Auto-fallback: Retrying action {} (amt: 0)",
+                fb.to_uppercase()
+            );
+            if let Ok(r_retry) = self
+                .client
+                .post(&act_url)
+                .json(&ActPayload {
+                    player_id: self.player_id.clone(),
+                    action: fb.clone(),
+                    amount: 0,
+                })
+                .send()
+                .await
+            {
+                if r_retry.status().is_success() {
+                    self.round_tracker.record_bot_action(&fb, 0, snapshot.pot);
+                }
+            }
         }
     }
+}
 
-    if hand_active {
-        table_tracker.finalize_hand(&mut trackers, &current_opp_name);
-        for (name, opp_t) in trackers.iter() {
-            let _ = opp_t.save_profile(profiles_path, name);
+pub async fn run_live_bot(
+    url: &str,
+    room: &str,
+    name: &str,
+    strategy_path: &str,
+    subgame_search: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== lil-poker-mccfr Live Rust Bot Client ===");
+    println!("Server URL: {}", url);
+    println!("Room ID:    {}", room);
+    println!("Bot Name:   {}", name);
+
+    /* 1. Load Strategy Model (Target: <= 400MB RAM) */
+    let strategy_map = load_live_strategy(strategy_path);
+    let ram_mb = (strategy_map.len() * 140) as f64 / (1024.0 * 1024.0);
+    println!(
+        "Loaded strategy with {} infosets (RAM footprint: ~{:.1} MB).",
+        strategy_map.len(),
+        ram_mb
+    );
+
+    /* 2-4. Login, join room & connect WebSocket */
+    let Some((client, player_id, ws_stream)) = connect_live_ws(url, room, name).await? else {
+        return Ok(());
+    };
+    let (_, mut read) = ws_stream.split();
+
+    let strategy_index = Arc::new(StrategyLookupIndex::build_from_map(&strategy_map));
+    let mut session = LiveSession {
+        url: url.to_string(),
+        room: room.to_string(),
+        player_id,
+        client,
+        subgame_search,
+        profiles_path: "models/opponent_profiles.json",
+        trackers: HashMap::new(),
+        current_opp_name: String::new(),
+        last_action_key: String::new(),
+        last_hole: None,
+        last_board_len: 0,
+        hand_active: false,
+        last_seen_hand_id: 0,
+        round_tracker: LiveRoundTracker::new(),
+        table_tracker: LiveTableTracker::new(),
+        subgame_solver: Arc::new(SubgameSolver::default()),
+        strategy_index,
+        strategy_arc: Arc::new(strategy_map),
+    };
+
+    /* 5. Main Game Loop */
+    while let Some(msg) = read.next().await {
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("WebSocket error: {}", e);
+                break;
+            }
+        };
+        if !msg.is_text() {
+            continue;
         }
+        let text = msg.to_text()?;
+        let Ok(state) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        session.decide_and_submit(&state).await?;
     }
 
+    if session.hand_active {
+        session.finalize_and_save_hand();
+    }
     Ok(())
 }

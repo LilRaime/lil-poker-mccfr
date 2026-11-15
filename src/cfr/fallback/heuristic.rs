@@ -236,12 +236,16 @@ fn postflop_fallback(
                 s[CALL_CHECK as usize] = 0.35;
                 s[FOLD as usize] = 0.65;
             }
+        } else if bucket >= 80 && pot_odds > 0.35 {
+            /* Mid/High 2-card flush (80..=81): call heavy bets rather than folding away equity */
+            s[CALL_CHECK as usize] = 0.85;
+            s[RAISE_HALF_POT as usize] = 0.15;
         } else if pot_odds <= 0.35 {
             s[CALL_CHECK as usize] = 0.60;
             s[RAISE_HALF_POT as usize] = 0.25;
             s[ALL_IN as usize] = 0.15;
         } else {
-            /* Facing a large bet/overbet with a non-nut flush or low straight: prefer calling over jamming */
+            /* Facing a large bet/overbet with a straight or 4-flush board flush (74..=79): prefer calling over jamming */
             s[CALL_CHECK as usize] = 0.70;
             s[FOLD as usize] = 0.20;
             s[RAISE_HALF_POT as usize] = 0.10;

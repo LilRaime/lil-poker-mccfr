@@ -46,9 +46,12 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
             let is_nut_card = max_hole_suit_rank == (Rank::Ace as usize)
                 || (ace_on_board && max_hole_suit_rank == (Rank::King as usize));
 
-            /* On a 3-flush board with only 1 suited hole card, only count Ace/King-high
-             * redraws as real flush draws to avoid treating weak 1-card draws as monsters. */
-            if hole_has == 2 || max_hole_suit_rank >= (Rank::King as usize) {
+            /* On a 3-flush board with 1 suited hole card: count Ace/King on any street,
+             * and Queen/Jack-high flush redraws on the Flop so high-equity draws don't auto-fold. */
+            if hole_has == 2
+                || max_hole_suit_rank >= (Rank::King as usize)
+                || (board.len() == 3 && max_hole_suit_rank >= (Rank::Jack as usize))
+            {
                 is_flush_draw = true;
                 if is_nut_card {
                     is_nut_flush_draw = true;

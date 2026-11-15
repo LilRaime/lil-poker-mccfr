@@ -99,6 +99,34 @@ impl OpponentTracker {
                     }
                     probs[f_i] = 1.0;
                 }
+            } else if is_sb_open && pf_tier >= 7 {
+                reasons.push("PF_DISCIPLINE_GUARD");
+                let is_tight_passive_bb =
+                    self.total_hands >= 8 && self.vpip_ratio() < 0.28 && self.pfr_ratio() < 0.18;
+                if pf_tier == 8 || is_known_maniac || is_extreme_shove_bot {
+                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                        for p in probs.iter_mut() {
+                            *p = 0.0;
+                        }
+                        probs[f_i] = 1.0;
+                    }
+                } else if !self.is_passive_station() && !is_tight_passive_bb {
+                    /* Avoid SB limp-folding Tier 7 trash at 21-100 BB: fold or steal instead of limp-folding */
+                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                        let limp_w = probs[c_i];
+                        probs[c_i] = 0.0;
+                        if let Some(r_i) = legal_actions
+                            .iter()
+                            .position(|&a| a == RAISE_MIN)
+                            .or_else(|| legal_actions.iter().position(|&a| a == RAISE_THIRD_POT))
+                        {
+                            probs[r_i] += limp_w * 0.20;
+                        }
+                        if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                            probs[f_i] += limp_w * 0.80;
+                        }
+                    }
+                }
             } else if to_call > 0 && pf_tier >= 7 {
                 reasons.push("PF_DISCIPLINE_GUARD");
                 let mut shifted = 0.0f64;
