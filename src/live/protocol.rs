@@ -128,6 +128,24 @@ pub fn map_action_index_round_bb_chips(
     table_bb: i32,
     my_chips: i32,
 ) -> Option<(String, i32)> {
+    map_action_index_full(
+        idx, legal, to_call, pot, is_wet, round, table_bb, my_chips, 0,
+    )
+}
+
+/* Full CFR Action Index mapping including explicit server `current_bet` when available */
+#[allow(clippy::too_many_arguments)]
+pub fn map_action_index_full(
+    idx: usize,
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    is_wet: bool,
+    round: u8,
+    table_bb: i32,
+    my_chips: i32,
+    current_bet: i32,
+) -> Option<(String, i32)> {
     let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
     let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
     let raise_min_amt = bb;
@@ -179,20 +197,27 @@ pub fn map_action_index_round_bb_chips(
             }
         }
         RAISE_MIN..=RAISE_HALF_POT => {
-            let is_unopened_or_limped_pf = round == 1 && to_call <= bb && pot <= bb * 2 + bb / 2;
-            let opp_bet_pf = ((pot + to_call) / 2).max(to_call + bb / 2);
+            let is_unopened_or_limped_pf = round == 1
+                && if current_bet > 0 {
+                    current_bet <= bb
+                } else {
+                    to_call <= bb && pot <= bb * 2 + bb / 2
+                };
+            let opp_bet_pf = if current_bet > 0 {
+                current_bet.max(to_call)
+            } else {
+                ((pot + to_call) / 2).max(to_call + bb / 2)
+            };
             let min_raise = if round == 1 {
                 if is_unopened_or_limped_pf {
                     preflop_open_min_total
                 } else if to_call > 0 {
-                    (opp_bet_pf * 2)
-                        .max((to_call + bb) * 2)
-                        .max(preflop_open_min_total)
+                    (opp_bet_pf + to_call.max(bb)).max(preflop_open_min_total)
                 } else {
                     (bb * 2).max(preflop_open_min_total)
                 }
             } else if to_call > 0 {
-                (to_call * 2).max(to_call + bb)
+                (opp_bet_pf + to_call.max(bb)).max(to_call * 2)
             } else {
                 bb
             };
@@ -206,8 +231,8 @@ pub fn map_action_index_round_bb_chips(
                     if is_unopened_or_limped_pf {
                         (bb * 3).max(preflop_open_min_total)
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop 3-bet / 4-bet: 3.0x opponent's bet */
-                        (opp_bet_pf * 3).max(min_raise)
+                        /* Preflop 3-bet / 4-bet: ~2.75x opponent's bet */
+                        (opp_bet_pf * 11 / 4).max(min_raise)
                     } else {
                         let s = (pot / 3).max(raise_third_pot_floor);
                         if base_bet > 0 {
@@ -221,8 +246,11 @@ pub fn map_action_index_round_bb_chips(
                     if is_unopened_or_limped_pf {
                         (bb * 7 / 2).max(preflop_open_min_total)
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop large 3-bet / 4-bet: 3.5x to pot-sized 3-bet */
-                        (opp_bet_pf + pot).max(opp_bet_pf * 7 / 2).max(min_raise)
+                        /* Preflop polarized 3-bet / 4-bet: 3.0x opponent's bet (aligned with MCCFR 50% pot) */
+                        (opp_bet_pf * 3)
+                            .min(opp_bet_pf + pot)
+                            .max(opp_bet_pf * 11 / 4)
+                            .max(min_raise)
                     } else {
                         let s = if round == 4 {
                             /* River: Polarized 125% pot overbet */
@@ -247,8 +275,8 @@ pub fn map_action_index_round_bb_chips(
                         /* Preflop initial open-raise (HU SB or Multi-way UTG/MP/CO/BTN) or BB ISO vs limp: 2.5x BB */
                         preflop_open_min_total
                     } else if round == 1 && to_call > 0 {
-                        /* Preflop small/value 3-bet: 2.75x opponent's bet (or min_raise) */
-                        (opp_bet_pf * 11 / 4).max(min_raise)
+                        /* Preflop small/value 3-bet: 2.5x opponent's bet (or min_raise) */
+                        (opp_bet_pf * 5 / 2).max(min_raise)
                     } else if round == 1 {
                         (base_bet + raise_min_amt).max(min_raise)
                     } else if to_call > 0 {

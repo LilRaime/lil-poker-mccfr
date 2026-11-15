@@ -1,5 +1,8 @@
 /* Purified Action Sampling and Orchestration Pipeline */
 use super::tracker::OpponentTracker;
+use crate::cfr::abstraction::{
+    nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
+};
 use crate::game::config::*;
 use crate::game::holdem::Card;
 use rand::Rng;
@@ -165,6 +168,39 @@ impl OpponentTracker {
         table_bb: i32,
         rng: &mut R,
     ) -> (u8, DecisionTrace) {
+        self.select_action_purified_traced_with_stack(
+            raw_probs,
+            legal_actions,
+            bucket,
+            round,
+            to_call,
+            pot,
+            hole,
+            board,
+            active_opponents,
+            table_bb,
+            0,
+            rng,
+        )
+    }
+
+    /* Full contextual purified action sampling with remaining stack awareness */
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_action_purified_traced_with_stack<R: Rng>(
+        &self,
+        raw_probs: &[f64],
+        legal_actions: &[u8],
+        bucket: usize,
+        round: u8,
+        to_call: i32,
+        pot: i32,
+        hole: Option<&[Card; 2]>,
+        board: Option<&[Card]>,
+        active_opponents: usize,
+        table_bb: i32,
+        my_chips: i32,
+        rng: &mut R,
+    ) -> (u8, DecisionTrace) {
         let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
         let eff_allin_threshold = (bb * 35).max(1);
         let active_opponents = active_opponents.max(1);
@@ -222,6 +258,7 @@ impl OpponentTracker {
             board,
             active_opponents,
             bb,
+            my_chips,
             eff_allin_threshold,
             pot_odds,
             is_three_flush,
@@ -297,5 +334,99 @@ impl OpponentTracker {
             guard_reasons: reasons,
         };
         (chosen, trace)
+    }
+
+    /* Unified <= 12 BB Nash Push/Fold preflop engine shared by live play and simulation.
+     * Returns Some((action, reason_code)) when stack <= 12 BB preflop, else None. */
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_short_stack_preflop_action(
+        &self,
+        bucket: usize,
+        to_call: i32,
+        pot: i32,
+        active_opponents: usize,
+        table_bb: i32,
+        my_chips: i32,
+        legal_actions: &[u8],
+    ) -> Option<(u8, &'static str)> {
+        let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
+        if my_chips <= 0 || my_chips > bb * 12 {
+            return None;
+        }
+        let active_opponents = active_opponents.max(1);
+        let pf_tier = preflop_strength_tier(bucket);
+        let max_open_push_bb = nash_open_push_max_bb(bucket, active_opponents);
+        let is_maniac = self.total_actions() >= 8
+            && (self.raise_ratio() > 0.35 || self.pfr_ratio() > 0.40 || self.vpip_ratio() > 0.65);
+        let max_call_bb = nash_call_shove_max_bb(bucket, active_opponents, is_maniac);
+        let can_allin = legal_actions.contains(&ALL_IN)
+            || legal_actions.contains(&RAISE_HALF_POT)
+            || legal_actions.contains(&RAISE_MIN);
+        let can_call = legal_actions.contains(&CALL_CHECK) || legal_actions.contains(&ALL_IN);
+        let can_fold = legal_actions.contains(&FOLD);
+        let total_pot = (pot + to_call).max(1);
+        let pot_odds = to_call as f64 / total_pot as f64;
+        let call_action = if legal_actions.contains(&CALL_CHECK) {
+            CALL_CHECK
+        } else {
+            ALL_IN
+        };
+
+        if pf_tier <= 3 {
+            if can_allin {
+                return Some((ALL_IN, "SHORT_STACK_NASH_PUSH"));
+            }
+            if can_call {
+                return Some((call_action, "SHORT_STACK_NASH_PUSH"));
+            }
+        } else if pf_tier <= 5 {
+            if to_call == 0 {
+                if bucket <= 26 && can_allin {
+                    return Some((ALL_IN, "SHORT_STACK_BB_ISO_PUSH"));
+                }
+                if legal_actions.contains(&CALL_CHECK) {
+                    return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+                }
+            } else if to_call <= bb / 2
+                && pot <= bb * 2
+                && my_chips <= max_open_push_bb * bb
+                && can_allin
+            {
+                return Some((ALL_IN, "SHORT_STACK_NASH_PUSH"));
+            } else if to_call <= bb && pot <= bb * 4 {
+                if (bucket <= 26 || (pf_tier == 4 && my_chips <= bb * 7)) && can_allin {
+                    return Some((ALL_IN, "SHORT_STACK_BB_3BET_SHOVE"));
+                }
+                if can_call {
+                    return Some((call_action, "SHORT_STACK_BB_FLAT_CALL"));
+                }
+            } else if pot_odds <= 0.33
+                || my_chips <= bb * 2
+                || (to_call <= max_call_bb * bb && (pf_tier == 4 || is_maniac))
+            {
+                if can_call {
+                    return Some((call_action, "SHORT_STACK_PRICED_IN_CALL"));
+                }
+            } else if can_fold {
+                return Some((FOLD, "SHORT_STACK_FOLD"));
+            }
+        } else if to_call > 0 && to_call <= bb / 2 && my_chips <= max_open_push_bb * bb && can_allin
+        {
+            return Some((ALL_IN, "SHORT_STACK_NASH_PUSH"));
+        } else if to_call > 0
+            && ((pot_odds <= 0.28 && pf_tier <= 6)
+                || (pot_odds <= 0.22 && (pf_tier <= 6 || to_call <= bb * 2))
+                || my_chips <= bb * 2
+                || (is_maniac && to_call <= max_call_bb * bb && pf_tier <= 6))
+        {
+            if can_call {
+                return Some((call_action, "SHORT_STACK_PRICED_IN_CALL"));
+            }
+        } else if to_call == 0 && legal_actions.contains(&CALL_CHECK) {
+            return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+        } else if can_fold {
+            return Some((FOLD, "SHORT_STACK_FOLD"));
+        }
+        None
     }
 }

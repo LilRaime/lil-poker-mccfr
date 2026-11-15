@@ -57,10 +57,16 @@ pub struct OpponentTracker {
     pub exploit_enabled: bool,
     pub exploit_factor: f64,
 
-    /* Per-hand deduplication flags */
+    /* Per-hand deduplication & aggression flags */
     pub hand_vpip_recorded: bool,
     pub hand_pfr_recorded: bool,
     pub hand_saw_flop_recorded: bool,
+    #[serde(default)]
+    pub hand_pf_raises: u8,
+    #[serde(default)]
+    pub hand_post_raises: u8,
+    #[serde(default)]
+    pub last_observed_bb: i32,
 
     /* Optional guard ablation filter (reason codes disabled for benchmarking) */
     #[serde(skip)]
@@ -115,6 +121,9 @@ impl OpponentTracker {
             hand_vpip_recorded: false,
             hand_pfr_recorded: false,
             hand_saw_flop_recorded: false,
+            hand_pf_raises: 0,
+            hand_post_raises: 0,
+            last_observed_bb: 0,
             disabled_guards: Vec::new(),
         }
     }
@@ -179,6 +188,7 @@ impl OpponentTracker {
                         self.hand_vpip_recorded = true;
                     }
                 } else if action >= RAISE_MIN {
+                    self.hand_pf_raises = self.hand_pf_raises.saturating_add(1);
                     if !self.hand_vpip_recorded {
                         self.vpip_hands += 1;
                         self.hand_vpip_recorded = true;
@@ -195,6 +205,9 @@ impl OpponentTracker {
                     self.hand_saw_flop_recorded = true;
                 }
                 self.flop_actions[act_cat] += 1;
+                if action >= RAISE_MIN {
+                    self.hand_post_raises = self.hand_post_raises.saturating_add(1);
+                }
                 if facing_bet {
                     self.flop_cbet_faced += 1;
                     if action == FOLD {
@@ -204,6 +217,9 @@ impl OpponentTracker {
             }
             3 => {
                 self.turn_actions[act_cat] += 1;
+                if action >= RAISE_MIN {
+                    self.hand_post_raises = self.hand_post_raises.saturating_add(1);
+                }
                 if facing_bet {
                     self.turn_cbet_faced += 1;
                     if action == FOLD {
@@ -213,6 +229,9 @@ impl OpponentTracker {
             }
             4 => {
                 self.river_actions[act_cat] += 1;
+                if action >= RAISE_MIN {
+                    self.hand_post_raises = self.hand_post_raises.saturating_add(1);
+                }
                 if facing_bet {
                     self.river_bet_faced += 1;
                     if action == FOLD {
@@ -247,6 +266,8 @@ impl OpponentTracker {
         self.hand_vpip_recorded = false;
         self.hand_pfr_recorded = false;
         self.hand_saw_flop_recorded = false;
+        self.hand_pf_raises = 0;
+        self.hand_post_raises = 0;
     }
 
     pub fn record_showdown(&mut self) {
@@ -447,8 +468,15 @@ impl OpponentTracker {
         if opp_raised_river && cat <= 1 {
             self.showdown_bluff_count += 1;
         }
-        /* 2. Did opponent slowplay / trap with monster preflop hand? */
-        if preflop_strength_tier(pf_idx) == 1 {
+        /* 2. Did opponent genuinely slowplay / trap with a monster preflop hand?
+         * Exclude 3-bet/4-bet pots and aggressive postflop/river value lines so normal AA/KK
+         * 3-bet showdowns do not generate false trap counts. */
+        if preflop_strength_tier(pf_idx) == 1
+            && !opp_raised_river
+            && last_bet_amt == 0
+            && self.hand_pf_raises < 2
+            && self.hand_post_raises == 0
+        {
             self.showdown_trap_count += 1;
         }
         /* 3. Did opponent enter pot with trash cards? */
@@ -567,6 +595,29 @@ impl OpponentTracker {
         scale(&mut self.bb_total_hands);
         scale(&mut self.faced_3bet_count);
         scale(&mut self.fold_to_3bet_count);
+
+        self.vpip_hands = self.vpip_hands.min(self.total_hands);
+        self.pfr_hands = self.pfr_hands.min(self.vpip_hands);
+        self.sb_vpip_hands = self.sb_vpip_hands.min(self.sb_total_hands);
+        self.sb_pfr_hands = self.sb_pfr_hands.min(self.sb_vpip_hands);
+        self.bb_vpip_hands = self.bb_vpip_hands.min(self.bb_total_hands);
+        self.fold_to_3bet_count = self.fold_to_3bet_count.min(self.faced_3bet_count);
+    }
+
+    /* Decay historical statistics when the table Big Blind steps up significantly (e.g. every 20 hands)
+     * so opponent profiling adapts rapidly to high-blind / short-stack strategy shifts. */
+    pub fn observe_blind_level(&mut self, current_bb: i32) {
+        if current_bb <= 0 {
+            return;
+        }
+        if self.last_observed_bb > 0 && current_bb > self.last_observed_bb {
+            let ratio = current_bb as f64 / self.last_observed_bb as f64;
+            if ratio >= 1.35 {
+                let factor = (1.0 / ratio.sqrt()).clamp(0.45, 0.72);
+                self.apply_session_decay(factor);
+            }
+        }
+        self.last_observed_bb = current_bb;
     }
 
     /* Persist opponent profile to disk JSON database keyed by opponent identifier,
@@ -664,6 +715,9 @@ impl OpponentTracker {
         tracker.hand_vpip_recorded = false;
         tracker.hand_pfr_recorded = false;
         tracker.hand_saw_flop_recorded = false;
+        tracker.hand_pf_raises = 0;
+        tracker.hand_post_raises = 0;
+        tracker.last_observed_bb = 0;
         tracker.apply_session_decay(0.90);
         Some(tracker)
     }

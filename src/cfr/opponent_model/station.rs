@@ -256,10 +256,10 @@ impl OpponentTracker {
                 }
             }
             if round == 2 && to_call >= bb * 3 {
-                let should_fold_flop =
-                    (((28..=32).contains(&bucket) || bucket == 34 || bucket == 35)
-                        && pot_odds >= 0.27)
-                        || (bucket == 36 && to_call >= bb * 5 && pot_odds >= 0.35);
+                let weak_flop_pair = (28..=32).contains(&bucket) || bucket == 34 || bucket == 35;
+                let should_fold_flop = (weak_flop_pair
+                    && (pot_odds >= 0.27 || (to_call >= bb * 5 && pot_odds >= 0.25)))
+                    || (bucket == 36 && to_call >= bb * 5 && pot_odds >= 0.35);
                 if should_fold_flop {
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         reasons.push("POST_BARREL_FOLD");

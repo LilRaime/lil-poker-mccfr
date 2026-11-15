@@ -151,12 +151,18 @@ pub fn sample_opponent_action(
                 } else {
                     CALL_CHECK
                 }
-            } else {
-                let bucket = if game.round == 1 {
-                    35
+            } else if game.round == 1 {
+                let (idx, _) = preflop_bucket(hole[0], hole[1]);
+                let tier = preflop_strength_tier(idx);
+                if (opp_to_call > BIG_BLIND * 8 && tier >= 7 && rng.gen_bool(0.85))
+                    || (opp_to_call > BIG_BLIND * 3 && tier == 8 && rng.gen_bool(0.75))
+                {
+                    H_FOLD
                 } else {
-                    postflop_equity_bucket(hole, board)
-                };
+                    CALL_CHECK
+                }
+            } else {
+                let bucket = postflop_equity_bucket(hole, board);
                 if (opp_to_call > BIG_BLIND && bucket < 15 && rng.gen_bool(0.35))
                     || (opp_to_call > BIG_BLIND * 3 && bucket < 30 && rng.gen_bool(0.60))
                 {

@@ -859,3 +859,50 @@ fn test_backdoor_draws_and_trips_vs_set_bucket_separation() {
         b_trips
     );
 }
+
+#[test]
+fn test_postflop_board_quads_and_double_paired_draw() {
+    let board_quads = [
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let hole_weak = [
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Diamonds),
+    ];
+    let hole_ace = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Diamonds),
+    ];
+    let weak_quad_bucket = postflop_equity_bucket(&hole_weak, &board_quads);
+    let ace_quad_bucket = postflop_equity_bucket(&hole_ace, &board_quads);
+    assert!(
+        weak_quad_bucket < 15,
+        "Board quads with weak 5-4 kicker must be trash bucket < 15, got {}",
+        weak_quad_bucket
+    );
+    assert!(
+        ace_quad_bucket >= 50,
+        "Board quads with Ace-high kicker must remain strong >= 50, got {}",
+        ace_quad_bucket
+    );
+
+    let board_double_paired = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let hole_nut_fd = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let fd_bucket = postflop_equity_bucket(&hole_nut_fd, &board_double_paired);
+    assert_eq!(
+        fd_bucket, 23,
+        "Nut flush draw on double-paired board must preserve FD bucket 23"
+    );
+}

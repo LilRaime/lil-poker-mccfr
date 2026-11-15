@@ -14,6 +14,33 @@ pub struct OpponentReachDistribution {
     pub total_weight: f64,
 }
 
+fn collect_target_actions(
+    actions: &[u8],
+    street: u8,
+    round: u8,
+    target_player: Option<usize>,
+    active_player: Option<usize>,
+) -> Vec<u8> {
+    let Some(tp) = target_player else {
+        return actions.to_vec();
+    };
+    actions
+        .iter()
+        .enumerate()
+        .filter(|&(idx, _)| {
+            if street == round {
+                match active_player {
+                    Some(ap) if tp == ap => (actions.len() - idx).is_multiple_of(2),
+                    _ => (actions.len() - 1 - idx).is_multiple_of(2),
+                }
+            } else {
+                (1 - idx % 2) == tp || actions.len() == 1
+            }
+        })
+        .map(|(_, &a)| a)
+        .collect()
+}
+
 impl OpponentReachDistribution {
     pub fn build<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         remaining_deck: &[Card],
@@ -65,6 +92,37 @@ impl OpponentReachDistribution {
         opp_vpip: Option<f64>,
         opp_pfr: Option<f64>,
     ) -> Self {
+        Self::build_for_target_generic(
+            remaining_deck,
+            board,
+            round,
+            history,
+            strategy_map,
+            my_player.map(|mp| 1 - mp),
+            my_player,
+            opp_vpip,
+            opp_pfr,
+        )
+    }
+
+    /* Generic target-player reach distribution builder avoiding active-street actor inversion.
+     * `target_player`: seat (0=SB, 1=BB) whose hand distribution is built.
+     * `active_player`: seat currently about to act at the root node. */
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_for_target_generic<
+        H: crate::cfr::abstraction::HistoryActions + ?Sized,
+        V: AsRef<[f64]>,
+    >(
+        remaining_deck: &[Card],
+        board: &[Card],
+        round: u8,
+        history: &H,
+        strategy_map: Option<&HashMap<String, V>>,
+        target_player: Option<usize>,
+        active_player: Option<usize>,
+        opp_vpip: Option<f64>,
+        opp_pfr: Option<f64>,
+    ) -> Self {
         use crate::cfr::abstraction::{detect_draws, preflop_bucket, preflop_strength_tier};
         use crate::game::holdem::evaluate_7cards;
 
@@ -96,14 +154,14 @@ impl OpponentReachDistribution {
         let mut combos = Vec::with_capacity(num_combos);
         let mut weights = Vec::with_capacity(num_combos);
 
-        let (opp_raised_pf, opp_called_pf, opp_3bet_pf, opp_limped_pf) = if let Some(mp) = my_player
+        let (opp_raised_pf, opp_called_pf, opp_3bet_pf, opp_limped_pf) = if let Some(tp) =
+            target_player
         {
-            let opp = 1 - mp;
             let actions = history.actions_in_round(0);
             let opp_actions: Vec<u8> = actions
                 .iter()
                 .enumerate()
-                .filter(|(idx, _)| idx % 2 == opp)
+                .filter(|(idx, _)| idx % 2 == tp)
                 .map(|(_, &a)| a)
                 .collect();
             let opp_raised = opp_actions.iter().any(|&a| a >= RAISE_MIN);
@@ -111,7 +169,7 @@ impl OpponentReachDistribution {
 
             let mut is_3bet = false;
             for (idx, &a) in actions.iter().enumerate() {
-                if idx % 2 == opp && a >= RAISE_MIN {
+                if idx % 2 == tp && a >= RAISE_MIN {
                     let prior_raises = actions[..idx].iter().filter(|&&pa| pa >= RAISE_MIN).count();
                     if prior_raises >= 1 {
                         is_3bet = true;
@@ -139,109 +197,52 @@ impl OpponentReachDistribution {
             )
         };
 
-        let (opp_raised_flop, opp_called_flop, max_opp_raise_flop) = if let Some(mp) = my_player {
-            let opp = 1 - mp;
-            let actions = history.actions_in_round(1);
-            let opp_actions: Vec<u8> = actions
-                .iter()
-                .enumerate()
-                .filter(|&(idx, _)| {
-                    if round == 2 {
-                        /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
-                        (actions.len() - 1 - idx).is_multiple_of(2)
-                    } else {
-                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
-                        (1 - idx % 2) == opp || actions.len() == 1
-                    }
-                })
-                .map(|(_, &a)| a)
-                .collect();
-            let max_r = opp_actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, opp_actions.contains(&1), max_r)
-        } else {
-            let actions = history.actions_in_round(1);
-            let max_r = actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, actions.contains(&1), max_r)
-        };
+        let flop_actions = collect_target_actions(
+            history.actions_in_round(1),
+            2,
+            round,
+            target_player,
+            active_player,
+        );
+        let max_opp_raise_flop = flop_actions
+            .iter()
+            .copied()
+            .filter(|&a| a >= 2)
+            .max()
+            .unwrap_or(0);
+        let (opp_raised_flop, opp_called_flop) =
+            (max_opp_raise_flop >= 2, flop_actions.contains(&1));
 
-        let (opp_raised_turn, opp_called_turn, max_opp_raise_turn) = if let Some(mp) = my_player {
-            let opp = 1 - mp;
-            let actions = history.actions_in_round(2);
-            let opp_actions: Vec<u8> = actions
-                .iter()
-                .enumerate()
-                .filter(|&(idx, _)| {
-                    if round == 3 {
-                        /* On the active street, it is mp's turn, so actions.len() - 1 was taken by opp */
-                        (actions.len() - 1 - idx).is_multiple_of(2)
-                    } else {
-                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
-                        (1 - idx % 2) == opp || actions.len() == 1
-                    }
-                })
-                .map(|(_, &a)| a)
-                .collect();
-            let max_r = opp_actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, opp_actions.contains(&1), max_r)
-        } else {
-            let actions = history.actions_in_round(2);
-            let max_r = actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, actions.contains(&1), max_r)
-        };
+        let turn_actions = collect_target_actions(
+            history.actions_in_round(2),
+            3,
+            round,
+            target_player,
+            active_player,
+        );
+        let max_opp_raise_turn = turn_actions
+            .iter()
+            .copied()
+            .filter(|&a| a >= 2)
+            .max()
+            .unwrap_or(0);
+        let (opp_raised_turn, opp_called_turn) =
+            (max_opp_raise_turn >= 2, turn_actions.contains(&1));
 
-        let (opp_raised_river, max_opp_raise_river) = if let Some(mp) = my_player {
-            let opp = 1 - mp;
-            let actions = history.actions_in_round(3);
-            let opp_actions: Vec<u8> = actions
-                .iter()
-                .enumerate()
-                .filter(|&(idx, _)| {
-                    if round == 4 && !actions.is_empty() {
-                        (actions.len() - 1 - idx).is_multiple_of(2)
-                    } else {
-                        /* Postflop: BB (player 1) acts first at idx 0, so actor at idx is (1 - idx % 2) */
-                        (1 - idx % 2) == opp || actions.len() == 1
-                    }
-                })
-                .map(|(_, &a)| a)
-                .collect();
-            let max_r = opp_actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, max_r)
-        } else {
-            let actions = history.actions_in_round(3);
-            let max_r = actions
-                .iter()
-                .copied()
-                .filter(|&a| a >= 2)
-                .max()
-                .unwrap_or(0);
-            (max_r >= 2, max_r)
-        };
+        let river_actions = collect_target_actions(
+            history.actions_in_round(3),
+            4,
+            round,
+            target_player,
+            active_player,
+        );
+        let max_opp_raise_river = river_actions
+            .iter()
+            .copied()
+            .filter(|&a| a >= 2)
+            .max()
+            .unwrap_or(0);
+        let opp_raised_river = max_opp_raise_river >= 2;
 
         let flop_board_paired = board.len() >= 3
             && (board[0].rank == board[1].rank
@@ -358,14 +359,15 @@ impl OpponentReachDistribution {
                     let (_, pf_name) = preflop_bucket(cand[0], cand[1]);
                     let pf_key_facing_raise = format!("P:{}/r", pf_name);
                     let pf_key_root = format!("P:{}/", pf_name);
-                    let probs_opt = if my_player == Some(0) && (opp_3bet_pf || opp_called_pf) {
+                    let probs_opt = if target_player == Some(1) && (opp_3bet_pf || opp_called_pf) {
                         strat_map
                             .get(&pf_key_facing_raise)
                             .or_else(|| strat_map.get(&pf_key_root))
                     } else {
                         strat_map.get(&pf_key_root)
                     };
-                    if let Some(probs) = probs_opt {
+                    if let Some(probs_raw) = probs_opt {
+                        let probs = probs_raw.as_ref();
                         if opp_3bet_pf {
                             let r_prob: f64 = probs.iter().skip(RAISE_MIN as usize).sum();
                             r_prob.powi(2).max(0.01)

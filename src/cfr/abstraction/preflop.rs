@@ -157,15 +157,16 @@ pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
         | 38..=39
         | 47..=48
         | 55..=56
-        | 63..=64
+        | 63
         | 70
-        | 76
         | 96..=99
         | 106
         | 115
         | 124
         | 133 => 12,
         100..=102 => 10,
+        /* Suited connectors & one-gappers (97s, 86s, 76s, 65s, 54s) prefer min-raising over open-shoving at 10-12 BB */
+        64 | 71 | 76 | 81 | 85 => 9,
         _ if tier == 6 => 8,
         _ if tier == 7 && idx < 91 => 4,
         _ => 0,

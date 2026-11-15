@@ -203,11 +203,14 @@ impl OpponentTracker {
             }
         }
 
-        /* Flop facing a significant bet (to_call >= 2 BB, pot_odds >= 0.24) with bare One Pair / Top Pair (28..=47) */
+        /* Flop facing a significant bet:
+         * - Bare One Pair / Top Pair (28..=47) vs >= 2 BB & >= 24% pot odds -> call only (pot control)
+         * - Bare OESD / non-nut Flush Draw (15..=21) vs large bet (>= 4 BB or >= 30% pot odds) -> call, no check-raise */
         if round == 2
-            && to_call >= bb * 2
-            && pot_odds >= 0.24
-            && (28..=47).contains(&bucket)
+            && (((28..=47).contains(&bucket) && to_call >= bb * 2 && pot_odds >= 0.24)
+                || ((15..=21).contains(&bucket)
+                    && to_call > 0
+                    && (to_call >= bb * 4 || pot_odds >= 0.30)))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             let mut shifted = 0.0f64;
@@ -302,7 +305,7 @@ impl OpponentTracker {
                 probs[c_i] = (probs[c_i] + shifted).max(0.65);
             }
         } else if round == 4
-            && (28..=66).contains(&bucket)
+            && (28..=72).contains(&bucket)
             && self.is_guard_enabled("POST_RIVER_OVERBET_CAP")
         {
             let is_three_straight = board
@@ -317,7 +320,11 @@ impl OpponentTracker {
             let is_dangerous = board.map(is_dangerous_board).unwrap_or(false)
                 || is_three_flush
                 || is_three_straight;
-            if to_call > 0 && (bucket < 61 || to_call >= bb * 4 || is_dangerous) {
+            if to_call > 0
+                && (bucket < 61
+                    || (bucket <= 66 && (to_call >= bb * 4 || is_dangerous))
+                    || (to_call >= bb * 4 && is_dangerous))
+            {
                 let mut shifted_raise = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a >= RAISE_MIN {
@@ -341,7 +348,7 @@ impl OpponentTracker {
                 } else if let Some(r_t) = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT) {
                     probs[r_t] += shifted;
                 }
-            } else if bucket < 61 {
+            } else if bucket < 61 || is_dangerous {
                 let mut shifted = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a == RAISE_HALF_POT || a == ALL_IN {
@@ -349,7 +356,7 @@ impl OpponentTracker {
                         probs[i] = 0.0;
                     }
                 }
-                if is_dangerous {
+                if is_dangerous && bucket < 67 {
                     if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
                         probs[c_i] = (probs[c_i] + shifted).max(0.60);
                     }

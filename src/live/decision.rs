@@ -1,11 +1,9 @@
 /* Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::map_action_index_round_bb_chips;
-use crate::cfr::abstraction::{
-    nash_open_push_max_bb, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
-};
-use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
+use super::protocol::map_action_index_full;
+use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
+use crate::cfr::fallback::{get_holdem_fallback_strategy_bb, StrategyLookupIndex};
 use crate::cfr::opponent_model::{DecisionTrace, OpponentTracker};
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
 use crate::game::config::*;
@@ -155,6 +153,51 @@ pub fn decide_action_traced(
     big_blind: i32,
     my_chips: i32,
 ) -> (String, i32, DecisionTrace) {
+    decide_action_traced_with_bet(
+        hole,
+        board,
+        legal,
+        to_call,
+        pot,
+        strategy_map,
+        subgame_search,
+        tracker,
+        history,
+        my_player,
+        contributions,
+        raises_this_round,
+        strategy_index,
+        solver,
+        solver_ctx,
+        active_opponents,
+        big_blind,
+        my_chips,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decide_action_traced_with_bet(
+    hole: &[Card; 2],
+    board: &[Card],
+    legal: &[String],
+    to_call: i32,
+    pot: i32,
+    strategy_map: &HashMap<String, Vec<f64>>,
+    subgame_search: bool,
+    tracker: &OpponentTracker,
+    history: &[RoundHistory; 4],
+    my_player: usize,
+    contributions: [i32; 2],
+    raises_this_round: u8,
+    strategy_index: Option<&StrategyLookupIndex>,
+    solver: Option<&SubgameSolver>,
+    solver_ctx: Option<&mut SubgameContext>,
+    active_opponents: usize,
+    big_blind: i32,
+    my_chips: i32,
+    current_bet: i32,
+) -> (String, i32, DecisionTrace) {
     let bb = if big_blind > 0 { big_blind } else { BIG_BLIND };
     let active_opponents = active_opponents.max(1);
     let (to_call, pot) = if my_chips > 0 && to_call > my_chips {
@@ -211,138 +254,69 @@ pub fn decide_action_traced(
     };
 
     /* Short-Stack Nash Push/Fold Engine:
-     * When effective stack is <= 12 BB on preflop, playing regular postflop lines is mathematically -EV.
-     * Uses Nash-calibrated open-push and shove-call thresholds based on exact preflop bucket and active opponents. */
-    if round == 1 && my_chips > 0 {
-        let stack_bb = my_chips / bb;
-        if stack_bb <= 12 {
-            let pf_tier = preflop_strength_tier(current_bucket);
-            let max_open_push_bb = nash_open_push_max_bb(current_bucket, active_opponents);
-            let can_allin = has("all_in") || has("allin") || has("raise") || has("bet");
+     * When effective stack is <= 12 BB on preflop, delegates to unified OpponentTracker Nash Push/Fold. */
+    if round == 1 && my_chips > 0 && my_chips <= bb * 12 {
+        if let Some((short_act, reason)) = tracker.select_short_stack_preflop_action(
+            current_bucket,
+            to_call,
+            pot,
+            active_opponents,
+            bb,
+            my_chips,
+            &legal_u8,
+        ) {
             let total_pot = (pot + to_call).max(1);
             let pot_odds = to_call as f64 / total_pot as f64;
             let pot_odds_bps = (pot_odds.clamp(0.0, 1.0) * 1000.0).round() as u16;
-            let make_short_trace = |final_act: u8, reason: &'static str| DecisionTrace {
+            let tr = DecisionTrace {
                 bucket: current_bucket,
                 round: 1,
                 pot_odds_bps,
-                raw_top_action: final_act,
-                final_action: final_act,
+                raw_top_action: short_act,
+                final_action: short_act,
                 guard_reasons: vec![reason],
             };
-            let push_action = |reason: &'static str| -> (String, i32, DecisionTrace) {
-                let tr = make_short_trace(ALL_IN, reason);
-                if has("all_in") {
-                    ("all_in".to_string(), 0, tr)
-                } else if has("allin") {
-                    ("allin".to_string(), 0, tr)
-                } else if has("raise") {
-                    ("raise".to_string(), my_chips, tr)
-                } else if has("bet") {
-                    ("bet".to_string(), my_chips, tr)
-                } else if has("call") {
-                    ("call".to_string(), 0, tr)
-                } else {
-                    ("check".to_string(), 0, tr)
-                }
-            };
-            let call_or_allin_action =
-                |reason: &'static str| -> Option<(String, i32, DecisionTrace)> {
-                    let tr = make_short_trace(CALL_CHECK, reason);
-                    if has("call") {
-                        Some(("call".to_string(), 0, tr))
-                    } else if has("all_in") {
-                        Some(("all_in".to_string(), 0, tr))
+            match short_act {
+                ALL_IN => {
+                    if has("all_in") {
+                        return ("all_in".to_string(), 0, tr);
                     } else if has("allin") {
-                        Some(("allin".to_string(), 0, tr))
+                        return ("allin".to_string(), 0, tr);
+                    } else if has("raise") {
+                        return ("raise".to_string(), my_chips, tr);
+                    } else if has("bet") {
+                        return ("bet".to_string(), my_chips, tr);
+                    } else if has("call") {
+                        return ("call".to_string(), 0, tr);
                     } else {
-                        None
+                        return ("check".to_string(), 0, tr);
                     }
-                };
-
-            if pf_tier <= 3 {
-                /* Tiers 1..=3 (AA-77, AK-A8s, A5s, KQs-KTs, QJs, AKo-AJo, KQo): PUSH / CALL! */
-                if can_allin || has("call") {
-                    return push_action("SHORT_STACK_NASH_PUSH");
                 }
-            } else if pf_tier <= 5 {
-                /* Tiers 4..=5:
-                 * - In BB facing a limp (to_call == 0): only push pocket pairs / suited Aces (bucket <= 26);
-                 *   with offsuit / non-Ace hands, take the free flop ("check")!
-                 * - Opening from SB in unopened pot (to_call > 0 && to_call <= bb / 2 && pot <= bb * 2):
-                 *   push if stack_bb <= max_open_push_bb!
-                 * - In BB facing a 2x min-raise (to_call <= bb && pot <= bb * 4): only 3-bet shove pairs/suited Aces
-                 *   (bucket <= 26) or Tier 4 at <= 7 BB; otherwise flat-call 1 BB!
-                 * - Facing a larger raise: CALL if priced in (pot_odds <= 0.33)! */
-                if to_call == 0 {
-                    if current_bucket <= 26 && can_allin {
-                        return push_action("SHORT_STACK_BB_ISO_PUSH");
+                CALL_CHECK => {
+                    if to_call == 0 && has("check") {
+                        return ("check".to_string(), 0, tr);
+                    } else if has("call") {
+                        return ("call".to_string(), 0, tr);
+                    } else if has("all_in") {
+                        return ("all_in".to_string(), 0, tr);
+                    } else if has("allin") {
+                        return ("allin".to_string(), 0, tr);
                     } else if has("check") {
-                        return (
-                            "check".to_string(),
-                            0,
-                            make_short_trace(CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"),
-                        );
+                        return ("check".to_string(), 0, tr);
                     }
-                } else if to_call <= bb / 2
-                    && pot <= bb * 2
-                    && stack_bb <= max_open_push_bb
-                    && can_allin
-                {
-                    return push_action("SHORT_STACK_NASH_PUSH");
-                } else if to_call <= bb && pot <= bb * 4 {
-                    if (current_bucket <= 26 || (pf_tier == 4 && stack_bb <= 7)) && can_allin {
-                        return push_action("SHORT_STACK_BB_3BET_SHOVE");
-                    } else if let Some(act) = call_or_allin_action("SHORT_STACK_BB_FLAT_CALL") {
-                        return act;
-                    }
-                } else if pot_odds <= 0.33 || my_chips <= bb * 2 {
-                    if let Some(act) = call_or_allin_action("SHORT_STACK_PRICED_IN_CALL") {
-                        return act;
-                    }
-                } else if has("fold") {
-                    return (
-                        "fold".to_string(),
-                        0,
-                        make_short_trace(FOLD, "SHORT_STACK_FOLD"),
-                    );
                 }
-            } else {
-                /* Tiers 6..=8:
-                 * 1) If in unopened pot (to_call > 0 && to_call <= bb / 2) and stack_bb <= max_open_push_bb: PUSH!
-                 *    Never push Tier 6 from BB into a limp when to_call == 0, nor above max_open_push_bb!
-                 * 2) If priced in from BB (pot_odds <= 0.28 or my_chips <= 2 BB, but never trash pf_tier >= 7 facing >= 3 BB): CALL!
-                 * 3) Otherwise check for free or fold. */
-                if to_call > 0 && to_call <= bb / 2 && stack_bb <= max_open_push_bb && can_allin {
-                    return push_action("SHORT_STACK_NASH_PUSH");
-                } else if to_call > 0
-                    && ((pot_odds <= 0.28 && pf_tier <= 6)
-                        || (pot_odds <= 0.22 && (pf_tier <= 6 || to_call <= bb * 2))
-                        || my_chips <= bb * 2)
-                {
-                    if let Some(act) = call_or_allin_action("SHORT_STACK_PRICED_IN_CALL") {
-                        return act;
+                _ => {
+                    if has("fold") {
+                        return ("fold".to_string(), 0, tr);
                     }
-                } else if to_call == 0 && has("check") {
-                    return (
-                        "check".to_string(),
-                        0,
-                        make_short_trace(CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"),
-                    );
-                } else if has("fold") {
-                    return (
-                        "fold".to_string(),
-                        0,
-                        make_short_trace(FOLD, "SHORT_STACK_FOLD"),
-                    );
                 }
             }
         }
     }
 
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for big pots when Heads-Up 1v1):
-     * Scale flop subgame trigger dynamically with big_blind (`bb * 12`). */
-    let flop_trigger_pot = (bb * 12).max(1);
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for medium/big pots when Heads-Up 1v1):
+     * Scale flop subgame trigger dynamically with big_blind (`bb * 8`). */
+    let flop_trigger_pot = (bb * 8).max(1);
     let use_subgame = subgame_search
         && active_opponents == 1
         && (round >= 3 || (round == 2 && pot >= flop_trigger_pot));
@@ -397,17 +371,17 @@ pub fn decide_action_traced(
         ) {
             p
         } else if let Some(idx) = strategy_index {
-            idx.get_blended_fallback(hole, board, round, to_call, pot, &legal_u8)
+            idx.get_blended_fallback_bb(hole, board, round, to_call, pot, &legal_u8, bb)
         } else {
             let fallback =
-                get_holdem_fallback_strategy(hole, board, round, to_call, pot, &legal_u8);
+                get_holdem_fallback_strategy_bb(hole, board, round, to_call, pot, &legal_u8, bb);
             fallback.to_vec()
         }
     };
 
     /* 3. Action Selection via Purified Strategy Sampling with Multi-way, Opponent Exploitation, and All-in Defense */
     let mut rng = rand::thread_rng();
-    let (chosen_u8, mut trace) = tracker.select_action_purified_traced(
+    let (chosen_u8, mut trace) = tracker.select_action_purified_traced_with_stack(
         &raw_probs,
         &legal_u8,
         current_bucket,
@@ -418,6 +392,7 @@ pub fn decide_action_traced(
         Some(board),
         active_opponents,
         bb,
+        my_chips,
         &mut rng,
     );
     let mut chosen_idx = chosen_u8 as usize;
@@ -497,8 +472,16 @@ pub fn decide_action_traced(
         suits.iter().any(|&s| s >= 2)
     };
 
-    if let Some((act, amt)) = map_action_index_round_bb_chips(
-        chosen_idx, legal, to_call, pot, is_wet, round, bb, my_chips,
+    if let Some((act, amt)) = map_action_index_full(
+        chosen_idx,
+        legal,
+        to_call,
+        pot,
+        is_wet,
+        round,
+        bb,
+        my_chips,
+        current_bet,
     ) {
         return (act, amt, trace);
     }

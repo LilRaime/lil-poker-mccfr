@@ -5,6 +5,7 @@
 
 use super::solver::SubgameSolver;
 use crate::cfr::abstraction::{hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket};
+use crate::cfr::fallback::{get_holdem_fallback_strategy, get_postflop_fallback_by_bucket};
 use crate::cfr::node::InfosetNode;
 use crate::game::config::*;
 use crate::game::holdem::TexasHoldemGame;
@@ -12,6 +13,57 @@ use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
+
+/* Light regret-matching prior weight for newly expanded subgame child nodes.
+ * Strong enough to steer initial opponent/range play away from uniform 1/6 noise,
+ * yet small enough that CFR+ chip regrets override it within a few iterations. */
+const CHILD_PRIOR_REGRET_WEIGHT: f64 = 25.0;
+
+#[inline]
+fn compute_subgame_key_hash(
+    game: &TexasHoldemGame,
+    cur_p: usize,
+    precomputed_buckets: &[[u8; 2]; 3],
+) -> u64 {
+    if game.round >= 2 && game.round <= 4 {
+        let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
+        hash_holdem_infoset_key_with_bucket(&game.hole[cur_p], bucket, game.round, &game.history)
+    } else {
+        hash_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history)
+    }
+}
+
+#[inline]
+pub(super) fn create_prior_infoset_node(
+    game: &TexasHoldemGame,
+    cur_p: usize,
+    legal: &[u8],
+    precomputed_buckets: &[[u8; 2]; 3],
+) -> InfosetNode {
+    let opp = 1 - cur_p;
+    let to_call = (game.contributions[opp] - game.contributions[cur_p]).max(0);
+    let pot = game.contributions[0] + game.contributions[1];
+    let prior = if game.round >= 2 && game.round <= 4 {
+        let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p] as usize;
+        get_postflop_fallback_by_bucket(bucket, game.round, to_call, pot, legal)
+    } else {
+        get_holdem_fallback_strategy(
+            &game.hole[cur_p],
+            &game.board,
+            game.round,
+            to_call,
+            pot,
+            legal,
+        )
+    };
+    let node = InfosetNode::new(HOLDEM_NUM_ACTIONS);
+    let mut init_regrets = [0.0f64; HOLDEM_NUM_ACTIONS];
+    for i in 0..HOLDEM_NUM_ACTIONS {
+        init_regrets[i] = prior[i] * CHILD_PRIOR_REGRET_WEIGHT;
+    }
+    node.update_regrets_cfr_plus(&init_regrets);
+    node
+}
 
 impl SubgameSolver {
     #[allow(clippy::too_many_arguments)]
@@ -44,24 +96,14 @@ impl SubgameSolver {
             return game.get_returns()[updating_player];
         }
 
-        let key_hash = if game.round >= 2 && game.round <= 4 {
-            let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
-            hash_holdem_infoset_key_with_bucket(
-                &game.hole[cur_p],
-                bucket,
-                game.round,
-                &game.history,
-            )
-        } else {
-            hash_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history)
-        };
+        let key_hash = compute_subgame_key_hash(game, cur_p, precomputed_buckets);
 
         let strategy = if let Some(node) = nodes.get(&key_hash) {
             node.get_strategy()
         } else {
-            let node = nodes
-                .entry(key_hash)
-                .or_insert_with(|| InfosetNode::new(HOLDEM_NUM_ACTIONS));
+            let node = nodes.entry(key_hash).or_insert_with(|| {
+                create_prior_infoset_node(game, cur_p, &legal, precomputed_buckets)
+            });
             node.get_strategy()
         };
 
@@ -141,22 +183,12 @@ impl SubgameSolver {
             return game.get_returns()[updating_player];
         }
 
-        let key_hash = if game.round >= 2 && game.round <= 4 {
-            let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
-            hash_holdem_infoset_key_with_bucket(
-                &game.hole[cur_p],
-                bucket,
-                game.round,
-                &game.history,
-            )
-        } else {
-            hash_holdem_infoset_key(&game.hole[cur_p], &game.board, game.round, &game.history)
-        };
+        let key_hash = compute_subgame_key_hash(game, cur_p, precomputed_buckets);
 
         let strategy = {
-            let node = nodes
-                .entry(key_hash)
-                .or_insert_with(|| InfosetNode::new(HOLDEM_NUM_ACTIONS));
+            let node = nodes.entry(key_hash).or_insert_with(|| {
+                create_prior_infoset_node(game, cur_p, &legal, precomputed_buckets)
+            });
             node.get_strategy()
         };
 

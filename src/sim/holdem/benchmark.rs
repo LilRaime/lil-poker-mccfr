@@ -14,7 +14,7 @@ use crate::game::holdem::{
     evaluate_7cards, Card, TexasHoldemGame, ALL_52_CARDS, ALL_IN, CALL_CHECK, FOLD as H_FOLD,
     RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
-use crate::live::decide_action_traced;
+use crate::live::decide_action_traced_with_bet;
 use crate::sim::stats::SimStats;
 
 /* Benchmark and Evaluation Result Structure */
@@ -110,6 +110,40 @@ pub fn run_holdem_benchmark_seeded(
     seed: Option<u64>,
     disabled_guards: &[String],
 ) -> HoldemBenchmarkResult {
+    run_holdem_benchmark_with_stack(
+        strategy_path,
+        total_episodes,
+        delay_ms,
+        enable_subgame_search,
+        player_arg,
+        opp_archetype,
+        opp_strategy_path,
+        duplicate_mode,
+        exploit_factor,
+        quiet,
+        seed,
+        disabled_guards,
+        STACK_SIZE,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_holdem_benchmark_with_stack(
+    strategy_path: &str,
+    total_episodes: u64,
+    delay_ms: u64,
+    enable_subgame_search: bool,
+    player_arg: &str,
+    opp_archetype: &str,
+    opp_strategy_path: Option<&str>,
+    duplicate_mode: bool,
+    exploit_factor: f64,
+    quiet: bool,
+    seed: Option<u64>,
+    disabled_guards: &[String],
+    stack_size: i32,
+) -> HoldemBenchmarkResult {
+    let stack_size = stack_size.max(BIG_BLIND * 2);
     let strategy = load_holdem_strategy(strategy_path);
     let strategy_index = strategy.as_ref().map(StrategyLookupIndex::build_from_map);
 
@@ -158,6 +192,13 @@ pub fn run_holdem_benchmark_seeded(
         if duplicate_mode {
             println!("[duplicate] DUPLICATE POKER ACTIVE: Each deal played in reverse seats to eliminate card luck!");
         }
+        if stack_size != STACK_SIZE {
+            println!(
+                "[stack] Effective Stack Depth: {} chips ({} BB)",
+                stack_size,
+                stack_size / BIG_BLIND
+            );
+        }
         if enable_subgame_search {
             println!("[subgame] Real-Time Search (Subgame Solving) enabled on Turn & River.");
         }
@@ -196,7 +237,7 @@ pub fn run_holdem_benchmark_seeded(
             }
 
             /* Seat A: Bot is Seat 0 (SB), Opponent is Seat 1 (BB) */
-            let game1 = TexasHoldemGame::new_dealt(hole_a, hole_b, runout);
+            let game1 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
             let (ret1, reasons1) = simulate_holdem_hand_traced(
                 game1,
                 0,
@@ -221,7 +262,7 @@ pub fn run_holdem_benchmark_seeded(
             }
 
             /* Seat B: Bot is Seat 1 (BB), Opponent is Seat 0 (SB) with identical deck */
-            let game2 = TexasHoldemGame::new_dealt(hole_a, hole_b, runout);
+            let game2 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
             let (ret2, reasons2) = simulate_holdem_hand_traced(
                 game2,
                 1,
@@ -262,7 +303,7 @@ pub fn run_holdem_benchmark_seeded(
                 "1" | "bb" => 1usize,
                 _ => ((ep - 1) % 2) as usize,
             };
-            let game = TexasHoldemGame::new_random(&mut rng);
+            let game = TexasHoldemGame::new_random(&mut rng).with_stack(stack_size);
             let (ret, reasons) = simulate_holdem_hand_traced(
                 game,
                 my_player,
@@ -569,6 +610,30 @@ pub fn run_holdem_gauntlet_benchmark_seeded(
     disabled_guards: &[String],
     quiet: bool,
 ) -> Vec<(String, HoldemBenchmarkResult)> {
+    run_holdem_gauntlet_benchmark_with_stack(
+        strategy_path,
+        deals_per_archetype,
+        enable_subgame_search,
+        exploit_factor,
+        base_seed,
+        disabled_guards,
+        quiet,
+        STACK_SIZE,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_holdem_gauntlet_benchmark_with_stack(
+    strategy_path: &str,
+    deals_per_archetype: u64,
+    enable_subgame_search: bool,
+    exploit_factor: f64,
+    base_seed: Option<u64>,
+    disabled_guards: &[String],
+    quiet: bool,
+    stack_size: i32,
+) -> Vec<(String, HoldemBenchmarkResult)> {
+    let stack_size = stack_size.max(BIG_BLIND * 2);
     let archetypes = [
         "tag",
         "calling_station",
@@ -586,8 +651,10 @@ pub fn run_holdem_gauntlet_benchmark_seeded(
         println!("     ♠️  Texas Hold'em Multi-Archetype Gauntlet Suite  ♥️     ");
         println!("============================================================");
         println!(
-            "Deals per Archetype : {} (Duplicate Mode, Seed={:?})",
-            deals_per_archetype, base_seed
+            "Deals per Archetype : {} (Duplicate Mode, Stack={} BB, Seed={:?})",
+            deals_per_archetype,
+            stack_size / BIG_BLIND,
+            base_seed
         );
         if !disabled_guards.is_empty() {
             println!("Disabled Guards     : {:?}", disabled_guards);
@@ -604,7 +671,7 @@ pub fn run_holdem_gauntlet_benchmark_seeded(
     let mut total_bb100_sum = 0.0;
     for (idx, &arch) in archetypes.iter().enumerate() {
         let arch_seed = base_seed.map(|s| s.wrapping_add((idx as u64 + 1) * 10_007));
-        let res = run_holdem_benchmark_seeded(
+        let res = run_holdem_benchmark_with_stack(
             strategy_path,
             deals_per_archetype,
             0,
@@ -617,6 +684,7 @@ pub fn run_holdem_gauntlet_benchmark_seeded(
             true,
             arch_seed,
             disabled_guards,
+            stack_size,
         );
         total_bb100_sum += res.win_rate_bb100;
         for (k, (cnt, net)) in &res.guard_telemetry {
@@ -736,6 +804,25 @@ pub fn run_holdem_multiway_benchmark(
     exploit_factor: f64,
     seed: Option<u64>,
 ) -> f64 {
+    run_holdem_multiway_benchmark_with_stack(
+        strategy_path,
+        total_deals,
+        enable_subgame_search,
+        exploit_factor,
+        seed,
+        STACK_SIZE,
+    )
+}
+
+pub fn run_holdem_multiway_benchmark_with_stack(
+    strategy_path: &str,
+    total_deals: u64,
+    enable_subgame_search: bool,
+    exploit_factor: f64,
+    seed: Option<u64>,
+    stack_size: i32,
+) -> f64 {
+    let stack_size = stack_size.max(BIG_BLIND * 2);
     let strategy = crate::live::load_live_strategy(strategy_path);
     let strategy_index = StrategyLookupIndex::build_from_map(&strategy);
     let subgame_solver = SubgameSolver::default();
@@ -743,7 +830,7 @@ pub fn run_holdem_multiway_benchmark(
 
     const NUM_SEATS: usize = 6;
     let opp_roster = ["tag", "calling_station", "maniac", "shove_bot", "rock"];
-    let mut trackers: Vec<OpponentTracker> = (0..NUM_SEATS)
+    let mut trackers: Vec<OpponentTracker> = (0..opp_roster.len())
         .map(|_| {
             let mut t = OpponentTracker::new();
             t.set_exploit_factor(exploit_factor);
@@ -758,6 +845,11 @@ pub fn run_holdem_multiway_benchmark(
     println!("     ♠️  Texas Hold'em 6-Max Multi-Way Table Benchmark  ♥️    ");
     println!("============================================================");
     println!("Table Lineup  : Bot + TAG + STATION + MANIAC + SHOVE_BOT + ROCK (6-Max)");
+    println!(
+        "Stack Depth   : {} chips ({} BB)",
+        stack_size,
+        stack_size / BIG_BLIND
+    );
     println!(
         "Total Deals   : {} (6-Seat Duplicate Rotation = {} hands)",
         total_deals,
@@ -794,6 +886,7 @@ pub fn run_holdem_multiway_benchmark(
                 enable_subgame_search,
                 &mut trackers,
                 &mut rng,
+                stack_size,
             );
             total_stats.record(ret);
             deal_net += ret;
@@ -832,6 +925,7 @@ fn simulate_multiway_6max_hand(
     enable_subgame_search: bool,
     trackers: &mut [OpponentTracker],
     rng: &mut SmallRng,
+    stack_size: i32,
 ) -> f64 {
     use crate::cfr::abstraction::{
         detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
@@ -844,11 +938,20 @@ fn simulate_multiway_6max_hand(
     let mut current_bet = BIG_BLIND;
     let mut history = [crate::game::holdem::RoundHistory::new(); 4];
     let mut ctx = SubgameContext::new();
+    let mut opp_acted_pf = [false; 5];
+    let mut opp_pf_vpip = [false; 5];
+    let mut opp_pf_pfr = [false; 5];
 
     for round in 1..=4u8 {
         let active_count = folded.iter().filter(|&&f| !f).count();
         if active_count <= 1 {
             break;
+        }
+        let non_allin_count = (0..6)
+            .filter(|&s| !folded[s] && contribs[s] < stack_size)
+            .count();
+        if non_allin_count <= 1 {
+            continue;
         }
         let board_slice: &[Card] = match round {
             1 => &[],
@@ -858,221 +961,267 @@ fn simulate_multiway_6max_hand(
         };
         let mut raises_this_round = 0u8;
         let start_seat = if round == 1 { 2 } else { 0 };
+        let mut needs_action = [false; 6];
+        for seat in 0..6 {
+            if !folded[seat] && contribs[seat] < stack_size {
+                needs_action[seat] = true;
+            }
+        }
+        let mut cursor = start_seat;
+        let mut safety_steps = 0;
 
-        for pass in 0..2 {
-            for offset in 0..6 {
-                let seat = (start_seat + offset) % 6;
-                if folded[seat] || contribs[seat] >= STACK_SIZE {
-                    continue;
-                }
-                let active_now = folded.iter().filter(|&&f| !f).count();
-                if active_now <= 1 {
-                    break;
-                }
-                let to_call = (current_bet - contribs[seat]).max(0);
-                if pass > 0 && to_call == 0 {
-                    continue;
-                }
-                let pot: i32 = contribs.iter().sum();
-                let my_remaining = (STACK_SIZE - contribs[seat]).max(0);
+        while needs_action.iter().any(|&n| n) && safety_steps < 36 {
+            safety_steps += 1;
+            let seat = cursor % 6;
+            cursor = (seat + 1) % 6;
+            if folded[seat] || contribs[seat] >= stack_size || !needs_action[seat] {
+                needs_action[seat] = false;
+                continue;
+            }
+            let active_now = folded.iter().filter(|&&f| !f).count();
+            if active_now <= 1 {
+                break;
+            }
+            let to_call = (current_bet - contribs[seat]).max(0);
+            let pot: i32 = contribs.iter().sum();
+            let my_remaining = (stack_size - contribs[seat]).max(0);
+            let prev_current_bet = current_bet;
 
-                if seat == bot_seat {
-                    let mut legal_strs = vec!["fold".to_string(), "call".to_string()];
-                    if to_call == 0 {
-                        legal_strs.push("check".to_string());
-                    }
-                    if raises_this_round < 3 && my_remaining > to_call {
-                        legal_strs.push("raise".to_string());
-                        legal_strs.push("all_in".to_string());
-                    }
-                    let primary_opp = (0..6)
-                        .find(|&s| s != bot_seat && !folded[s])
-                        .unwrap_or((bot_seat + 1) % 6);
-                    let my_pos = if bot_seat >= 4 { 0 } else { 1 };
-                    let opp_contrib = contribs[primary_opp];
-                    let (act_str, amt, _) = decide_action_traced(
-                        &holes[bot_seat],
-                        board_slice,
-                        &legal_strs,
-                        to_call,
-                        pot,
-                        strategy,
-                        enable_subgame_search,
-                        &trackers[primary_opp],
-                        &history,
-                        my_pos,
-                        [contribs[bot_seat], opp_contrib],
-                        raises_this_round,
-                        Some(strategy_index),
-                        Some(subgame_solver),
-                        Some(&mut ctx),
-                        active_now.saturating_sub(1).max(1),
-                        BIG_BLIND,
-                        my_remaining,
-                    );
-                    match act_str.as_str() {
-                        "fold" => {
-                            if to_call > 0 {
-                                folded[seat] = true;
-                            } else {
-                                history[(round - 1) as usize].push(CALL_CHECK);
-                            }
-                        }
-                        "all_in" | "allin" => {
-                            contribs[seat] = STACK_SIZE;
-                            if contribs[seat] > current_bet {
-                                current_bet = contribs[seat];
-                                raises_this_round = raises_this_round.saturating_add(1);
-                            }
-                            history[(round - 1) as usize].push(ALL_IN);
-                        }
-                        "raise" | "bet" => {
-                            let target = amt.max(current_bet + BIG_BLIND).min(STACK_SIZE);
-                            contribs[seat] = target;
-                            if target > current_bet {
-                                current_bet = target;
-                                raises_this_round = raises_this_round.saturating_add(1);
-                            }
-                            history[(round - 1) as usize].push(RAISE_THIRD_POT);
-                        }
-                        _ => {
-                            contribs[seat] = (contribs[seat] + to_call).min(STACK_SIZE);
+            if seat == bot_seat {
+                let mut legal_strs = vec!["fold".to_string(), "call".to_string()];
+                if to_call == 0 {
+                    legal_strs.push("check".to_string());
+                }
+                if raises_this_round < MAX_RAISES_PER_ROUND && my_remaining > to_call {
+                    legal_strs.push("raise".to_string());
+                    legal_strs.push("all_in".to_string());
+                }
+                let primary_opp = (0..6)
+                    .find(|&s| s != bot_seat && !folded[s])
+                    .unwrap_or((bot_seat + 1) % 6);
+                let primary_opp_idx = if primary_opp < bot_seat {
+                    primary_opp
+                } else {
+                    primary_opp - 1
+                };
+                let my_pos = if bot_seat >= 4 { 0 } else { 1 };
+                let opp_contrib = contribs[primary_opp];
+                let (act_str, amt, _) = decide_action_traced_with_bet(
+                    &holes[bot_seat],
+                    board_slice,
+                    &legal_strs,
+                    to_call,
+                    pot,
+                    strategy,
+                    enable_subgame_search,
+                    &trackers[primary_opp_idx],
+                    &history,
+                    my_pos,
+                    [contribs[bot_seat], opp_contrib],
+                    raises_this_round,
+                    Some(strategy_index),
+                    Some(subgame_solver),
+                    Some(&mut ctx),
+                    active_now.saturating_sub(1).max(1),
+                    BIG_BLIND,
+                    my_remaining,
+                    current_bet,
+                );
+                match act_str.as_str() {
+                    "fold" => {
+                        if to_call > 0 {
+                            folded[seat] = true;
+                        } else {
                             history[(round - 1) as usize].push(CALL_CHECK);
                         }
                     }
+                    "all_in" | "allin" => {
+                        contribs[seat] = stack_size;
+                        if contribs[seat] > current_bet {
+                            current_bet = contribs[seat];
+                            raises_this_round = raises_this_round.saturating_add(1);
+                        }
+                        history[(round - 1) as usize].push(ALL_IN);
+                    }
+                    "raise" | "bet" => {
+                        let target = amt.max(current_bet + BIG_BLIND).min(stack_size);
+                        let bet_delta = (target - contribs[seat]).max(0);
+                        contribs[seat] = target;
+                        if target > current_bet {
+                            current_bet = target;
+                            raises_this_round = raises_this_round.saturating_add(1);
+                        }
+                        let hist_act = if bet_delta >= my_remaining {
+                            ALL_IN
+                        } else if bet_delta >= (pot / 2).max(BIG_BLIND) {
+                            RAISE_HALF_POT
+                        } else if bet_delta >= (pot / 3).max(BIG_BLIND) {
+                            RAISE_THIRD_POT
+                        } else {
+                            RAISE_MIN
+                        };
+                        history[(round - 1) as usize].push(hist_act);
+                    }
+                    _ => {
+                        contribs[seat] = (contribs[seat] + to_call).min(stack_size);
+                        history[(round - 1) as usize].push(CALL_CHECK);
+                    }
+                }
+            } else {
+                let opp_idx = if seat < bot_seat { seat } else { seat - 1 };
+                let tracker_slot = opp_idx % opp_roster.len();
+                let arch = opp_roster[tracker_slot];
+                let (idx, _) = preflop_bucket(holes[seat][0], holes[seat][1]);
+                let tier = preflop_strength_tier(idx);
+                let bucket = if round == 1 {
+                    (9 - tier as usize) * 8
                 } else {
-                    let opp_idx = if seat < bot_seat { seat } else { seat - 1 };
-                    let arch = opp_roster[opp_idx % opp_roster.len()];
-                    let (idx, _) = preflop_bucket(holes[seat][0], holes[seat][1]);
-                    let tier = preflop_strength_tier(idx);
-                    let bucket = if round == 1 {
-                        (9 - tier as usize) * 8
-                    } else {
-                        postflop_equity_bucket(&holes[seat], board_slice)
-                    };
-                    let (has_fd, has_sd) = if round >= 2 {
-                        detect_draws(&holes[seat], board_slice)
-                    } else {
-                        (false, false)
-                    };
+                    postflop_equity_bucket(&holes[seat], board_slice)
+                };
+                let (has_fd, has_sd) = if round >= 2 {
+                    detect_draws(&holes[seat], board_slice)
+                } else {
+                    (false, false)
+                };
 
-                    let act = match arch {
-                        "calling_station" => {
-                            if to_call == 0
-                                || bucket >= 28
-                                || has_fd
-                                || has_sd
-                                || to_call <= BIG_BLIND * 2
-                            {
-                                CALL_CHECK
-                            } else {
-                                H_FOLD
-                            }
-                        }
-                        "maniac" => {
-                            if raises_this_round < 2 && rng.gen_bool(0.45) {
-                                RAISE_HALF_POT
-                            } else if to_call == 0 || bucket >= 20 || rng.gen_bool(0.50) {
-                                CALL_CHECK
-                            } else {
-                                H_FOLD
-                            }
-                        }
-                        "shove_bot" => {
-                            if raises_this_round < 2
-                                && ((round == 1 && tier <= 4) || bucket >= 36 || rng.gen_bool(0.20))
-                            {
-                                ALL_IN
-                            } else if to_call == 0 {
-                                CALL_CHECK
-                            } else {
-                                H_FOLD
-                            }
-                        }
-                        "rock" => {
-                            if (round == 1 && tier <= 1) || (round >= 2 && bucket >= 54) {
-                                if raises_this_round < 2 {
-                                    RAISE_THIRD_POT
-                                } else {
-                                    CALL_CHECK
-                                }
-                            } else if to_call == 0
-                                || (round == 1 && tier <= 2 && to_call <= BIG_BLIND * 2)
-                            {
-                                CALL_CHECK
-                            } else {
-                                H_FOLD
-                            }
-                        }
-                        _ => {
-                            /* TAG */
-                            if (round == 1 && tier <= 2) || (round >= 2 && bucket >= 45) {
-                                if raises_this_round < 2 {
-                                    RAISE_THIRD_POT
-                                } else {
-                                    CALL_CHECK
-                                }
-                            } else if to_call == 0
-                                || (round == 1 && tier <= 4 && to_call <= BIG_BLIND * 3)
-                                || (round >= 2
-                                    && (bucket >= 34 || has_fd || has_sd)
-                                    && to_call <= pot / 2)
-                            {
-                                CALL_CHECK
-                            } else {
-                                H_FOLD
-                            }
-                        }
-                    };
-
-                    let prev_c = contribs[seat];
-                    match act {
-                        H_FOLD => {
-                            if to_call > 0 {
-                                folded[seat] = true;
-                            }
-                        }
-                        ALL_IN => {
-                            contribs[seat] = STACK_SIZE;
-                            if contribs[seat] > current_bet {
-                                current_bet = contribs[seat];
-                                raises_this_round = raises_this_round.saturating_add(1);
-                            }
-                        }
-                        RAISE_HALF_POT | RAISE_THIRD_POT | RAISE_MIN => {
-                            let add = if act == RAISE_HALF_POT {
-                                (pot * 2 / 3).max(BIG_BLIND * 2)
-                            } else {
-                                (pot / 2).max(BIG_BLIND * 2)
-                            };
-                            let target = (current_bet + add).min(STACK_SIZE);
-                            contribs[seat] = target;
-                            if target > current_bet {
-                                current_bet = target;
-                                raises_this_round = raises_this_round.saturating_add(1);
-                            }
-                        }
-                        _ => {
-                            contribs[seat] = (contribs[seat] + to_call).min(STACK_SIZE);
+                let act = match arch {
+                    "calling_station" => {
+                        if to_call == 0
+                            || (round == 1
+                                && (tier <= 6 || (tier == 7 && to_call <= BIG_BLIND * 4)))
+                            || (round >= 2 && (bucket >= 28 || has_fd || has_sd))
+                            || to_call <= BIG_BLIND * 2
+                        {
+                            CALL_CHECK
+                        } else {
+                            H_FOLD
                         }
                     }
-                    let bet_added = (contribs[seat] - prev_c).max(0);
-                    trackers[seat].record_action_street_detailed(
-                        act,
-                        round,
-                        round == 2 && raises_this_round > 0,
-                        bet_added,
-                        pot,
-                    );
-                    if act != H_FOLD {
-                        history[(round - 1) as usize].push(act);
+                    "maniac" => {
+                        if raises_this_round < MAX_RAISES_PER_ROUND && rng.gen_bool(0.45) {
+                            RAISE_HALF_POT
+                        } else if to_call == 0 || bucket >= 20 || rng.gen_bool(0.50) {
+                            CALL_CHECK
+                        } else {
+                            H_FOLD
+                        }
+                    }
+                    "shove_bot" => {
+                        if raises_this_round < MAX_RAISES_PER_ROUND
+                            && ((round == 1 && tier <= 4) || bucket >= 36 || rng.gen_bool(0.20))
+                        {
+                            ALL_IN
+                        } else if to_call == 0 {
+                            CALL_CHECK
+                        } else {
+                            H_FOLD
+                        }
+                    }
+                    "rock" => {
+                        if (round == 1 && tier <= 1) || (round >= 2 && bucket >= 54) {
+                            if raises_this_round < MAX_RAISES_PER_ROUND {
+                                RAISE_THIRD_POT
+                            } else {
+                                CALL_CHECK
+                            }
+                        } else if to_call == 0
+                            || (round == 1 && tier <= 2 && to_call <= BIG_BLIND * 2)
+                        {
+                            CALL_CHECK
+                        } else {
+                            H_FOLD
+                        }
+                    }
+                    _ => {
+                        /* TAG */
+                        if (round == 1 && tier <= 2) || (round >= 2 && bucket >= 45) {
+                            if raises_this_round < MAX_RAISES_PER_ROUND {
+                                RAISE_THIRD_POT
+                            } else {
+                                CALL_CHECK
+                            }
+                        } else if to_call == 0
+                            || (round == 1 && tier <= 4 && to_call <= BIG_BLIND * 3)
+                            || (round >= 2
+                                && (bucket >= 34 || has_fd || has_sd)
+                                && to_call <= pot / 2)
+                        {
+                            CALL_CHECK
+                        } else {
+                            H_FOLD
+                        }
+                    }
+                };
+
+                let prev_c = contribs[seat];
+                match act {
+                    H_FOLD => {
+                        if to_call > 0 {
+                            folded[seat] = true;
+                        }
+                    }
+                    ALL_IN => {
+                        contribs[seat] = stack_size;
+                        if contribs[seat] > current_bet {
+                            current_bet = contribs[seat];
+                            raises_this_round = raises_this_round.saturating_add(1);
+                        }
+                    }
+                    RAISE_HALF_POT | RAISE_THIRD_POT | RAISE_MIN => {
+                        let add = if act == RAISE_HALF_POT {
+                            (pot * 2 / 3).max(BIG_BLIND * 2)
+                        } else {
+                            (pot / 2).max(BIG_BLIND * 2)
+                        };
+                        let target = (current_bet + add).min(stack_size);
+                        contribs[seat] = target;
+                        if target > current_bet {
+                            current_bet = target;
+                            raises_this_round = raises_this_round.saturating_add(1);
+                        }
+                    }
+                    _ => {
+                        contribs[seat] = (contribs[seat] + to_call).min(stack_size);
+                    }
+                }
+                let bet_added = (contribs[seat] - prev_c).max(0);
+                if round == 1 {
+                    opp_acted_pf[tracker_slot] = true;
+                    if act >= RAISE_MIN {
+                        opp_pf_vpip[tracker_slot] = true;
+                        opp_pf_pfr[tracker_slot] = true;
+                    } else if act == CALL_CHECK && to_call > 0 {
+                        opp_pf_vpip[tracker_slot] = true;
+                    }
+                }
+                trackers[tracker_slot].record_action_street_detailed(
+                    act,
+                    round,
+                    round == 2 && raises_this_round > 0,
+                    bet_added,
+                    pot,
+                );
+                if act != H_FOLD {
+                    history[(round - 1) as usize].push(act);
+                }
+            }
+
+            needs_action[seat] = false;
+            if current_bet > prev_current_bet {
+                for other in 0..6 {
+                    if other != seat && !folded[other] && contribs[other] < stack_size {
+                        needs_action[other] = true;
                     }
                 }
             }
         }
     }
 
-    for t in trackers.iter_mut() {
+    for (i, t) in trackers.iter_mut().enumerate() {
+        if opp_acted_pf[i] {
+            let opp_seat = if i < bot_seat { i } else { i + 1 };
+            t.record_preflop_positional(opp_seat == 0, opp_pf_vpip[i], opp_pf_pfr[i]);
+        }
         t.end_hand();
     }
 
@@ -1102,5 +1251,240 @@ fn simulate_multiway_6max_hand(
         } else {
             -(contribs[bot_seat] as f64)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BlindScheduleLevel {
+    pub name: &'static str,
+    pub stack_bb: u32,
+    pub effective_bb: i32,
+}
+
+pub const DEFAULT_BLIND_SCHEDULE: [BlindScheduleLevel; 5] = [
+    BlindScheduleLevel {
+        name: "L1 (BB=100, 100BB)",
+        stack_bb: 100,
+        effective_bb: 100,
+    },
+    BlindScheduleLevel {
+        name: "L2 (BB=200,  50BB)",
+        stack_bb: 50,
+        effective_bb: 200,
+    },
+    BlindScheduleLevel {
+        name: "L3 (BB=400,  25BB)",
+        stack_bb: 25,
+        effective_bb: 400,
+    },
+    BlindScheduleLevel {
+        name: "L4 (BB=600,  16BB)",
+        stack_bb: 16,
+        effective_bb: 600,
+    },
+    BlindScheduleLevel {
+        name: "L5 (BB=1000, 10BB)",
+        stack_bb: 10,
+        effective_bb: 1000,
+    },
+];
+
+/* Rising-BB Tournament / Blind-Schedule Benchmark:
+ * Plays sequential duplicate matches where Big Blind steps up every `hands_per_level` hands
+ * (default 20 hands/level = 10 duplicate deals/level across 5 levels = 100-hand matches).
+ * Tracks opponent stats across each match and notifies `observe_blind_level` at each BB jump. */
+#[allow(clippy::too_many_arguments)]
+pub fn run_holdem_blind_schedule_benchmark(
+    strategy_path: &str,
+    total_deals: u64,
+    hands_per_level: u64,
+    enable_subgame_search: bool,
+    opp_archetype: &str,
+    opp_strategy_path: Option<&str>,
+    exploit_factor: f64,
+    seed: Option<u64>,
+    disabled_guards: &[String],
+    quiet: bool,
+) -> HoldemBenchmarkResult {
+    let strategy = load_holdem_strategy(strategy_path);
+    let strategy_index = strategy.as_ref().map(StrategyLookupIndex::build_from_map);
+    let opp_strategy = if let Some(path) = opp_strategy_path {
+        load_holdem_strategy(path)
+    } else if opp_archetype.eq_ignore_ascii_case("self") {
+        strategy.clone()
+    } else {
+        None
+    };
+
+    let deals_per_level = (hands_per_level.max(2) / 2).max(1);
+    let num_levels = DEFAULT_BLIND_SCHEDULE.len();
+    let deals_per_match = deals_per_level * num_levels as u64;
+    let total_deals = total_deals.max(deals_per_match);
+
+    let mut rng = match seed {
+        Some(s) => SmallRng::seed_from_u64(s),
+        None => SmallRng::from_entropy(),
+    };
+    let subgame_solver = SubgameSolver::default();
+
+    let mut opp_tracker = OpponentTracker::new();
+    opp_tracker.set_exploit_factor(exploit_factor);
+    opp_tracker.set_disabled_guards(disabled_guards.to_vec());
+
+    let mut total_stats = SimStats::default();
+    let mut duplicate_stats = SimStats::default();
+    let mut pos_stats = [SimStats::default(), SimStats::default()];
+    let mut level_stats: Vec<SimStats> = vec![SimStats::default(); num_levels];
+    let mut match_bb_net = 0.0f64;
+    let mut match_wins = 0u64;
+    let mut total_matches = 0u64;
+    let mut last_lvl_idx: Option<usize> = None;
+
+    const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
+    for ep in 0..total_deals {
+        let match_offset = ep % deals_per_match;
+        if match_offset == 0 {
+            opp_tracker = OpponentTracker::new();
+            opp_tracker.set_exploit_factor(exploit_factor);
+            opp_tracker.set_disabled_guards(disabled_guards.to_vec());
+            match_bb_net = 0.0;
+            last_lvl_idx = None;
+        }
+        let lvl_idx = (match_offset / deals_per_level) as usize;
+        let level = DEFAULT_BLIND_SCHEDULE[lvl_idx];
+        if last_lvl_idx != Some(lvl_idx) {
+            opp_tracker.observe_blind_level(level.effective_bb);
+            last_lvl_idx = Some(lvl_idx);
+        }
+
+        let mut deck = ALL_52_CARDS;
+        for i in 0..CARDS_NEEDED {
+            let j = rng.gen_range(i..NUM_CARDS_DECK);
+            deck.swap(i, j);
+        }
+        let hole_a = [deck[0], deck[1]];
+        let hole_b = [deck[2], deck[3]];
+        let runout = &deck[4..CARDS_NEEDED];
+        let stack_chips = (level.stack_bb as i32) * BIG_BLIND;
+
+        let game1 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_chips);
+        let (ret1, _) = simulate_holdem_hand_traced(
+            game1,
+            0,
+            &strategy,
+            strategy_index.as_ref(),
+            opp_archetype,
+            &opp_strategy,
+            &subgame_solver,
+            enable_subgame_search,
+            &mut opp_tracker,
+            &mut rng,
+            0,
+            false,
+            "",
+        );
+        let game2 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_chips);
+        let (ret2, _) = simulate_holdem_hand_traced(
+            game2,
+            1,
+            &strategy,
+            strategy_index.as_ref(),
+            opp_archetype,
+            &opp_strategy,
+            &subgame_solver,
+            enable_subgame_search,
+            &mut opp_tracker,
+            &mut rng,
+            0,
+            false,
+            "",
+        );
+
+        /* Record returns scaled relative to current blind level BB while weighting duplicate edge */
+        let ret1_bb_scaled = ret1 * (level.effective_bb as f64 / BIG_BLIND_F64);
+        let ret2_bb_scaled = ret2 * (level.effective_bb as f64 / BIG_BLIND_F64);
+        pos_stats[0].record(ret1);
+        pos_stats[1].record(ret2);
+        total_stats.record(ret1);
+        total_stats.record(ret2);
+        level_stats[lvl_idx].record(ret1);
+        level_stats[lvl_idx].record(ret2);
+        duplicate_stats.record(ret1 + ret2);
+
+        match_bb_net += (ret1_bb_scaled + ret2_bb_scaled) / BIG_BLIND_F64;
+        if match_offset + 1 == deals_per_match {
+            total_matches += 1;
+            if match_bb_net > 0.0 {
+                match_wins += 1;
+            }
+        }
+    }
+
+    let avg_chips = duplicate_stats.avg_chips() / 2.0;
+    let se_chips = duplicate_stats.se_chips() / 2.0;
+    let win_rate_bb100 = (avg_chips / BIG_BLIND_F64) * 100.0;
+    let se_bb100 = (se_chips / BIG_BLIND_F64) * 100.0;
+    let ci_low = win_rate_bb100 - 1.96 * se_bb100;
+    let ci_high = win_rate_bb100 + 1.96 * se_bb100;
+    let sb_bb100 = (pos_stats[0].avg_chips() / BIG_BLIND_F64) * 100.0;
+    let bb_bb100 = (pos_stats[1].avg_chips() / BIG_BLIND_F64) * 100.0;
+
+    if !quiet {
+        println!("\n============================================================");
+        println!(
+            "   ♠️  Rising-BB Blind Schedule Benchmark ({} hands/level)  ♥️",
+            deals_per_level * 2
+        );
+        println!("============================================================");
+        println!(
+            "Opponent : {} | Deals : {} ({} hands, {} matches)",
+            opp_archetype.to_uppercase(),
+            total_deals,
+            total_deals * 2,
+            total_matches
+        );
+        for (idx, level) in DEFAULT_BLIND_SCHEDULE.iter().enumerate() {
+            let st = &level_stats[idx];
+            let l_bb100 = (st.avg_chips() / BIG_BLIND_F64) * 100.0;
+            let l_se = (st.se_chips() / BIG_BLIND_F64) * 100.0;
+            println!(
+                "  {:<22} | {:>+8.2} bb/100 (±{:.2}) | {} hands",
+                level.name, l_bb100, l_se, st.hands
+            );
+        }
+        println!("------------------------------------------------------------");
+        println!(
+            "Overall Average   : {:>+8.2} bb/100 (95% CI [{:>+7.2}, {:>+7.2}])",
+            win_rate_bb100, ci_low, ci_high
+        );
+        if total_matches > 0 {
+            println!(
+                "Match Win Rate    : {}/{} ({:.1}%)",
+                match_wins,
+                total_matches,
+                100.0 * match_wins as f64 / total_matches as f64
+            );
+        }
+        println!("============================================================\n");
+    }
+
+    HoldemBenchmarkResult {
+        duplicate_mode: true,
+        total_hands: total_stats.hands,
+        total_deals,
+        net_chips: total_stats.total_chips,
+        edge_per_hand: avg_chips,
+        se_per_hand: se_chips,
+        win_rate_bb100,
+        se_bb100,
+        ci_95_bb100: (ci_low, ci_high),
+        win_rate_mbb: win_rate_bb100 * 10.0,
+        se_mbb: se_bb100 * 10.0,
+        win_pct: total_stats.win_pct(),
+        loss_pct: total_stats.loss_pct(),
+        tie_pct: total_stats.tie_pct(),
+        sb_win_rate_bb100: sb_bb100,
+        bb_win_rate_bb100: bb_bb100,
+        guard_telemetry: HashMap::new(),
     }
 }

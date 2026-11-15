@@ -21,14 +21,47 @@ pub fn get_holdem_fallback_strategy(
     pot: i32,
     legal: &[u8],
 ) -> [f64; HOLDEM_NUM_ACTIONS] {
+    get_holdem_fallback_strategy_bb(hole, board, round, to_call, pot, legal, BIG_BLIND)
+}
+
+pub fn get_holdem_fallback_strategy_bb(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    to_call: i32,
+    pot: i32,
+    legal: &[u8],
+    table_bb: i32,
+) -> [f64; HOLDEM_NUM_ACTIONS] {
     let raw = if round == 1 {
         let (pf_idx, _) = preflop_bucket(hole[0], hole[1]);
-        preflop_fallback(pf_idx, to_call, pot)
+        preflop_fallback(pf_idx, to_call, pot, table_bb)
     } else {
         let bucket = postflop_equity_bucket(hole, board);
         postflop_fallback(bucket, round, to_call, pot)
     };
 
+    normalize_legal_action_probs(&raw, legal)
+}
+
+/* Fast postflop fallback lookup when precomputed equity bucket is already known. */
+#[inline]
+pub fn get_postflop_fallback_by_bucket(
+    bucket: usize,
+    round: u8,
+    to_call: i32,
+    pot: i32,
+    legal: &[u8],
+) -> [f64; HOLDEM_NUM_ACTIONS] {
+    let raw = postflop_fallback(bucket, round, to_call, pot);
+    normalize_legal_action_probs(&raw, legal)
+}
+
+#[inline]
+fn normalize_legal_action_probs(
+    raw: &[f64; HOLDEM_NUM_ACTIONS],
+    legal: &[u8],
+) -> [f64; HOLDEM_NUM_ACTIONS] {
     /* Zero out illegal actions and normalize */
     let mut filtered = [0.0f64; HOLDEM_NUM_ACTIONS];
     let mut sum = 0.0f64;
@@ -44,7 +77,7 @@ pub fn get_holdem_fallback_strategy(
         for p in filtered.iter_mut() {
             *p *= inv_sum;
         }
-    } else {
+    } else if !legal.is_empty() {
         /* Uniform over legal actions if zero sum */
         let u = 1.0 / legal.len() as f64;
         for &a in legal {
@@ -56,10 +89,17 @@ pub fn get_holdem_fallback_strategy(
 }
 
 /* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers (1..=8) */
-fn preflop_fallback(idx: usize, to_call: i32, pot: i32) -> [f64; HOLDEM_NUM_ACTIONS] {
+fn preflop_fallback(
+    idx: usize,
+    to_call: i32,
+    pot: i32,
+    table_bb: i32,
+) -> [f64; HOLDEM_NUM_ACTIONS] {
     let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
     let tier = preflop_strength_tier(idx);
-    let eff_bb = if pot > 0 && pot < BIG_BLIND + SMALL_BLIND {
+    let eff_bb = if table_bb > 0 && table_bb != BIG_BLIND {
+        table_bb
+    } else if pot > 0 && pot < BIG_BLIND + SMALL_BLIND {
         ((pot - to_call).max(1) * 2 / 3).max(1)
     } else {
         BIG_BLIND
@@ -499,6 +539,20 @@ pub fn lookup_strategy_hierarchical_owned<V>(
             }
         }
 
+        if round == 3 {
+            let rc_f_c = format!("P:rc|F:cc|{}", exact_key);
+            if let Some(v) = get_fn(&rc_f_c) {
+                return Some(v);
+            }
+            let rc_f_rc = format!("P:rc|F:rc|{}", exact_key);
+            if let Some(v) = get_fn(&rc_f_rc) {
+                return Some(v);
+            }
+            let cc_f_c = format!("P:cc|F:cc|{}", exact_key);
+            if let Some(v) = get_fn(&cc_f_c) {
+                return Some(v);
+            }
+        }
         let rc_key = format!("P:rc|{}", exact_key);
         if let Some(v) = get_fn(&rc_key) {
             return Some(v);
@@ -516,6 +570,12 @@ pub fn lookup_strategy_hierarchical_owned<V>(
                 end -= 2;
                 let sub_acts = &acts[..end];
                 let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
+                if round == 3 {
+                    let t_rc_f_c = format!("P:rc|F:cc|{}", truncated_exact);
+                    if let Some(v) = get_fn(&t_rc_f_c) {
+                        return Some(v);
+                    }
+                }
                 let t_rc = format!("P:rc|{}", truncated_exact);
                 if let Some(v) = get_fn(&t_rc) {
                     return Some(v);

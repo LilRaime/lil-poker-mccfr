@@ -22,7 +22,7 @@ pub const NUM_HOLE_CARDS: usize = 2;
 pub const NUM_COMMUNITY_CARDS: usize = 5;
 pub const NUM_SUITS: usize = 4;
 pub const NUM_RANKS: usize = 13;
-pub const MAX_ROUND_ACTIONS: usize = 8;
+pub const MAX_ROUND_ACTIONS: usize = 12;
 
 /// Number of postflop equity abstraction buckets (0..=87).
 pub const NUM_EQUITY_BUCKETS: usize = 88;

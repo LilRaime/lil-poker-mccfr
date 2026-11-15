@@ -237,3 +237,60 @@ fn test_preflop_strength_tiers_and_88_shove_defense() {
         strat_88_shove[FOLD as usize]
     );
 }
+
+#[test]
+fn test_fallback_high_blinds_and_turn_owned_lookup() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+    use lil_poker_mccfr::cfr::fallback::{
+        get_holdem_fallback_strategy_bb, lookup_strategy_hierarchical_owned,
+    };
+    use lil_poker_mccfr::game::holdem::{RoundHistory, NUM_ROUNDS};
+    use std::collections::HashMap;
+
+    /* 1. Fallback BB scale: calling 400 into 1000 with Tier 5 (44) at table_bb=400 (1 BB) vs table_bb=100 (4 BB) */
+    let hole_44 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let legal = [FOLD, CALL_CHECK, RAISE_MIN];
+    let strat_bb400 = get_holdem_fallback_strategy_bb(&hole_44, &[], 1, 400, 1000, &legal, 400);
+    let strat_bb100 = get_holdem_fallback_strategy_bb(&hole_44, &[], 1, 400, 1000, &legal, 100);
+    assert!(
+        strat_bb400[CALL_CHECK as usize] > strat_bb100[CALL_CHECK as usize] + 0.2,
+        "At table_bb=400, 400 chips is 1 BB (call ~0.40), whereas at bb=100 it is 4 BB (fold ~0.96)"
+    );
+
+    /* 2. Turn owned hierarchical lookup recovers P:rc|F:cc|T:... when exact P:rc|F:cr|T:... is missing */
+    let hole_ak = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+    ];
+    let board_turn = [
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+    history[1].push(CALL_CHECK);
+    history[1].push(RAISE_MIN);
+
+    let bucket = postflop_equity_bucket(&hole_ak, &board_turn);
+    let canonical_turn_key = format!("P:rc|F:cc|T:B{}/", bucket);
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    map.insert(canonical_turn_key, vec![0.0, 0.2, 0.3, 0.3, 0.2, 0.0]);
+
+    let found = lookup_strategy_hierarchical_owned(
+        |k| map.get(k).cloned(),
+        &hole_ak,
+        &board_turn,
+        3,
+        &history,
+    );
+    assert!(
+        found.is_some(),
+        "lookup_strategy_hierarchical_owned must fall back to P:rc|F:cc|T:... on Turn"
+    );
+}

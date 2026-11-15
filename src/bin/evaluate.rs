@@ -54,6 +54,22 @@ struct Args {
     #[arg(long)]
     disable_guard: Option<String>,
 
+    /* Effective starting stack depth in Big Blinds (default: 100 BB) */
+    #[arg(long, default_value_t = 100)]
+    stack_bb: u32,
+
+    /* Sweep benchmark across 15 BB, 30 BB, and 100 BB stacks */
+    #[arg(long)]
+    stack_sweep: bool,
+
+    /* Simulate rising-BB tournament structure (BB steps up every --level-hands hands) */
+    #[arg(long)]
+    blind_schedule: bool,
+
+    /* Hands per blind level when --blind-schedule is active (default: 20) */
+    #[arg(long, default_value_t = 20)]
+    level_hands: u64,
+
     /* Show detailed strategy profile table for key infosets */
     #[arg(short, long)]
     verbose: bool,
@@ -111,6 +127,16 @@ fn main() {
             if args.subgame { "Enabled" } else { "Disabled" }
         );
         println!("Exploitation Factor   : {:.2}", args.exploit_factor);
+        if args.blind_schedule {
+            println!(
+                "Blind Schedule        : Active ({} hands per level)",
+                args.level_hands.max(2)
+            );
+        } else if args.stack_sweep {
+            println!("Stack Depth           : Sweep [15 BB, 30 BB, 100 BB]");
+        } else {
+            println!("Stack Depth           : {} BB", args.stack_bb.max(2));
+        }
         if let Some(s) = args.seed {
             println!("Deterministic Seed    : {}", s);
         }
@@ -126,6 +152,73 @@ fn main() {
             println!("Disabled Guards       : {:?}", disabled_guards);
         }
         println!("============================================================\n");
+
+        if args.blind_schedule {
+            if args.opponent.eq_ignore_ascii_case("gauntlet")
+                || args.opponent.eq_ignore_ascii_case("all")
+            {
+                let archetypes = [
+                    "tag",
+                    "calling_station",
+                    "maniac",
+                    "shove_bot",
+                    "trapper",
+                    "rock",
+                    "self",
+                ];
+                let mut total_bb100 = 0.0;
+                println!(
+                    "=== Rising-BB Blind Schedule Gauntlet ({} hands/level) ===",
+                    args.level_hands.max(2)
+                );
+                for (idx, arch) in archetypes.iter().enumerate() {
+                    let s = args
+                        .seed
+                        .or(Some(2026))
+                        .map(|v| v.wrapping_add((idx as u64 + 1) * 10_007));
+                    let res = lil_poker_mccfr::sim::run_holdem_blind_schedule_benchmark(
+                        &strategy_path,
+                        hands,
+                        args.level_hands,
+                        args.subgame,
+                        arch,
+                        None,
+                        args.exploit_factor,
+                        s,
+                        &disabled_guards,
+                        true,
+                    );
+                    total_bb100 += res.win_rate_bb100;
+                    println!(
+                        "  {:<18} | {:>+8.2} bb/100 | CI [{:>+7.2}, {:>+7.2}] | SB {:>+7.2} | BB {:>+7.2}",
+                        arch.to_uppercase(),
+                        res.win_rate_bb100,
+                        res.ci_95_bb100.0,
+                        res.ci_95_bb100.1,
+                        res.sb_win_rate_bb100,
+                        res.bb_win_rate_bb100
+                    );
+                }
+                println!(
+                    "  GAUNTLET AVERAGE   : {:>+8.2} bb/100",
+                    total_bb100 / archetypes.len() as f64
+                );
+            } else {
+                let _ = lil_poker_mccfr::sim::run_holdem_blind_schedule_benchmark(
+                    &strategy_path,
+                    hands,
+                    args.level_hands,
+                    args.subgame,
+                    &args.opponent,
+                    args.opp_strategy.as_deref(),
+                    args.exploit_factor,
+                    args.seed,
+                    &disabled_guards,
+                    false,
+                );
+            }
+            return;
+        }
 
         if args.opponent.eq_ignore_ascii_case("ablate")
             || args.opponent.eq_ignore_ascii_case("ablation")
@@ -143,45 +236,134 @@ fn main() {
         if args.opponent.eq_ignore_ascii_case("multiway")
             || args.opponent.eq_ignore_ascii_case("6max")
         {
-            let _ = lil_poker_mccfr::sim::run_holdem_multiway_benchmark(
-                &strategy_path,
-                hands,
-                args.subgame,
-                args.exploit_factor,
-                args.seed,
-            );
+            if args.stack_sweep {
+                let mut rows = Vec::new();
+                for &bb in &[15u32, 30, 100] {
+                    let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                    let wr = lil_poker_mccfr::sim::run_holdem_multiway_benchmark_with_stack(
+                        &strategy_path,
+                        hands,
+                        args.subgame,
+                        args.exploit_factor,
+                        args.seed,
+                        chips,
+                    );
+                    rows.push((bb, wr));
+                }
+                println!("=== 6-Max Stack Sweep Summary ===");
+                for (bb, wr) in rows {
+                    println!("  {:>3} BB : {:+.2} bb/100", bb, wr);
+                }
+            } else {
+                let chips =
+                    (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                let _ = lil_poker_mccfr::sim::run_holdem_multiway_benchmark_with_stack(
+                    &strategy_path,
+                    hands,
+                    args.subgame,
+                    args.exploit_factor,
+                    args.seed,
+                    chips,
+                );
+            }
             return;
         }
 
         if args.opponent.eq_ignore_ascii_case("gauntlet")
             || args.opponent.eq_ignore_ascii_case("all")
         {
-            let _ = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_seeded(
-                &strategy_path,
-                hands,
-                args.subgame,
-                args.exploit_factor,
-                args.seed.or(Some(2026)),
-                &disabled_guards,
-                false,
-            );
+            if args.stack_sweep {
+                let mut rows = Vec::new();
+                for &bb in &[15u32, 30, 100] {
+                    let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                    let res = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_with_stack(
+                        &strategy_path,
+                        hands,
+                        args.subgame,
+                        args.exploit_factor,
+                        args.seed.or(Some(1337)),
+                        &disabled_guards,
+                        false,
+                        chips,
+                    );
+                    let avg = if res.is_empty() {
+                        0.0
+                    } else {
+                        res.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>() / res.len() as f64
+                    };
+                    rows.push((bb, avg));
+                }
+                println!("=== Gauntlet Stack Sweep Summary ===");
+                for (bb, avg) in rows {
+                    println!("  {:>3} BB Average : {:+.2} bb/100", bb, avg);
+                }
+            } else {
+                let chips =
+                    (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                let _ = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_with_stack(
+                    &strategy_path,
+                    hands,
+                    args.subgame,
+                    args.exploit_factor,
+                    args.seed.or(Some(2026)),
+                    &disabled_guards,
+                    false,
+                    chips,
+                );
+            }
             return;
         }
 
-        let _res = lil_poker_mccfr::sim::run_holdem_benchmark_seeded(
-            &strategy_path,
-            hands,
-            0,
-            args.subgame,
-            "0",
-            &args.opponent,
-            args.opp_strategy.as_deref(),
-            args.duplicate,
-            args.exploit_factor,
-            false,
-            args.seed,
-            &disabled_guards,
-        );
+        if args.stack_sweep {
+            let mut rows = Vec::new();
+            for &bb in &[15u32, 30, 100] {
+                let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                println!("--- Stack Sweep: {} BB ---", bb);
+                let res = lil_poker_mccfr::sim::run_holdem_benchmark_with_stack(
+                    &strategy_path,
+                    hands,
+                    0,
+                    args.subgame,
+                    "0",
+                    &args.opponent,
+                    args.opp_strategy.as_deref(),
+                    args.duplicate,
+                    args.exploit_factor,
+                    false,
+                    args.seed,
+                    &disabled_guards,
+                    chips,
+                );
+                rows.push((bb, res));
+            }
+            println!(
+                "\n=== Stack Sweep Summary (vs {}) ===",
+                args.opponent.to_uppercase()
+            );
+            for (bb, r) in rows {
+                println!(
+                    "  {:>3} BB : {:>+8.2} bb/100 (95% CI [{:>+7.2}, {:>+7.2}]) | SB {:>+7.2} | BB {:>+7.2}",
+                    bb, r.win_rate_bb100, r.ci_95_bb100.0, r.ci_95_bb100.1, r.sb_win_rate_bb100, r.bb_win_rate_bb100
+                );
+            }
+        } else {
+            let chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+            let _res = lil_poker_mccfr::sim::run_holdem_benchmark_with_stack(
+                &strategy_path,
+                hands,
+                0,
+                args.subgame,
+                "0",
+                &args.opponent,
+                args.opp_strategy.as_deref(),
+                args.duplicate,
+                args.exploit_factor,
+                false,
+                args.seed,
+                &disabled_guards,
+                chips,
+            );
+        }
         return;
     }
 

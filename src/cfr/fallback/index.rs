@@ -2,7 +2,7 @@
  * StrategyLookupIndex: Pre-indexed bucket -> averaged strategy lookup table.
  */
 
-use super::heuristic::get_holdem_fallback_strategy;
+use super::heuristic::get_holdem_fallback_strategy_bb;
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::game::config::*;
 use crate::game::holdem::Card;
@@ -342,7 +342,22 @@ impl StrategyLookupIndex {
         pot: i32,
         legal: &[u8],
     ) -> Vec<f64> {
-        let fallback = get_holdem_fallback_strategy(hole, board, round, to_call, pot, legal);
+        self.get_blended_fallback_bb(hole, board, round, to_call, pot, legal, BIG_BLIND)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_blended_fallback_bb(
+        &self,
+        hole: &[Card; 2],
+        board: &[Card],
+        round: u8,
+        to_call: i32,
+        pot: i32,
+        legal: &[u8],
+        table_bb: i32,
+    ) -> Vec<f64> {
+        let fallback =
+            get_holdem_fallback_strategy_bb(hole, board, round, to_call, pot, legal, table_bb);
         if let Some(avg) = self.query_bucket_avg(round, hole, board, to_call) {
             let mut blended = vec![0.0f64; HOLDEM_NUM_ACTIONS];
             let mut sum = 0.0f64;

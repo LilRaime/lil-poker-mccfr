@@ -193,3 +193,39 @@ fn test_preflop_2_5bb_open_raise() {
     let g2 = g1.apply_action(RAISE_MIN);
     assert_eq!(g2.contributions[1], 650);
 }
+
+#[test]
+fn test_holdem_game_short_stack_parameterization() {
+    /* 15 BB short-stack match: each player starts with 1500 chips */
+    let h0 = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Ace, Suit::Hearts),
+    ];
+    let h1 = [
+        Card::new(Rank::King, Suit::Clubs),
+        Card::new(Rank::King, Suit::Diamonds),
+    ];
+    let runout = [
+        Card::new(Rank::Two, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+
+    let game = TexasHoldemGame::new_dealt_with_stack(h0, h1, &runout, 1500);
+    assert_eq!(game.stack_size, 1500);
+    assert_eq!(game.contributions, [SMALL_BLIND, BIG_BLIND]);
+
+    let shoved = game.apply_action(ALL_IN);
+    assert_eq!(
+        shoved.contributions[0], 1500,
+        "15 BB shove must commit 1500, not 10_000"
+    );
+
+    let called = shoved.apply_action(CALL_CHECK);
+    assert!(called.terminal);
+    assert_eq!(called.contributions, [1500, 1500]);
+    assert_eq!(called.returns[0], 1500.0);
+    assert_eq!(called.returns[1], -1500.0);
+}

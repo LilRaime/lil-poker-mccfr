@@ -16,6 +16,7 @@ pub struct TexasHoldemGame {
     pub current_player: usize,
     pub round: u8,
     pub raises_this_round: u8,
+    pub stack_size: i32,
     pub contributions: [i32; NUM_PLAYERS],
     pub history: [RoundHistory; NUM_ROUNDS],
     pub terminal: bool,
@@ -58,6 +59,7 @@ impl TexasHoldemGame {
             current_player: 0,
             round: 1,
             raises_this_round: 0,
+            stack_size: STACK_SIZE,
             contributions: [SMALL_BLIND, BIG_BLIND],
             history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
@@ -72,6 +74,16 @@ impl TexasHoldemGame {
         hole1: [Card; NUM_HOLE_CARDS],
         runout: &[Card],
     ) -> Self {
+        Self::new_dealt_with_stack(hole0, hole1, runout, STACK_SIZE)
+    }
+
+    pub fn new_dealt_with_stack(
+        hole0: [Card; NUM_HOLE_CARDS],
+        hole1: [Card; NUM_HOLE_CARDS],
+        runout: &[Card],
+        stack_size: i32,
+    ) -> Self {
+        let eff_stack = stack_size.max(BIG_BLIND * 2);
         let deck_rem = DeckRemaining::from_slice(runout);
         let r5 = deck_rem.peek5();
         let showdown_outcome = if runout.len() >= NUM_COMMUNITY_CARDS {
@@ -97,13 +109,22 @@ impl TexasHoldemGame {
             current_player: 0,
             round: 1,
             raises_this_round: 0,
-            contributions: [SMALL_BLIND, BIG_BLIND],
+            stack_size: eff_stack,
+            contributions: [SMALL_BLIND.min(eff_stack), BIG_BLIND.min(eff_stack)],
             history: [RoundHistory::new(); NUM_ROUNDS],
             terminal: false,
             returns: [0.0, 0.0],
             showdown_outcome,
             is_wet_flop,
         }
+    }
+
+    pub fn with_stack(mut self, stack_size: i32) -> Self {
+        let eff_stack = stack_size.max(BIG_BLIND * 2);
+        self.stack_size = eff_stack;
+        self.contributions[0] = self.contributions[0].min(eff_stack);
+        self.contributions[1] = self.contributions[1].min(eff_stack);
+        self
     }
 
     #[inline(always)]
@@ -130,8 +151,9 @@ impl TexasHoldemGame {
         let diff = self.contributions[opp] - self.contributions[self.current_player];
         let my_contrib = self.contributions[self.current_player];
         let raise_capped = self.raises_this_round >= MAX_RAISES_PER_ROUND;
+        let stack_cap = self.stack_size;
 
-        if my_contrib >= STACK_SIZE || self.contributions[opp] >= STACK_SIZE {
+        if my_contrib >= stack_cap || self.contributions[opp] >= stack_cap {
             if diff > 0 {
                 out[0] = FOLD;
                 out[1] = CALL_CHECK;
@@ -181,6 +203,7 @@ impl TexasHoldemGame {
         let r_idx = (next.round - 1) as usize;
         next.history[r_idx].push(action);
 
+        let stack_cap = next.stack_size;
         let opp = 1 - next.current_player;
         let pot = next.contributions[0] + next.contributions[1];
 
@@ -197,7 +220,7 @@ impl TexasHoldemGame {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff).min(STACK_SIZE);
+                    (next.contributions[next.current_player] + diff).min(stack_cap);
             }
             RAISE_MIN => {
                 let diff =
@@ -219,7 +242,7 @@ impl TexasHoldemGame {
                     }
                 };
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_cap);
                 next.raises_this_round += 1;
             }
             RAISE_THIRD_POT => {
@@ -228,7 +251,7 @@ impl TexasHoldemGame {
                 let pot_with_call = pot + diff;
                 let raise_amt = (pot_with_call / 3).max(RAISE_THIRD_POT_FLOOR);
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_cap);
                 next.raises_this_round += 1;
             }
             RAISE_HALF_POT => {
@@ -250,11 +273,11 @@ impl TexasHoldemGame {
                     (pot_with_call / 2).max(RAISE_HALF_POT_FLOOR_DRY)
                 };
                 next.contributions[next.current_player] =
-                    (next.contributions[next.current_player] + diff + raise_amt).min(STACK_SIZE);
+                    (next.contributions[next.current_player] + diff + raise_amt).min(stack_cap);
                 next.raises_this_round += 1;
             }
             ALL_IN => {
-                next.contributions[next.current_player] = STACK_SIZE;
+                next.contributions[next.current_player] = stack_cap;
                 next.raises_this_round += 1;
             }
             _ => unreachable!(),
@@ -272,7 +295,7 @@ impl TexasHoldemGame {
 
         if round_over {
             next.raises_this_round = 0;
-            if next.contributions[0] >= STACK_SIZE && next.contributions[1] >= STACK_SIZE {
+            if next.contributions[0] >= stack_cap && next.contributions[1] >= stack_cap {
                 while next.board.len() < NUM_COMMUNITY_CARDS && !next.deck_remaining.is_empty() {
                     next.board.push(next.deck_remaining.deal_one());
                 }

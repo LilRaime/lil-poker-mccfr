@@ -24,8 +24,8 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
     let category = score >> 32;
 
     let bucket = match category {
-        8 => 87, /* Straight Flush */
-        7 => 86, /* Quads */
+        8 => bucket_straight_flush(score, board),
+        7 => bucket_quads(score, hole, board),
         6 => bucket_full_house(score, board),
         5 => bucket_flush(hole, board),
         4 => bucket_straight(score, hole, board),
@@ -36,6 +36,42 @@ pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> 
     };
 
     bucket.min(87)
+}
+
+fn bucket_straight_flush(score: u64, board: &[Card]) -> usize {
+    if board.len() >= 5 {
+        let b_score = evaluate_7cards(&[board[0], board[1]], &board[2..]);
+        if (b_score >> 32) == 8 && b_score >= score {
+            return 73; /* Playing the board Straight Flush (chop) */
+        }
+    }
+    87
+}
+
+fn bucket_quads(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> usize {
+    let quads_rank = ((score >> 16) & 0xF) as usize;
+    let board_quads = board
+        .iter()
+        .filter(|c| c.rank as usize == quads_rank)
+        .count()
+        >= 4;
+    if !board_quads {
+        return 86;
+    }
+    if board.len() >= 5 {
+        let b_score = evaluate_7cards(&[board[0], board[1]], &board[2..]);
+        if (b_score >> 32) == 7 && b_score >= score {
+            return 73; /* Board Quads chop */
+        }
+    }
+    let hole_high = (hole[0].rank as usize).max(hole[1].rank as usize);
+    if hole_high == 12 {
+        86 /* Ace kicker plays unbeatable nut hand on board quads */
+    } else if hole_high == 11 {
+        78 /* King kicker */
+    } else {
+        hole_high.min(10)
+    }
 }
 
 /* Checks if the board contains 4-to-a-straight for a higher straight than st_high,
@@ -184,7 +220,7 @@ fn bucket_straight(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) ->
     if board_trips || board_pairs >= 2 {
         /* On a double-paired or trips board,
          * full houses and quads crush any straight; straight is merely a bluff-catcher */
-        52
+        40
     } else if super::texture::is_four_flush_board(board) {
         /* On a 4-flush board, straight without a flush card loses to any single flush card */
         40
@@ -287,7 +323,13 @@ fn bucket_two_pair_or_paired_board(
         (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
 
     if !is_pocket_pair && !hit_top && !hit_bottom {
-        /* Both pairs are on board; player only has unpaired high card (0..=10) */
+        /* Both pairs are on board: preserve draws on Flop/Turn, otherwise pure high card kicker (0..=10) */
+        if board.len() < 5 {
+            let draw_bucket = bucket_high_card_or_draw(hole, board);
+            if draw_bucket >= 11 {
+                return draw_bucket;
+            }
+        }
         let high_kicker = (hole[0].rank as usize).max(hole[1].rank as usize);
         let low_kicker = (hole[0].rank as usize).min(hole[1].rank as usize);
         let max_unpaired_board = board

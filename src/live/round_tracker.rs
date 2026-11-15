@@ -15,6 +15,8 @@ pub struct LiveRoundTracker {
     pub last_opp_bet: i32,
     pub estimated_my_chips: i32,
     pub last_big_blind: i32,
+    pub bot_3bet_preflop: bool,
+    pub faced_3bet_recorded_this_hand: bool,
 }
 
 impl Default for LiveRoundTracker {
@@ -32,6 +34,8 @@ impl LiveRoundTracker {
             last_opp_bet: 0,
             estimated_my_chips: STACK_SIZE,
             last_big_blind: BIG_BLIND,
+            bot_3bet_preflop: false,
+            faced_3bet_recorded_this_hand: false,
         }
     }
 
@@ -40,6 +44,8 @@ impl LiveRoundTracker {
         self.live_history = [RoundHistory::new(); NUM_ROUNDS];
         self.current_round_idx = 0;
         self.last_opp_bet = 0;
+        self.bot_3bet_preflop = false;
+        self.faced_3bet_recorded_this_hand = false;
     }
 
     pub fn update_street(&mut self, board_len: usize) -> usize {
@@ -81,6 +87,13 @@ impl LiveRoundTracker {
                                     0,
                                     0,
                                 );
+                                if s == 0
+                                    && self.bot_3bet_preflop
+                                    && !self.faced_3bet_recorded_this_hand
+                                {
+                                    tr.record_facing_3bet(false);
+                                    self.faced_3bet_recorded_this_hand = true;
+                                }
                             }
                         } else if self.live_history[s].len() == 1 && last_act == CALL_CHECK {
                             /* Single limp / call on street was checked by opponent to advance */
@@ -110,6 +123,19 @@ impl LiveRoundTracker {
         snapshot: &LiveSnapshot,
         tracker: &mut OpponentTracker,
     ) {
+        self.infer_opponent_action_inner(snapshot, Some(tracker));
+    }
+
+    /* Update live_history only (used in 6-max where LiveTableTracker records per-seat stats) */
+    pub fn infer_opponent_history_only(&mut self, snapshot: &LiveSnapshot) {
+        self.infer_opponent_action_inner(snapshot, None);
+    }
+
+    fn infer_opponent_action_inner(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        mut tracker: Option<&mut OpponentTracker>,
+    ) {
         let round_idx = self.current_round_idx;
         let hist = &mut self.live_history[round_idx];
         let mut rng = rand::thread_rng();
@@ -135,14 +161,16 @@ impl LiveRoundTracker {
                 if !snapshot.my_is_sb {
                     if snapshot.to_call == 0 || snapshot.opp_bet <= eff_limp_thresh {
                         hist.push(CALL_CHECK);
-                        tracker.record_action_street_detailed(
-                            CALL_CHECK,
-                            1,
-                            false,
-                            snapshot.opp_bet,
-                            snapshot.pot,
-                        );
-                        tracker.record_preflop_positional(true, true, false);
+                        if let Some(ref mut tr) = tracker {
+                            tr.record_action_street_detailed(
+                                CALL_CHECK,
+                                1,
+                                false,
+                                snapshot.opp_bet,
+                                snapshot.pot,
+                            );
+                            tr.record_preflop_positional(true, true, false);
+                        }
                     } else {
                         let raise_act = if snapshot.opp_bet <= snapshot.big_blind * 3 {
                             RAISE_MIN
@@ -155,14 +183,16 @@ impl LiveRoundTracker {
                             )
                         };
                         hist.push(raise_act);
-                        tracker.record_action_street_detailed(
-                            raise_act,
-                            1,
-                            false,
-                            snapshot.opp_bet,
-                            snapshot.pot,
-                        );
-                        tracker.record_preflop_positional(true, true, true);
+                        if let Some(ref mut tr) = tracker {
+                            tr.record_action_street_detailed(
+                                raise_act,
+                                1,
+                                false,
+                                snapshot.opp_bet,
+                                snapshot.pot,
+                            );
+                            tr.record_preflop_positional(true, true, true);
+                        }
                     }
                 }
             } else {
@@ -170,13 +200,15 @@ impl LiveRoundTracker {
                 if snapshot.my_is_sb && !snapshot.opp_is_sb {
                     if snapshot.to_call == 0 {
                         hist.push(CALL_CHECK);
-                        tracker.record_action_street_detailed(
-                            CALL_CHECK,
-                            (round_idx + 1) as u8,
-                            false,
-                            0,
-                            snapshot.pot,
-                        );
+                        if let Some(ref mut tr) = tracker {
+                            tr.record_action_street_detailed(
+                                CALL_CHECK,
+                                (round_idx + 1) as u8,
+                                false,
+                                0,
+                                snapshot.pot,
+                            );
+                        }
                     } else {
                         let bet_act = pseudo_harmonic_action_mapping(
                             snapshot.opp_bet,
@@ -185,13 +217,15 @@ impl LiveRoundTracker {
                             &mut rng,
                         );
                         hist.push(bet_act);
-                        tracker.record_action_street_detailed(
-                            bet_act,
-                            (round_idx + 1) as u8,
-                            false,
-                            snapshot.opp_bet,
-                            snapshot.pot,
-                        );
+                        if let Some(ref mut tr) = tracker {
+                            tr.record_action_street_detailed(
+                                bet_act,
+                                (round_idx + 1) as u8,
+                                false,
+                                snapshot.opp_bet,
+                                snapshot.pot,
+                            );
+                        }
                     }
                 }
             }
@@ -203,15 +237,21 @@ impl LiveRoundTracker {
                 pseudo_harmonic_action_mapping(opp_diff, snapshot.pot, eff_allin_thresh, &mut rng);
             hist.push(raise_act);
             let facing_cbet = round_idx == 1 && bot_bet_this_round;
-            tracker.record_action_street_detailed(
-                raise_act,
-                (round_idx + 1) as u8,
-                facing_cbet,
-                opp_diff,
-                snapshot.pot,
-            );
-            if round_idx == 0 && bot_bet_this_round {
-                tracker.record_preflop_positional(snapshot.opp_is_sb, true, true);
+            if let Some(ref mut tr) = tracker {
+                tr.record_action_street_detailed(
+                    raise_act,
+                    (round_idx + 1) as u8,
+                    facing_cbet,
+                    opp_diff,
+                    snapshot.pot,
+                );
+                if round_idx == 0 && bot_bet_this_round {
+                    tr.record_preflop_positional(snapshot.opp_is_sb, true, true);
+                    if self.bot_3bet_preflop && !self.faced_3bet_recorded_this_hand {
+                        tr.record_facing_3bet(false);
+                        self.faced_3bet_recorded_this_hand = true;
+                    }
+                }
             }
         }
 
@@ -287,7 +327,11 @@ impl LiveRoundTracker {
             BIG_BLIND
         };
         let sb = (bb / 2).max(1);
-        let allin_thresh = (bb * 35).max(1);
+        let allin_thresh = if self.estimated_my_chips > 0 {
+            self.estimated_my_chips.min(bb * 35).max(bb * 2)
+        } else {
+            (bb * 35).max(1)
+        };
         let open_min_total = (bb * 5 / 2).max(bb * 2);
         let bot_act = match chosen_action {
             "fold" => FOLD,
@@ -323,6 +367,12 @@ impl LiveRoundTracker {
             "allin" | "all_in" => ALL_IN,
             _ => CALL_CHECK,
         };
+        if self.current_round_idx == 0
+            && bot_act >= RAISE_MIN
+            && self.live_history[0].iter().any(|&a| a >= RAISE_MIN)
+        {
+            self.bot_3bet_preflop = true;
+        }
         self.live_history[self.current_round_idx].push(bot_act);
     }
 }

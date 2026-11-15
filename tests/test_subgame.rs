@@ -589,3 +589,158 @@ fn test_bet_size_aware_reach_and_depth_limited_subgame() {
     let sum: f64 = probs.iter().sum();
     assert!((sum - 1.0).abs() < 1e-4);
 }
+
+#[test]
+fn test_subgame_reach_active_street_actor_separation() {
+    use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+    use lil_poker_mccfr::game::holdem::{
+        RoundHistory, ALL_52_CARDS, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
+    };
+    use std::collections::HashMap;
+
+    let board = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+    ];
+    let used = [
+        board[0],
+        board[1],
+        board[2],
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Ten, Suit::Clubs),
+    ];
+    let rem: Vec<Card> = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|c| !used.contains(c))
+        .collect();
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(CALL_CHECK);
+    history[0].push(CALL_CHECK);
+    history[1].push(CALL_CHECK);
+    history[1].push(RAISE_HALF_POT);
+
+    let no_map: Option<&HashMap<String, Vec<f64>>> = None;
+
+    /* With active_player == Some(0) and F=[CALL_CHECK, RAISE_HALF_POT], target=0's action is idx 0 (check).
+     * With active_player == Some(1) (inverted/opponent turn), target=0 is attributed idx 1 (half-pot bet). */
+    let target0_as_checker = OpponentReachDistribution::build_for_target_generic(
+        &rem,
+        &board,
+        2,
+        &history,
+        no_map,
+        Some(0),
+        Some(0),
+        None,
+        None,
+    );
+    let target0_as_bettor = OpponentReachDistribution::build_for_target_generic(
+        &rem,
+        &board,
+        2,
+        &history,
+        no_map,
+        Some(0),
+        Some(1),
+        None,
+        None,
+    );
+    let air_weight = |dist: &OpponentReachDistribution| -> f64 {
+        dist.combos
+            .iter()
+            .zip(dist.weights.iter())
+            .find(|(c, _)| {
+                (c[0].rank == Rank::Eight && c[1].rank == Rank::Three)
+                    || (c[0].rank == Rank::Three && c[1].rank == Rank::Eight)
+            })
+            .map(|(_, &w)| w)
+            .unwrap_or(0.0)
+    };
+    let w_check = air_weight(&target0_as_checker);
+    let w_bet = air_weight(&target0_as_bettor);
+    assert!(
+        w_check > w_bet * 2.0 && target0_as_checker.total_weight > target0_as_bettor.total_weight,
+        "Active-street parity must assign idx 0 (check, air w={:.4}) to target=0 when active=0 rather than idx 1 (bet, air w={:.4})",
+        w_check,
+        w_bet
+    );
+}
+
+#[test]
+fn test_subgame_child_prior_and_symmetric_hero_reach() {
+    use lil_poker_mccfr::cfr::fallback::get_postflop_fallback_by_bucket;
+    use lil_poker_mccfr::cfr::subgame::SubgameContext;
+    use std::collections::HashMap;
+
+    let legal = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    /* Strong postflop bucket facing zero bet should put zero mass on FOLD and favor betting/checking */
+    let strong_prior = get_postflop_fallback_by_bucket(70, 3, 0, 1000, &legal);
+    assert_eq!(strong_prior[FOLD as usize], 0.0);
+    assert!(
+        strong_prior[RAISE_THIRD_POT as usize] + strong_prior[RAISE_HALF_POT as usize]
+            > strong_prior[CALL_CHECK as usize],
+        "Strong postflop bucket prior must favor value-betting over pure check: {:?}",
+        strong_prior
+    );
+
+    /* Weak postflop bucket facing a full pot bet should favor FOLD over ALL_IN */
+    let air_prior = get_postflop_fallback_by_bucket(2, 3, 1000, 1000, &legal);
+    assert!(
+        air_prior[FOLD as usize] > air_prior[ALL_IN as usize] * 5.0,
+        "Weak postflop bucket facing a full-pot bet must fold far more than jam: {:?}",
+        air_prior
+    );
+
+    /* Now solve a Turn subgame with symmetric 50/50 hero_reach sampling under a modest budget */
+    let hero_hole = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let board = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let history = [vec![1u8, 1u8], vec![1u8, 1u8], vec![], vec![]];
+    let no_map: Option<&HashMap<String, Vec<f64>>> = None;
+
+    let solver = SubgameSolver::new(80);
+    let mut ctx = SubgameContext::new();
+    let probs = solver.solve_with_stats_generic(
+        &hero_hole,
+        &board,
+        3,
+        &history,
+        0,
+        [2000, 2000],
+        0,
+        &mut ctx,
+        no_map,
+        None,
+        None,
+    );
+
+    let sum: f64 = probs.iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 1e-6,
+        "Solver probs must sum to 1.0, got {}",
+        sum
+    );
+    assert!(
+        probs[FOLD as usize] < 0.01
+            && probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.45
+            && (1..=5usize).map(|i| probs[i]).sum::<f64>() > 0.99,
+        "Top two pair checked to on Turn should never fold and lean toward value betting: {:?}",
+        probs
+    );
+}

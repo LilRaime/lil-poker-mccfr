@@ -1,6 +1,8 @@
 /* Priority Tier 1: Soft Value / Sizing Shifts, Button Steals & River Nut Blocker Bluffs */
 use super::super::tracker::OpponentTracker;
-use crate::cfr::abstraction::{detect_river_nut_blocker, preflop_strength_tier};
+use crate::cfr::abstraction::{
+    detect_river_nut_blocker, nash_open_push_max_bb, preflop_strength_tier,
+};
 use crate::game::config::*;
 use crate::game::holdem::Card;
 
@@ -18,6 +20,7 @@ impl OpponentTracker {
         board: Option<&[Card]>,
         active_opponents: usize,
         bb: i32,
+        my_chips: i32,
         pot_odds: f64,
         is_three_flush: bool,
         is_four_board_danger: bool,
@@ -83,8 +86,36 @@ impl OpponentTracker {
         };
         let steal_max_call = bb / 2;
         let pf_tier_now = preflop_strength_tier(bucket);
+        let eff_stack_bb = if my_chips > 0 {
+            my_chips / bb.max(1)
+        } else {
+            100
+        };
 
         if is_preflop
+            && (10..=19).contains(&eff_stack_bb)
+            && to_call > 0
+            && to_call <= steal_max_call
+            && is_hyper_aggressor
+            && pf_tier_now <= 5
+            && bucket >= 4
+            && nash_open_push_max_bb(bucket, active_opponents) + 2 >= eff_stack_bb
+            && self.is_guard_enabled("PF_BUTTON_STEAL")
+        {
+            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                reasons.push("PF_BUTTON_STEAL");
+                let mut shifted = 0.0f64;
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a == CALL_CHECK || (RAISE_MIN..ALL_IN).contains(&a) {
+                        let s = probs[i] * 0.85;
+                        probs[i] -= s;
+                        shifted += s;
+                    }
+                }
+                probs[ai_i] += shifted;
+            }
+        } else if is_preflop
+            && eff_stack_bb > 20
             && to_call <= steal_max_call
             && is_hyper_aggressor
             && (4..=5).contains(&pf_tier_now)
@@ -129,7 +160,84 @@ impl OpponentTracker {
                         probs[r_i] += shifted;
                         probs[c_i] -= shifted;
                     }
+                    /* At 10–19 BB short stack, convert a share of opens with Nash-shovable hands
+                     * directly into ALL_IN (excluding bucket <= 3 premiums that gain more by inducing). */
+                    if (10..=19).contains(&eff_stack_bb)
+                        && bucket >= 4
+                        && nash_open_push_max_bb(bucket, active_opponents) >= eff_stack_bb
+                    {
+                        if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                            let s = probs[r_i] * 0.55;
+                            probs[r_i] -= s;
+                            probs[ai_i] += s;
+                        }
+                    }
+                } else if pf_tier_now <= 3
+                    || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5)
+                {
+                    if let Some(c_i) = call_idx {
+                        let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
+                        let shifted = probs[c_i] * limp_shift;
+                        probs[r_i] += shifted;
+                        probs[c_i] -= shifted;
+                    }
                 }
+            }
+        } else if is_preflop
+            && active_opponents == 1
+            && to_call > steal_max_call
+            && to_call <= bb * 3
+            && (10..=20).contains(&eff_stack_bb)
+            && (pf_tier_now <= 2
+                || (pf_tier_now == 3 && (is_hyper_aggressor || eff_stack_bb <= 16)))
+            && self.is_guard_enabled("PF_BUTTON_STEAL")
+        {
+            /* Short-stack 3-bet re-steal shove: at 10–20 BB, convert non-all-in min-3bet/call mass
+             * into direct ALL_IN with strong hands rather than awkward half-stack 3-bets. */
+            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                reasons.push("PF_BUTTON_STEAL");
+                let mut shifted = 0.0f64;
+                for (i, &a) in legal_actions.iter().enumerate() {
+                    if a == RAISE_MIN || a == RAISE_THIRD_POT {
+                        let s = probs[i] * 0.70;
+                        probs[i] -= s;
+                        shifted += s;
+                    } else if a == CALL_CHECK && eff_stack_bb <= 16 {
+                        let s = probs[i] * 0.45;
+                        probs[i] -= s;
+                        shifted += s;
+                    }
+                }
+                probs[ai_i] += shifted;
+            }
+        } else if is_preflop
+            && active_opponents == 1
+            && to_call > steal_max_call
+            && to_call <= bb * 3
+            && self.faced_3bet_count >= 3
+            && self.fold_to_3bet_ratio() > 0.60
+            && (2..=4).contains(&pf_tier_now)
+            && self.is_guard_enabled("PF_BUTTON_STEAL")
+        {
+            let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
+            let call_idx = legal_actions.iter().position(|&a| a == CALL_CHECK);
+            let raise_idx = legal_actions
+                .iter()
+                .position(|&a| a == RAISE_THIRD_POT || a == RAISE_MIN);
+            if let Some(r_i) = raise_idx {
+                reasons.push("PF_BUTTON_STEAL");
+                let mut shifted = 0.0f64;
+                if let Some(c_i) = call_idx {
+                    let s = probs[c_i] * 0.30;
+                    probs[c_i] -= s;
+                    shifted += s;
+                }
+                if let Some(f_i) = fold_idx {
+                    let s = probs[f_i] * 0.25;
+                    probs[f_i] -= s;
+                    shifted += s;
+                }
+                probs[r_i] += shifted;
             }
         }
 

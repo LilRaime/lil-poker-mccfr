@@ -26,6 +26,14 @@ struct Args {
     /* Maximum turn actions to retain in blueprint (default: 3) */
     #[arg(long, default_value_t = 3)]
     max_turn_actions: usize,
+
+    /* Maximum preflop action sequence length for postflop nodes (default: 4, allows 4-bet pots) */
+    #[arg(long, default_value_t = 4)]
+    max_pf_len: usize,
+
+    /* Maximum river actions to retain in blueprint (default: 3) */
+    #[arg(long, default_value_t = 3)]
+    max_river_actions: usize,
 }
 
 #[inline(always)]
@@ -74,11 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pf_count += 1;
             }
             2 => {
-                /* 2. Flop: require preflop length <= 3 (single-raised & 3-bet pots) */
+                /* 2. Flop: require preflop length <= max_pf_len */
                 if k.starts_with("P:") {
                     if let Some(end) = k.find('|') {
                         let pf_len = k[2..end].len();
-                        if pf_len > 3 {
+                        if pf_len > args.max_pf_len {
                             continue;
                         }
                     }
@@ -87,11 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flop_count += 1;
             }
             3 => {
-                /* 3. Turn: preflop length <= 3, turn actions <= max_turn_actions */
+                /* 3. Turn: preflop length <= max_pf_len, turn actions <= max_turn_actions */
                 if k.starts_with("P:") {
                     if let Some(end) = k.find('|') {
                         let pf_len = k[2..end].len();
-                        if pf_len > 3 {
+                        if pf_len > args.max_pf_len {
                             continue;
                         }
                     }
@@ -116,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if k.starts_with("P:") {
                     if let Some(end) = k.find('|') {
                         let pf_len = k[2..end].len();
-                        if pf_len > 3 {
+                        if pf_len > args.max_pf_len {
                             continue;
                         }
                     }
@@ -125,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let after = &k[pos..];
                     if let Some(slash) = after.find('/') {
                         let river_act_len = after[slash + 1..].len();
-                        if river_act_len > 2 {
+                        if river_act_len > args.max_river_actions {
                             continue;
                         }
                     }
