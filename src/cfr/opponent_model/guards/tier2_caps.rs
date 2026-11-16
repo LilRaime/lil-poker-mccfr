@@ -21,6 +21,7 @@ impl OpponentTracker {
         board: Option<&[Card]>,
         active_opponents: usize,
         bb: i32,
+        my_chips: i32,
         pot_odds: f64,
         is_three_flush: bool,
         is_passive_station: bool,
@@ -37,7 +38,7 @@ impl OpponentTracker {
             && bucket < 28
             && !is_passive_station
             && (self.total_actions() < 6 || self.fold_ratio() >= 0.30)
-            && pot <= bb * 12
+            && super::river_nut_blocker_allowed(pot, bb, my_chips)
             && hole
                 .zip(board)
                 .map(|(h, b)| detect_river_nut_blocker(h, b))
@@ -93,7 +94,9 @@ impl OpponentTracker {
             && (15..=27).contains(&bucket)
             && self.is_guard_enabled("TURN_DRAW_ODDS_FOLD")
         {
-            let max_turn_draw_odds = if bucket >= 24 {
+            let max_turn_draw_odds = if bucket >= 26 {
+                0.40
+            } else if bucket >= 24 {
                 0.31
             } else if bucket >= 19 {
                 0.22

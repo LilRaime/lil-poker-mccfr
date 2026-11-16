@@ -6,7 +6,8 @@ use lil_poker_mccfr::game::holdem::{
 };
 use lil_poker_mccfr::live::decision::{decide_action_multiway, decide_action_multiway_context};
 use lil_poker_mccfr::live::state::{
-    derive_legal_actions, parse_live_state, process_showdown, LiveRoundTracker, LiveTableTracker,
+    derive_legal_actions, parse_live_state, parse_live_state_with_hint, process_showdown,
+    LiveRoundTracker, LiveTableTracker,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -480,4 +481,79 @@ fn test_live_table_tracker_6max_individual_tracking_and_finalize() {
     /* VillainB posted SB and folded without putting extra chips in */
     assert_eq!(tb.sb_total_hands, 1);
     assert_eq!(tb.vpip_hands, 0);
+}
+
+#[test]
+fn test_6max_unopened_history_and_blind_inference_without_flags() {
+    /* 1. 6-max payload without explicit big_blind or is_small_blind/is_big_blind flags:
+     * SB (150) and BB (300) posted, two early seats folded, Hero CO holds 9c 9h in unopened pot (pot = 450). */
+    let s_6max = json!({
+        "hand_id": 64,
+        "phase": "Preflop",
+        "pot": 450,
+        "current_bet": 300,
+        "active_player_id": "hero",
+        "board": [],
+        "players": [
+            { "id": "p1", "name": "UtgBot", "chips": 9725, "bet": 0, "folded": true },
+            { "id": "p2", "name": "MpBot", "chips": 7575, "bet": 0, "folded": true },
+            { "id": "hero", "name": "HeroBot", "chips": 8938, "bet": 0, "hole": ["9c", "9h"] },
+            { "id": "p4", "name": "BtnBot", "chips": 11746, "bet": 0 },
+            { "id": "p5", "name": "SbBot", "chips": 8225, "bet": 150 },
+            { "id": "p6", "name": "BbBot", "chips": 13341, "bet": 300 }
+        ]
+    });
+    let snap = parse_live_state(&s_6max, "hero").expect("parse 6-max snapshot");
+    assert_eq!(
+        snap.big_blind, 300,
+        "Should infer 300 big blind from untouched (150, 300) blinds without flags"
+    );
+    assert_eq!(snap.small_blind, 150);
+
+    let mut rt = LiveRoundTracker::new();
+    rt.reset_hand(snap.hand_id);
+    rt.infer_opponent_history_only(&snap);
+    assert!(
+        rt.live_history[0].is_empty(),
+        "Unopened 6-max pot before CO must keep preflop history empty, got {:?}",
+        rt.live_history[0].as_slice()
+    );
+
+    /* 2. HU SB limp (400 == 400) & Flop blind hint preservation */
+    let s_hu_limp = json!({
+        "hand_id": 84,
+        "phase": "Preflop",
+        "pot": 800,
+        "current_bet": 400,
+        "active_player_id": "hero",
+        "board": [],
+        "players": [
+            { "id": "opp", "name": "Villain", "chips": 16975, "bet": 400, "is_small_blind": true },
+            { "id": "hero", "name": "HeroBot", "chips": 2225, "bet": 400, "is_big_blind": true, "hole": ["Kd", "Qc"] }
+        ]
+    });
+    let snap_limp = parse_live_state(&s_hu_limp, "hero").expect("parse HU limp snapshot");
+    assert_eq!(
+        snap_limp.big_blind, 400,
+        "BB should remain 400 after SB limps to match BB"
+    );
+
+    let s_flop_no_bb = json!({
+        "hand_id": 84,
+        "phase": "Flop",
+        "pot": 1600,
+        "current_bet": 0,
+        "active_player_id": "hero",
+        "board": ["As", "Kd", "4c"],
+        "players": [
+            { "id": "opp", "name": "Villain", "chips": 16575, "bet": 0, "is_small_blind": true },
+            { "id": "hero", "name": "HeroBot", "chips": 1825, "bet": 0, "is_big_blind": true, "hole": ["Kd", "Qc"] }
+        ]
+    });
+    let snap_flop =
+        parse_live_state_with_hint(&s_flop_no_bb, "hero", snap_limp.big_blind).expect("parse flop");
+    assert_eq!(
+        snap_flop.big_blind, 400,
+        "Same-hand hint should preserve 400 big blind on Flop"
+    );
 }

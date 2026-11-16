@@ -157,8 +157,30 @@ impl LiveRoundTracker {
 
         if hist.is_empty() {
             if round_idx == 0 {
-                /* Preflop: SB acts first. If bot is BB, opponent acted first! */
-                if !snapshot.my_is_sb {
+                if snapshot.active_opponents >= 2 {
+                    /* Multi-way: only record voluntary preflop actions if pot/bet exceeds posted blinds (sb + bb);
+                     * otherwise pot is unopened before UTG/MP/CO/BTN/SB so leave preflop history empty! */
+                    let blinds_pot = bb + snapshot.small_blind.max(1);
+                    if snapshot.current_bet > bb {
+                        let opp_bet_amt = snapshot.opp_bet.max(snapshot.current_bet);
+                        let raise_act = if opp_bet_amt <= bb * 3 {
+                            RAISE_MIN
+                        } else {
+                            pseudo_harmonic_action_mapping(
+                                opp_bet_amt,
+                                snapshot.pot,
+                                eff_allin_thresh,
+                                &mut rng,
+                            )
+                        };
+                        hist.push(raise_act);
+                    } else if snapshot.pot > blinds_pot + snapshot.small_blind / 2
+                        && !snapshot.my_is_sb
+                    {
+                        hist.push(CALL_CHECK);
+                    }
+                } else if !snapshot.my_is_sb {
+                    /* Heads-Up: SB acts first. If bot is BB, opponent acted first! */
                     if snapshot.to_call == 0 || snapshot.opp_bet <= eff_limp_thresh {
                         hist.push(CALL_CHECK);
                         if let Some(ref mut tr) = tracker {
@@ -172,7 +194,7 @@ impl LiveRoundTracker {
                             tr.record_preflop_positional(true, true, false);
                         }
                     } else {
-                        let raise_act = if snapshot.opp_bet <= snapshot.big_blind * 3 {
+                        let raise_act = if snapshot.opp_bet <= bb * 3 {
                             RAISE_MIN
                         } else {
                             pseudo_harmonic_action_mapping(

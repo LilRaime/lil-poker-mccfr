@@ -15,7 +15,8 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use super::decision::decide_action_traced_with_bet;
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{
-    parse_live_state, process_showdown_multiway, LiveRoundTracker, LiveSnapshot, LiveTableTracker,
+    parse_live_state_with_hint, process_showdown_multiway, LiveRoundTracker, LiveSnapshot,
+    LiveTableTracker,
 };
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
@@ -218,9 +219,13 @@ fn apply_live_commit_guards(
             None
         };
         /* Postflop Air Stack-Risk Guard:
-         * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11). */
+         * Never risk >= 35% of remaining stack on a postflop bet/raise with pure air (bucket < 11),
+         * except genuine River nut-flush blocker bluffs when checking is an option. */
         if let Some(b_idx) = post_bucket {
-            if b_idx < 11 && bet_add * 20 >= eff_chips * 7 {
+            let river_blocker_bluff = snapshot.board.len() >= 5
+                && snapshot.to_call == 0
+                && crate::cfr::abstraction::detect_river_nut_blocker(hole, &snapshot.board);
+            if b_idx < 11 && bet_add * 20 >= eff_chips * 7 && !river_blocker_bluff {
                 if snapshot.to_call == 0 {
                     ("check".to_string(), 0)
                 } else if snapshot.to_call <= snapshot.big_blind
@@ -485,7 +490,14 @@ impl LiveSession {
             Some(self.profiles_path),
         );
 
-        let Some(snapshot) = parse_live_state(state, &self.player_id) else {
+        let bb_hint = if self.hand_active
+            && (msg_hand_id == 0 || msg_hand_id == self.round_tracker.current_hand_id)
+        {
+            self.round_tracker.last_big_blind
+        } else {
+            0
+        };
+        let Some(snapshot) = parse_live_state_with_hint(state, &self.player_id, bb_hint) else {
             return Ok(());
         };
 
@@ -678,14 +690,33 @@ impl LiveSession {
         self.last_action_key.clear();
 
         /* Automatic fallback retry if server rejected 'check' in favor of 'call',
+         * if server rejected 'all_in'/'allin' (fall back to 'call' or total 'raise'),
          * or if server rejected 'raise'/'bet' (re-evaluate non-raise call vs fold instead of blind call!) */
-        let fallback_act: Option<String> = if chosen_action == "check"
+        let has_legal = |tok: &str| {
+            snapshot
+                .legal_actions
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(tok))
+        };
+        let fallback_act: Option<(String, i32)> = if chosen_action == "check"
             && (err_text.contains("cannot check") || err_text.contains("call"))
         {
-            Some("call".to_string())
+            Some(("call".to_string(), 0))
+        } else if chosen_action == "all_in" || chosen_action == "allin" {
+            if snapshot.to_call > 0 && snapshot.to_call >= my_chips && has_legal("call") {
+                Some(("call".to_string(), 0))
+            } else if my_chips > 0 && has_legal("raise") {
+                Some(("raise".to_string(), my_chips + snapshot.my_bet))
+            } else if my_chips > 0 && has_legal("bet") {
+                Some(("bet".to_string(), my_chips + snapshot.my_bet))
+            } else if snapshot.to_call > 0 && has_legal("call") {
+                Some(("call".to_string(), 0))
+            } else {
+                None
+            }
         } else if chosen_action == "raise" || chosen_action == "bet" {
             if snapshot.to_call == 0 {
-                Some("check".to_string())
+                Some(("check".to_string(), 0))
             } else {
                 let non_raise_legal: Vec<String> = snapshot
                     .legal_actions
@@ -705,7 +736,7 @@ impl LiveSession {
                         .get(&self.current_opp_name)
                         .cloned()
                         .unwrap_or_default();
-                    let (fb_act, _, _) = decide_action_traced_with_bet(
+                    let (fb_act, fb_amt, _) = decide_action_traced_with_bet(
                         &snapshot.hole,
                         &snapshot.board,
                         &non_raise_legal,
@@ -726,17 +757,18 @@ impl LiveSession {
                         my_chips,
                         snapshot.current_bet,
                     );
-                    Some(fb_act)
+                    Some((fb_act, fb_amt))
                 }
             }
         } else {
             None
         };
 
-        if let Some(fb) = fallback_act {
+        if let Some((fb, fb_amt)) = fallback_act {
             println!(
-                "-> Auto-fallback: Retrying action {} (amt: 0)",
-                fb.to_uppercase()
+                "-> Auto-fallback: Retrying action {} (amt: {})",
+                fb.to_uppercase(),
+                fb_amt
             );
             if let Ok(r_retry) = self
                 .client
@@ -744,13 +776,14 @@ impl LiveSession {
                 .json(&ActPayload {
                     player_id: self.player_id.clone(),
                     action: fb.clone(),
-                    amount: 0,
+                    amount: fb_amt,
                 })
                 .send()
                 .await
             {
                 if r_retry.status().is_success() {
-                    self.round_tracker.record_bot_action(&fb, 0, snapshot.pot);
+                    self.round_tracker
+                        .record_bot_action(&fb, fb_amt, snapshot.pot);
                 }
             }
         }

@@ -366,6 +366,7 @@ impl OpponentTracker {
         let can_fold = legal_actions.contains(&FOLD);
         let total_pot = (pot + to_call).max(1);
         let pot_odds = to_call as f64 / total_pot as f64;
+        let call_only_allin = to_call > 0 && to_call >= my_chips;
         let call_action = if legal_actions.contains(&CALL_CHECK) {
             CALL_CHECK
         } else {
@@ -373,6 +374,9 @@ impl OpponentTracker {
         };
 
         if pf_tier <= 3 {
+            if call_only_allin && can_call {
+                return Some((call_action, "SHORT_STACK_NASH_PUSH"));
+            }
             if can_allin {
                 return Some((ALL_IN, "SHORT_STACK_NASH_PUSH"));
             }

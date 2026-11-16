@@ -155,7 +155,13 @@ impl OpponentTracker {
                 }
                 if to_call > 0 {
                     if let Some(c_i) = call_idx {
-                        let limp_shift = if pf_tier_now <= 4 { 0.75 } else { 0.55 };
+                        let limp_shift = if pf_tier_now <= 4 {
+                            0.75
+                        } else if eff_stack_bb > 15 {
+                            0.80
+                        } else {
+                            0.55
+                        };
                         let shifted = probs[c_i] * limp_shift;
                         probs[r_i] += shifted;
                         probs[c_i] -= shifted;
@@ -248,7 +254,7 @@ impl OpponentTracker {
             && bucket < 28
             && !is_passive_station
             && (self.total_actions() < 6 || self.fold_ratio() >= 0.30)
-            && pot <= bb * 12
+            && super::river_nut_blocker_allowed(pot, bb, my_chips)
             && self.is_guard_enabled("RIVER_NUT_BLOCKER_BLUFF")
         {
             if let (Some(h), Some(b)) = (hole, board) {

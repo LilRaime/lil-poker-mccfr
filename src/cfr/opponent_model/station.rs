@@ -278,8 +278,10 @@ impl OpponentTracker {
                     && (round == 4 || pot_odds >= 0.25 || to_call >= bb * 4))
                     || ((37..=38).contains(&bucket) && to_call >= bb * 5 && pot_odds >= 0.30)
                     || ((39..=42).contains(&bucket) && to_call >= bb * 4 && pot_odds >= 0.44);
-                let should_fold_three_flush_tp =
-                    is_three_flush && bucket <= 42 && to_call >= bb * 4 && pot_odds >= 0.26;
+                let should_fold_three_flush_tp = is_three_flush
+                    && (28..=42).contains(&bucket)
+                    && to_call >= bb * 4
+                    && pot_odds >= 0.26;
                 if should_fold_weak_pair || should_fold_three_flush_tp {
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         reasons.push("POST_BARREL_FOLD");

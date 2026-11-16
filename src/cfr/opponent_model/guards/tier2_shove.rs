@@ -239,17 +239,21 @@ impl OpponentTracker {
                     }
                 }
             }
-            if eff_stack_bb > 20 && to_call <= bb * 4 && bucket >= 6 {
+            if eff_stack_bb > 20
+                && (to_call <= bb || (to_call <= bb * 4 && (bucket >= 3 || active_opponents >= 2)))
+            {
                 if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
                     let s = probs[ai_i];
-                    probs[ai_i] = 0.0;
-                    if let Some(t_i) = legal_actions
-                        .iter()
-                        .position(|&a| a == RAISE_THIRD_POT)
-                        .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN))
-                        .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
-                    {
-                        probs[t_i] += s;
+                    if s > 0.0 {
+                        probs[ai_i] = 0.0;
+                        if let Some(t_i) = legal_actions
+                            .iter()
+                            .position(|&a| a == RAISE_THIRD_POT)
+                            .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN))
+                            .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
+                        {
+                            probs[t_i] += s;
+                        }
                     }
                 }
             }
@@ -386,7 +390,7 @@ impl OpponentTracker {
                 let is_strong_draw = (15..=18).contains(&bucket) || (19..=27).contains(&bucket);
                 let draw_can_call_shove = if round == 3 {
                     (bucket >= 24 && pot_odds <= 0.31 && !is_three_flush)
-                        || ((bucket == 26 || bucket == 27) && pot_odds <= 0.31)
+                        || ((bucket == 26 || bucket == 27) && pot_odds <= 0.40)
                         || ((bucket == 22 || bucket == 23) && pot_odds <= 0.22)
                 } else {
                     let simple_draw_odds_ok = pot_odds <= 0.30 || to_call < bb * 15;

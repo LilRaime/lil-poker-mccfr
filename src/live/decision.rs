@@ -253,6 +253,35 @@ pub fn decide_action_traced_with_bet(
         postflop_equity_bucket(hole, board)
     };
 
+    /* Unconditional Micro-Stack / Extreme Pot-Odds Commitment Rescue:
+     * Never fold preflop or postflop when priced in at <= 12.5% pot odds or facing <= 0.5 BB with <= 0.5 BB left! */
+    if to_call > 0 && (has("call") || has("all_in") || has("allin")) {
+        let new_pot = (pot + to_call).max(1);
+        let is_extreme_commit =
+            to_call * 8 <= new_pot || (my_chips > 0 && my_chips <= bb / 2 && pot >= bb * 4);
+        if is_extreme_commit
+            && (round >= 2 || preflop_strength_tier(current_bucket) <= 6 || my_chips <= to_call)
+        {
+            let pot_odds_bps =
+                ((to_call as f64 / new_pot as f64).clamp(0.0, 1.0) * 1000.0).round() as u16;
+            let tr = DecisionTrace {
+                bucket: current_bucket,
+                round,
+                pot_odds_bps,
+                raw_top_action: CALL_CHECK,
+                final_action: CALL_CHECK,
+                guard_reasons: vec!["POT_COMMIT_DECISION_RESCUE"],
+            };
+            if has("call") {
+                return ("call".to_string(), 0, tr);
+            } else if has("all_in") {
+                return ("all_in".to_string(), 0, tr);
+            } else {
+                return ("allin".to_string(), 0, tr);
+            }
+        }
+    }
+
     /* Short-Stack Nash Push/Fold Engine:
      * When effective stack is <= 12 BB on preflop, delegates to unified OpponentTracker Nash Push/Fold. */
     if round == 1 && my_chips > 0 && my_chips <= bb * 12 {
@@ -278,7 +307,9 @@ pub fn decide_action_traced_with_bet(
             };
             match short_act {
                 ALL_IN => {
-                    if has("all_in") {
+                    if to_call >= my_chips && has("call") {
+                        return ("call".to_string(), 0, tr);
+                    } else if has("all_in") {
                         return ("all_in".to_string(), 0, tr);
                     } else if has("allin") {
                         return ("allin".to_string(), 0, tr);

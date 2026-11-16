@@ -324,7 +324,9 @@ pub fn map_action_index_full(
             } else {
                 (pot * 2).max(raise_min_amt * 2)
             };
-            if has("all_in") {
+            if to_call > 0 && my_chips > 0 && to_call >= my_chips && has("call") {
+                Some(("call".to_string(), 0))
+            } else if has("all_in") {
                 Some(("all_in".to_string(), 0))
             } else if has("allin") {
                 Some(("allin".to_string(), 0))

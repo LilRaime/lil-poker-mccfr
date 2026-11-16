@@ -873,3 +873,103 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
         );
     }
 }
+
+#[test]
+fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20261116);
+
+    /* 1. Turn Pair + Nut Flush Draw (As 8c on [5c 8s Ks 6s], bucket 26)
+     * facing a 1.5x pot turn overbet (2400 into 4000, pot_odds = 37.5%, bb = 200) must not fold! */
+    let hole_as8c = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let board_turn_3spades = [
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Six, Suit::Spades),
+    ];
+    let b_26 = postflop_equity_bucket(&hole_as8c, &board_turn_3spades);
+    assert_eq!(
+        b_26, 26,
+        "As 8c on 5c 8s Ks 6s must be bucket 26 (Pair + NFD)"
+    );
+
+    let legal_turn = [FOLD, CALL_CHECK, RAISE_MIN, ALL_IN];
+    let call_heavy = [0.25, 0.70, 0.05, 0.0, 0.0, 0.0];
+    let (act_turn, trace_turn) = tracker.select_action_purified_traced_with_stack(
+        &call_heavy,
+        &legal_turn,
+        b_26,
+        3,
+        2400,
+        4000,
+        Some(&hole_as8c),
+        Some(&board_turn_3spades),
+        1,
+        200,
+        4318,
+        &mut rng,
+    );
+    assert_ne!(
+        act_turn, FOLD,
+        "Pair + Nut Flush Draw (14 outs, bucket 26) must not fold on 3-flush Turn (reasons: {:?})",
+        trace_turn.guard_reasons
+    );
+
+    /* 2. River Ace nut-flush blocker (Ah Kc on [3h 2h 7h Td Jc]) at low SPR
+     * (my_chips = 3619, pot = 6878, bb = 150) must still allow RIVER_NUT_BLOCKER_BLUFF! */
+    let hole_ahkc = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Clubs),
+    ];
+    let board_river_3hearts = [
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
+    let b_air = postflop_equity_bucket(&hole_ahkc, &board_river_3hearts);
+    let legal_river = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let check_heavy = [0.0, 0.85, 0.05, 0.10, 0.0, 0.0];
+    let mut blocker_bluffs = 0usize;
+    let mut fired_reason = false;
+    for _ in 0..80 {
+        let (act_river, tr) = tracker.select_action_purified_traced_with_stack(
+            &check_heavy,
+            &legal_river,
+            b_air,
+            4,
+            0,
+            6878,
+            Some(&hole_ahkc),
+            Some(&board_river_3hearts),
+            1,
+            150,
+            3619,
+            &mut rng,
+        );
+        if act_river >= RAISE_MIN {
+            blocker_bluffs += 1;
+        }
+        if tr.guard_reasons.contains(&"RIVER_NUT_BLOCKER_BLUFF") {
+            fired_reason = true;
+        }
+    }
+    assert!(
+        fired_reason && blocker_bluffs >= 10,
+        "Low-SPR river with Ace nut-flush blocker must trigger RIVER_NUT_BLOCKER_BLUFF and bluff sometimes (got {}/80)",
+        blocker_bluffs
+    );
+}

@@ -320,3 +320,82 @@ fn test_observe_blind_level_decay_and_short_stack_15bb_nash_call() {
         reason_77
     );
 }
+
+#[test]
+fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
+    use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
+
+    let tracker = OpponentTracker::new();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(777);
+
+    /* 1. Deep 6-max unopened pot (~30 BB): 9c 9h (bucket 5, 8,938 @ 150/300)
+     * must never open-jam ALL_IN even if raw probs heavily weight ALL_IN! */
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
+    let legal_6max = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let jam_heavy = [0.0, 0.05, 0.15, 0.10, 0.10, 0.60];
+    for _ in 0..50 {
+        let (act, _) = tracker.select_action_purified_traced_with_stack(
+            &jam_heavy,
+            &legal_6max,
+            b_99,
+            1,
+            300,
+            450,
+            Some(&hole_99),
+            None,
+            5,
+            300,
+            8938,
+            &mut rng,
+        );
+        assert_ne!(
+            act, ALL_IN,
+            "Pocket 99 at ~30 BB in 6-max unopened pot must never open-jam ALL_IN"
+        );
+    }
+
+    /* 2. Mid-stack HU SB Tier 5 open: As 8c at 25 BB should overwhelmingly open-raise
+     * instead of passively limping */
+    let hole_a8o = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let b_a8o = preflop_bucket(hole_a8o[0], hole_a8o[1]).0;
+    let limp_heavy = [0.10, 0.70, 0.20, 0.0, 0.0, 0.0];
+    let mut raises = 0usize;
+    for _ in 0..100 {
+        let (act, _) = tracker.select_action_purified_traced_with_stack(
+            &limp_heavy,
+            &legal_6max,
+            b_a8o,
+            1,
+            100,
+            300,
+            Some(&hole_a8o),
+            None,
+            1,
+            200,
+            5018,
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            raises += 1;
+        }
+    }
+    assert!(
+        raises >= 70,
+        "A8o at 25 BB HU SB should predominantly open-raise instead of limping (got {}/100 raises)",
+        raises
+    );
+}

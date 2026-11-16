@@ -630,3 +630,84 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
     );
     assert_ne!(maniac_act, "fold", "AQo should call maniac 33 BB shove");
 }
+
+#[test]
+fn test_preflop_micro_stack_1chip_calls_and_deep_99_no_open_jam() {
+    let tracker = OpponentTracker::new();
+    let history = [RoundHistory::new(); NUM_ROUNDS];
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+
+    /* 1. Micro-stack preflop commitment: Kd Qc with 1 chip remaining facing 1-chip effective call into 5,248 pot
+     * must return "call" (NEVER "fold" and NEVER "allin"/"raise" when to_call >= my_chips) */
+    let hole_kqo = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+    ];
+    let legal_1chip = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
+    let (act_1chip, _, tr_1chip) = decide_action_traced_with_bet(
+        &hole_kqo,
+        &[],
+        &legal_1chip,
+        1,
+        5248,
+        &strategy_map,
+        false,
+        &tracker,
+        &history,
+        1,
+        [2624, 2624],
+        1,
+        None,
+        None,
+        None,
+        1,
+        400,
+        1,
+        13124,
+    );
+    assert_eq!(
+        act_1chip, "call",
+        "With 1 chip remaining facing 1 chip to call in 5248 pot, must return 'call' (reasons: {:?})",
+        tr_1chip.guard_reasons
+    );
+
+    /* 2. Deep 6-max unopened pot (~30 BB): 9c 9h (8,938 @ 150/300)
+     * must open-raise cleanly and never shove ALL_IN */
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let legal_full = vec![
+        "fold".to_string(),
+        "call".to_string(),
+        "raise".to_string(),
+        "all_in".to_string(),
+    ];
+    for _ in 0..30 {
+        let (act_99, _, _) = decide_action_traced_with_bet(
+            &hole_99,
+            &[],
+            &legal_full,
+            300,
+            450,
+            &strategy_map,
+            false,
+            &tracker,
+            &history,
+            0,
+            [0, 300],
+            0,
+            None,
+            None,
+            None,
+            5,
+            300,
+            8938,
+            300,
+        );
+        assert_ne!(
+            act_99, "all_in",
+            "99 at 29.8 BB in 6-max unopened pot must never open-jam all-in"
+        );
+    }
+}

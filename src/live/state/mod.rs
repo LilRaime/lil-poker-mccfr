@@ -2,7 +2,9 @@
 pub mod snapshot;
 pub mod table_tracker;
 
-pub use snapshot::{derive_legal_actions, parse_live_state, LiveSnapshot};
+pub use snapshot::{
+    derive_legal_actions, parse_live_state, parse_live_state_with_hint, LiveSnapshot,
+};
 pub use table_tracker::{
     process_showdown, process_showdown_multiway, LiveTableTracker, OppHandState,
 };
@@ -109,12 +111,36 @@ pub(super) fn resolve_blinds(
     board_empty: bool,
     sb_posted_bet: i32,
     bb_posted_bet: i32,
+    nonzero_bets: &[i32],
+    raw_pot: i32,
+    hint_bb: i32,
 ) -> (i32, i32) {
     let (raw_bb, raw_sb) = parse_raw_blinds(state);
+    let inferred_from_table = if board_empty && nonzero_bets.len() == 2 {
+        let b0 = nonzero_bets[0];
+        let b1 = nonzero_bets[1];
+        let (min_b, max_b) = (b0.min(b1), b0.max(b1));
+        if min_b > 0 && max_b == min_b * 2 && raw_pot == min_b + max_b {
+            max_b
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let big_blind = if raw_bb > 0 {
         raw_bb
-    } else if board_empty && sb_posted_bet > 0 && bb_posted_bet == sb_posted_bet * 2 {
+    } else if board_empty
+        && sb_posted_bet > 0
+        && bb_posted_bet > 0
+        && (bb_posted_bet == sb_posted_bet * 2
+            || (sb_posted_bet == bb_posted_bet && bb_posted_bet >= 20))
+    {
         bb_posted_bet
+    } else if inferred_from_table > 0 {
+        inferred_from_table
+    } else if hint_bb > 0 {
+        hint_bb
     } else {
         BIG_BLIND
     };

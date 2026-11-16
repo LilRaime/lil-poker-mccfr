@@ -49,6 +49,7 @@ struct TablePlayersSummary {
     active_opps: usize,
     total_opps: usize,
     opp_bets: Vec<i32>,
+    nonzero_bets: Vec<i32>,
 }
 
 /* Dynamically derive legal action tokens when server does not provide legal_actions */
@@ -84,6 +85,9 @@ fn summarize_players(players: &[Value], player_id: &str) -> TablePlayersSummary 
 
     for p in players {
         let p_bet = extract_player_bet(p);
+        if p_bet > 0 {
+            sum.nonzero_bets.push(p_bet);
+        }
         if p_bet > sum.max_bet_on_table {
             sum.max_bet_on_table = p_bet;
         }
@@ -191,6 +195,15 @@ fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize 
 
 /* Parse a WebSocket JSON message into LiveSnapshot if bot is active player */
 pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> {
+    parse_live_state_with_hint(state, player_id, 0)
+}
+
+/* Parse a WebSocket JSON message into LiveSnapshot with an optional same-hand big-blind hint */
+pub fn parse_live_state_with_hint(
+    state: &Value,
+    player_id: &str,
+    hint_bb: i32,
+) -> Option<LiveSnapshot> {
     let active_id = state
         .get("active_player_id")
         .and_then(|v| v.as_str())
@@ -265,11 +278,15 @@ pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> 
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
+    let raw_pot = parse_json_i32(state.get("pot"));
     let (big_blind, small_blind) = resolve_blinds(
         state,
         board.is_empty(),
         sum.sb_posted_bet,
         sum.bb_posted_bet,
+        &sum.nonzero_bets,
+        raw_pot,
+        hint_bb,
     );
 
     let hist_len = state

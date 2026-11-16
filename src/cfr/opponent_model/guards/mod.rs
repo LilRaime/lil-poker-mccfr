@@ -11,6 +11,11 @@ use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{is_four_flush_board, is_four_straight_board, preflop_strength_tier};
 use crate::game::holdem::Card;
 
+#[inline]
+pub(super) fn river_nut_blocker_allowed(pot: i32, bb: i32, my_chips: i32) -> bool {
+    pot <= bb * 12 || (my_chips > 0 && my_chips * 4 <= pot * 3)
+}
+
 impl OpponentTracker {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_preflop_and_postflop_guards(
@@ -100,6 +105,7 @@ impl OpponentTracker {
             board,
             active_opponents,
             bb,
+            my_chips,
             pot_odds,
             is_three_flush,
             is_passive_station,
