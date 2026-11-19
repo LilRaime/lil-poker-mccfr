@@ -37,6 +37,10 @@ pub struct OpponentTracker {
     pub sizing_small_bets: u64,
     pub sizing_mid_bets: u64,
     pub sizing_large_bets: u64,
+    #[serde(default)]
+    pub postflop_overbets: u64,
+    #[serde(default)]
+    pub postflop_bets_total: u64,
     pub showdown_small_bluff_count: u64,
     pub showdown_large_monster_count: u64,
 
@@ -106,6 +110,8 @@ impl OpponentTracker {
             sizing_small_bets: 0,
             sizing_mid_bets: 0,
             sizing_large_bets: 0,
+            postflop_overbets: 0,
+            postflop_bets_total: 0,
             showdown_small_bluff_count: 0,
             showdown_large_monster_count: 0,
             showdown_hands: 0,
@@ -256,6 +262,12 @@ impl OpponentTracker {
                 self.sizing_mid_bets += 1;
             } else {
                 self.sizing_large_bets += 1;
+            }
+            if round >= 2 {
+                self.postflop_bets_total += 1;
+                if (bet_amt as i64) * 10 > (pot as i64) * 12 {
+                    self.postflop_overbets += 1;
+                }
             }
         }
 
@@ -418,6 +430,21 @@ impl OpponentTracker {
         } else {
             checks as f64 / total as f64
         }
+    }
+
+    pub fn postflop_overbet_ratio(&self) -> f64 {
+        if self.postflop_bets_total == 0 {
+            0.0
+        } else {
+            self.postflop_overbets as f64 / self.postflop_bets_total as f64
+        }
+    }
+
+    pub fn is_overbet_bluffer(&self) -> bool {
+        self.exploit_enabled
+            && self.postflop_bets_total >= 4
+            && self.postflop_overbets >= 3
+            && self.postflop_overbet_ratio() >= 0.40
     }
 
     /* Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)
@@ -654,6 +681,8 @@ impl OpponentTracker {
         scale(&mut self.sizing_small_bets);
         scale(&mut self.sizing_mid_bets);
         scale(&mut self.sizing_large_bets);
+        scale(&mut self.postflop_overbets);
+        scale(&mut self.postflop_bets_total);
         scale(&mut self.showdown_small_bluff_count);
         scale(&mut self.showdown_large_monster_count);
         scale(&mut self.showdown_hands);
@@ -670,6 +699,7 @@ impl OpponentTracker {
 
         self.vpip_hands = self.vpip_hands.min(self.total_hands);
         self.pfr_hands = self.pfr_hands.min(self.vpip_hands);
+        self.postflop_overbets = self.postflop_overbets.min(self.postflop_bets_total);
         self.sb_vpip_hands = self.sb_vpip_hands.min(self.sb_total_hands);
         self.sb_pfr_hands = self.sb_pfr_hands.min(self.sb_vpip_hands);
         self.bb_vpip_hands = self.bb_vpip_hands.min(self.bb_total_hands);

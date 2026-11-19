@@ -613,3 +613,44 @@ fn test_hu_min_raise_and_6max_btn_postflop_position() {
         "Hero on BTN postflop vs SB in 6-max must be IP (my_player == 0)"
     );
 }
+
+#[test]
+fn test_postflop_overbet_bluffer_detection() {
+    let mut rt = LiveRoundTracker::new();
+    let mut tracker = OpponentTracker::new();
+
+    for hand_id in 1..=4u64 {
+        let snap = parse_live_state(
+            &json!({
+                "hand_id": hand_id,
+                "phase": "Flop",
+                "pot": 1875,
+                "current_bet": 1125,
+                "big_blind": 150,
+                "small_blind": 75,
+                "active_player_id": "hero",
+                "board": ["3d", "9c", "7h"],
+                "players": [
+                    { "id": "hero", "name": "Hero", "chips": 8000, "bet": 0, "is_small_blind": true, "hole": ["Ks", "7d"] },
+                    { "id": "villain", "name": "Villain", "chips": 8000, "bet": 1125, "is_small_blind": false }
+                ]
+            }),
+            "hero",
+        )
+        .expect("parse overbet snapshot");
+
+        rt.reset_hand(hand_id);
+        rt.update_street(snap.board.len());
+        rt.infer_and_record_opponent_action(&snap, &mut tracker);
+        tracker.end_hand();
+    }
+
+    assert_eq!(
+        tracker.postflop_overbets, 4,
+        "Must track all 4 postflop 1.5x overbets (1125 into pre-bet pot 750)"
+    );
+    assert!(
+        tracker.is_overbet_bluffer(),
+        "4 postflop 1.5x overbets must activate is_overbet_bluffer()"
+    );
+}

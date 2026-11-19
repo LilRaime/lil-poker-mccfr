@@ -365,8 +365,15 @@ impl LiveTableTracker {
                         st.pf_pfr = true;
                         st.pf_raises_made = st.pf_raises_made.saturating_add(1);
                     }
-                    let act = classify_live_bet_action(delta, pot, bb, now_allin);
-                    tracker.record_action_street_detailed(act, round_num, facing_bet, delta, pot);
+                    let pre_bet_pot = (pot - delta).max(bb);
+                    let act = classify_live_bet_action(delta, pre_bet_pot, bb, now_allin);
+                    tracker.record_action_street_detailed(
+                        act,
+                        round_num,
+                        facing_bet,
+                        delta,
+                        pre_bet_pot,
+                    );
                     self.street_max_bet = p_bet;
                 } else {
                     if self.round_idx == 0 {

@@ -240,27 +240,18 @@ impl OpponentTracker {
         let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
         let eff_allin_threshold = (bb * 35).max(1);
         let active_opponents = active_opponents.max(1);
-        let raw_top_action = legal_actions
-            .iter()
-            .copied()
-            .max_by(|&a, &b| {
-                let pa = raw_probs.get(a as usize).copied().unwrap_or(0.0);
-                let pb = raw_probs.get(b as usize).copied().unwrap_or(0.0);
-                pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .unwrap_or(CALL_CHECK);
+        let raw_top_action = top_legal_action(raw_probs, legal_actions);
         let adjusted_probs =
             self.adjust_strategy_context(raw_probs, legal_actions, bucket, round, to_call, bb);
 
         let mut probs: Vec<f64> = legal_actions
             .iter()
             .map(|&a| {
-                let idx = a as usize;
-                if idx < adjusted_probs.len() {
-                    adjusted_probs[idx].max(0.0)
-                } else {
-                    0.0
-                }
+                adjusted_probs
+                    .get(a as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0)
             })
             .collect();
 
@@ -271,85 +262,31 @@ impl OpponentTracker {
             1.0
         };
         let mut reasons: Vec<&'static str> = Vec::with_capacity(4);
-
-        let is_three_flush = board
-            .map(|b| {
-                let mut sc = [0u8; 4];
-                for c in b {
-                    sc[c.suit as usize] += 1;
-                }
-                sc.iter().any(|&cnt| cnt >= 3)
-            })
-            .unwrap_or(false);
+        let is_three_flush = has_three_flush(board);
 
         /* Priority Pipeline (Tier 1 Soft Shifts -> Tier 2 Hard Raise Caps -> Multiway -> Tier 3 Terminal Fold / Pot-Commit) */
         self.apply_preflop_and_postflop_guards(
             &mut probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            active_opponents,
-            bb,
-            my_chips,
-            eff_allin_threshold,
-            pot_odds,
-            is_three_flush,
-            from_subgame,
+            super::guards::GuardInput {
+                legal_actions,
+                bucket,
+                round,
+                to_call,
+                pot,
+                hole,
+                board,
+                active_opponents,
+                bb,
+                my_chips,
+                eff_allin_threshold,
+                pot_odds,
+                is_three_flush,
+                from_subgame,
+            },
             &mut reasons,
         );
 
-        /* 5. Pre-Clamp Normalization & Noise Clamping:
-         * Normalize to proper probabilities before suppressing tiny exploration noise (< 2.5%).
-         */
-        let pre_sum: f64 = probs.iter().sum();
-        if pre_sum > 1e-12 {
-            for p in probs.iter_mut() {
-                *p /= pre_sum;
-            }
-        }
-        let max_prob = probs.iter().copied().fold(0.0f64, f64::max);
-        if max_prob > 0.20 {
-            for p in probs.iter_mut() {
-                if *p < 0.025 {
-                    *p = 0.0;
-                }
-            }
-        }
-
-        /* 6. Mild Temperature Sharpening (T = 0.85 => power 1.18):
-         * Gently cleans up low-probability actions without distorting GTO balance.
-         */
-        let temp_inv = 1.18;
-        for p in probs.iter_mut() {
-            if *p > 0.0 {
-                *p = p.powf(temp_inv);
-            }
-        }
-
-        /* 7. Normalization and Sampling */
-        let sum: f64 = probs.iter().sum();
-        let chosen = if sum > 1e-12 {
-            let norm: Vec<f64> = probs.iter().map(|p| p / sum).collect();
-            let r: f64 = rng.gen();
-            let mut cum = 0.0;
-            let mut picked = *legal_actions.last().unwrap();
-            for (i, &p) in norm.iter().enumerate() {
-                cum += p;
-                if r < cum {
-                    picked = legal_actions[i];
-                    break;
-                }
-            }
-            picked
-        } else if let Some(&c) = legal_actions.iter().find(|&&a| a == CALL_CHECK) {
-            c
-        } else {
-            *legal_actions.first().unwrap_or(&1)
-        };
+        let chosen = purify_and_sample(&mut probs, legal_actions, rng);
 
         let trace = DecisionTrace {
             bucket,
@@ -381,12 +318,10 @@ impl OpponentTracker {
         }
         let active_opponents = active_opponents.max(1);
         let pf_tier = preflop_strength_tier(bucket);
-        let max_open_push_bb = nash_open_push_max_bb(bucket, active_opponents);
         let is_maniac = self.total_actions() >= 10
             && (self.raise_ratio() > 0.38
                 || (self.pfr_ratio() > 0.50 && self.raise_ratio() > 0.28)
                 || (self.vpip_ratio() > 0.82 && self.raise_ratio() > 0.28));
-        let max_call_bb = nash_call_shove_max_bb(bucket, active_opponents, is_maniac);
         let shove_action = if legal_actions.contains(&ALL_IN) {
             Some(ALL_IN)
         } else if legal_actions.contains(&RAISE_HALF_POT) {
@@ -396,78 +331,207 @@ impl OpponentTracker {
         } else {
             None
         };
-        let can_call = legal_actions.contains(&CALL_CHECK) || legal_actions.contains(&ALL_IN);
-        let can_fold = legal_actions.contains(&FOLD);
-        let total_pot = (pot + to_call).max(1);
-        let pot_odds = to_call as f64 / total_pot as f64;
-        let call_only_allin = to_call > 0 && to_call >= my_chips;
-        let call_action = if legal_actions.contains(&CALL_CHECK) {
-            CALL_CHECK
-        } else {
-            ALL_IN
+        let has_call_check = legal_actions.contains(&CALL_CHECK);
+        let ctx = ShortStackCtx {
+            bucket,
+            to_call,
+            pot,
+            active_opponents,
+            bb,
+            my_chips,
+            pf_tier,
+            max_open_push_bb: nash_open_push_max_bb(bucket, active_opponents),
+            max_call_bb: nash_call_shove_max_bb(bucket, active_opponents, is_maniac),
+            is_maniac,
+            pot_odds: to_call as f64 / (pot + to_call).max(1) as f64,
+            call_only_allin: to_call > 0 && to_call >= my_chips,
+            shove_action,
+            call_action: if has_call_check { CALL_CHECK } else { ALL_IN },
+            can_call: has_call_check || legal_actions.contains(&ALL_IN),
+            can_fold: legal_actions.contains(&FOLD),
+            has_call_check,
         };
 
-        if pf_tier <= 3 {
-            if call_only_allin && can_call {
-                return Some((call_action, "SHORT_STACK_NASH_PUSH"));
-            }
-            if let Some(sa) = shove_action {
-                return Some((sa, "SHORT_STACK_NASH_PUSH"));
-            }
-            if can_call {
-                return Some((call_action, "SHORT_STACK_NASH_PUSH"));
-            }
-        } else if pf_tier <= 5 {
-            if to_call == 0 {
-                if bucket <= 26 {
-                    if let Some(sa) = shove_action {
-                        return Some((sa, "SHORT_STACK_BB_ISO_PUSH"));
-                    }
-                }
-                if legal_actions.contains(&CALL_CHECK) {
-                    return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
-                }
-            } else if to_call <= bb / 2 && pot <= bb * 2 && my_chips <= max_open_push_bb * bb {
-                if let Some(sa) = shove_action {
-                    return Some((sa, "SHORT_STACK_NASH_PUSH"));
-                }
-            } else if to_call <= bb && pot <= bb * 4 {
-                if bucket <= 26 || (pf_tier == 4 && my_chips <= bb * 7) {
-                    if let Some(sa) = shove_action {
-                        return Some((sa, "SHORT_STACK_BB_3BET_SHOVE"));
-                    }
-                }
-                if can_call {
-                    return Some((call_action, "SHORT_STACK_BB_FLAT_CALL"));
-                }
-            } else if pot_odds <= 0.33
-                || my_chips <= bb * 2
-                || (to_call <= max_call_bb * bb && (pf_tier == 4 || is_maniac))
-            {
-                if can_call {
-                    return Some((call_action, "SHORT_STACK_PRICED_IN_CALL"));
-                }
-            } else if can_fold {
-                return Some((FOLD, "SHORT_STACK_FOLD"));
-            }
-        } else if to_call > 0 && to_call <= bb / 2 && my_chips <= max_open_push_bb * bb {
-            if let Some(sa) = shove_action {
-                return Some((sa, "SHORT_STACK_NASH_PUSH"));
-            }
-        } else if to_call > 0
-            && ((pot_odds <= 0.28 && pf_tier <= 6)
-                || (pot_odds <= 0.22 && (pf_tier <= 6 || to_call <= bb * 2))
-                || my_chips <= bb * 2
-                || (is_maniac && to_call <= max_call_bb * bb && pf_tier <= 6))
-        {
-            if can_call {
-                return Some((call_action, "SHORT_STACK_PRICED_IN_CALL"));
-            }
-        } else if to_call == 0 && legal_actions.contains(&CALL_CHECK) {
-            return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
-        } else if can_fold {
-            return Some((FOLD, "SHORT_STACK_FOLD"));
+        if ctx.pf_tier <= 3 {
+            decide_short_stack_premium(&ctx)
+        } else if ctx.pf_tier <= 5 {
+            decide_short_stack_mid_tier(&ctx)
+        } else {
+            decide_short_stack_low_tier(&ctx)
         }
+    }
+}
+
+struct ShortStackCtx {
+    bucket: usize,
+    to_call: i32,
+    pot: i32,
+    active_opponents: usize,
+    bb: i32,
+    my_chips: i32,
+    pf_tier: u8,
+    max_open_push_bb: i32,
+    max_call_bb: i32,
+    is_maniac: bool,
+    pot_odds: f64,
+    call_only_allin: bool,
+    shove_action: Option<u8>,
+    call_action: u8,
+    can_call: bool,
+    can_fold: bool,
+    has_call_check: bool,
+}
+
+fn top_legal_action(raw_probs: &[f64], legal_actions: &[u8]) -> u8 {
+    legal_actions
+        .iter()
+        .copied()
+        .max_by(|&a, &b| {
+            let pa = raw_probs.get(a as usize).copied().unwrap_or(0.0);
+            let pb = raw_probs.get(b as usize).copied().unwrap_or(0.0);
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(CALL_CHECK)
+}
+
+fn has_three_flush(board: Option<&[Card]>) -> bool {
+    board
+        .map(|b| {
+            let mut sc = [0u8; 4];
+            for c in b {
+                sc[c.suit as usize] += 1;
+            }
+            sc.iter().any(|&cnt| cnt >= 3)
+        })
+        .unwrap_or(false)
+}
+
+fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut R) -> u8 {
+    /* Pre-clamp normalization & exploration noise clamping (< 2.5% when clear peak > 20%) */
+    let pre_sum: f64 = probs.iter().sum();
+    if pre_sum > 1e-12 {
+        for p in probs.iter_mut() {
+            *p /= pre_sum;
+        }
+    }
+    let max_prob = probs.iter().copied().fold(0.0f64, f64::max);
+    if max_prob > 0.20 {
+        for p in probs.iter_mut() {
+            if *p < 0.025 {
+                *p = 0.0;
+            }
+        }
+    }
+
+    /* Mild Temperature Sharpening (T = 0.85 => power 1.18) & weighted sampling */
+    let temp_inv = 1.18;
+    for p in probs.iter_mut() {
+        if *p > 0.0 {
+            *p = p.powf(temp_inv);
+        }
+    }
+
+    let sum: f64 = probs.iter().sum();
+    if sum > 1e-12 {
+        let norm: Vec<f64> = probs.iter().map(|p| p / sum).collect();
+        let r: f64 = rng.gen();
+        let mut cum = 0.0;
+        let mut picked = *legal_actions.last().unwrap();
+        for (i, &p) in norm.iter().enumerate() {
+            cum += p;
+            if r < cum {
+                picked = legal_actions[i];
+                break;
+            }
+        }
+        picked
+    } else if let Some(&c) = legal_actions.iter().find(|&&a| a == CALL_CHECK) {
+        c
+    } else {
+        *legal_actions.first().unwrap_or(&1)
+    }
+}
+
+fn decide_short_stack_premium(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+    if c.call_only_allin && c.can_call {
+        Some((c.call_action, "SHORT_STACK_NASH_PUSH"))
+    } else if let Some(sa) = c.shove_action {
+        Some((sa, "SHORT_STACK_NASH_PUSH"))
+    } else if c.can_call {
+        Some((c.call_action, "SHORT_STACK_NASH_PUSH"))
+    } else {
         None
     }
+}
+
+fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+    if c.to_call == 0 {
+        if c.bucket <= 26 {
+            if let Some(sa) = c.shove_action {
+                return Some((sa, "SHORT_STACK_BB_ISO_PUSH"));
+            }
+        }
+        if c.has_call_check {
+            return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+        }
+    } else if c.to_call <= c.bb / 2 && c.pot <= c.bb * 2 && c.my_chips <= c.max_open_push_bb * c.bb
+    {
+        if let Some(sa) = c.shove_action {
+            return Some((sa, "SHORT_STACK_NASH_PUSH"));
+        }
+    } else if c.to_call <= c.bb && c.pot <= c.bb * 4 {
+        if c.bucket <= 26 || (c.pf_tier == 4 && c.my_chips <= c.bb * 7) {
+            if let Some(sa) = c.shove_action {
+                return Some((sa, "SHORT_STACK_BB_3BET_SHOVE"));
+            }
+        }
+        if c.can_call {
+            return Some((c.call_action, "SHORT_STACK_BB_FLAT_CALL"));
+        }
+    } else if c.pot_odds <= 0.33
+        || c.my_chips <= c.bb * 2
+        || (c.to_call <= c.max_call_bb * c.bb && (c.pf_tier == 4 || c.is_maniac))
+    {
+        if c.can_call {
+            return Some((c.call_action, "SHORT_STACK_PRICED_IN_CALL"));
+        }
+    } else if c.can_fold {
+        return Some((FOLD, "SHORT_STACK_FOLD"));
+    }
+    None
+}
+
+fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+    if c.to_call > 0
+        && c.to_call <= c.bb / 2
+        && c.pot <= c.bb * 2
+        && (c.my_chips <= c.max_open_push_bb * c.bb
+            || (c.active_opponents == 1 && c.my_chips <= c.bb * 2)
+            || (c.active_opponents == 1 && c.my_chips <= c.bb * 3 && c.bucket != 158))
+    {
+        if let Some(sa) = c.shove_action {
+            return Some((sa, "SHORT_STACK_NASH_PUSH"));
+        }
+    } else if c.to_call > 0
+        && ((c.pot_odds <= 0.28 && c.pf_tier <= 6)
+            || (c.active_opponents == 1
+                && c.to_call <= c.bb
+                && c.pot <= c.bb * 3
+                && c.pot_odds <= 0.28
+                && (c.pf_tier <= 6
+                    || (c.pf_tier == 7 && c.bucket < 91)
+                    || (c.my_chips <= c.bb * 7 && c.bucket < 135)))
+            || (c.pot_odds <= 0.22 && (c.pf_tier <= 6 || c.to_call <= c.bb * 2))
+            || c.my_chips <= c.bb * 2
+            || (c.is_maniac && c.to_call <= c.max_call_bb * c.bb && c.pf_tier <= 6))
+    {
+        if c.can_call {
+            return Some((c.call_action, "SHORT_STACK_PRICED_IN_CALL"));
+        }
+    } else if c.to_call == 0 && c.has_call_check {
+        return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+    } else if c.can_fold {
+        return Some((FOLD, "SHORT_STACK_FOLD"));
+    }
+    None
 }

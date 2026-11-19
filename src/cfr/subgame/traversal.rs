@@ -69,6 +69,23 @@ fn normalize_legal_strategy(raw: &[f64], legal: &[u8]) -> [f64; HOLDEM_NUM_ACTIO
 }
 
 #[inline]
+pub(super) fn filter_subgame_legal_actions(game: &TexasHoldemGame, cur_p: usize) -> Vec<u8> {
+    let mut legal = game.legal_actions();
+    if legal.contains(&ALL_IN) && legal.iter().any(|&a| (RAISE_MIN..ALL_IN).contains(&a)) {
+        let opp = 1 - cur_p;
+        let to_call = (game.contributions[opp] - game.contributions[cur_p]).max(0);
+        let pot = (game.contributions[0] + game.contributions[1]).max(1);
+        let rem_stack = (game.stack_size - game.contributions[cur_p]).max(0);
+        let rem_after_call = (rem_stack - to_call).max(0);
+        let pot_after_call = pot + to_call;
+        if rem_after_call > pot_after_call * 3 {
+            legal.retain(|&a| a != ALL_IN);
+        }
+    }
+    legal
+}
+
+#[inline]
 pub(super) fn create_prior_infoset_node(
     game: &TexasHoldemGame,
     cur_p: usize,
@@ -80,8 +97,12 @@ pub(super) fn create_prior_infoset_node(
     let opp = 1 - cur_p;
     let to_call = (game.contributions[opp] - game.contributions[cur_p]).max(0);
     let pot = game.contributions[0] + game.contributions[1];
-    let mut prior = if game.round >= 2 && game.round <= 4 {
-        let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p] as usize;
+    let postflop_bucket = if game.round >= 2 && game.round <= 4 {
+        Some(precomputed_buckets[(game.round - 2) as usize][cur_p] as usize)
+    } else {
+        None
+    };
+    let mut prior = if let Some(bucket) = postflop_bucket {
         get_postflop_fallback_by_bucket(bucket, game.round, to_call, pot, legal)
     } else {
         get_holdem_fallback_strategy(
@@ -93,6 +114,37 @@ pub(super) fn create_prior_infoset_node(
             legal,
         )
     };
+    /* Dampen call/raise prior weights when facing >2x pot jams with non-trips hands
+     * so SubgameSolver does not hallucinate call-EV for massive overbet shoves. */
+    if let Some(bucket) = postflop_bucket {
+        if to_call > 0 && legal.contains(&FOLD) && bucket < 65 {
+            let pre_bet_pot = (pot - to_call).max(1);
+            if to_call > pre_bet_pot * 2 {
+                let mut added_fold = 0.0f64;
+                if legal.contains(&CALL_CHECK) {
+                    let old_c = prior[CALL_CHECK as usize];
+                    let new_c = old_c * 0.35;
+                    added_fold += old_c - new_c;
+                    prior[CALL_CHECK as usize] = new_c;
+                }
+                for r in RAISE_MIN..=ALL_IN {
+                    if legal.contains(&r) {
+                        let old_r = prior[r as usize];
+                        let new_r = old_r * 0.25;
+                        added_fold += old_r - new_r;
+                        prior[r as usize] = new_r;
+                    }
+                }
+                prior[FOLD as usize] += added_fold;
+                let s: f64 = legal.iter().map(|&a| prior[a as usize]).sum();
+                if s > 1e-9 {
+                    for &a in legal {
+                        prior[a as usize] /= s;
+                    }
+                }
+            }
+        }
+    }
     /* Stat-informed opponent node-locking prior bias */
     if cur_p != my_player {
         if let Some((fold_m, raise_m)) = opp_prior_bias {
@@ -145,7 +197,7 @@ impl SubgameSolver {
         }
 
         let cur_p = game.current_player();
-        let legal = game.legal_actions();
+        let legal = filter_subgame_legal_actions(game, cur_p);
         if legal.is_empty() {
             return game.get_returns()[updating_player];
         }
@@ -254,7 +306,7 @@ impl SubgameSolver {
         }
 
         let cur_p = game.current_player();
-        let legal = game.legal_actions();
+        let legal = filter_subgame_legal_actions(game, cur_p);
         if legal.is_empty() {
             return game.get_returns()[updating_player];
         }

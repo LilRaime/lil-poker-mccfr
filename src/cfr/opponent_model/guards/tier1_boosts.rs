@@ -1,114 +1,82 @@
 /* Priority Tier 1: Soft Value / Sizing Shifts, Button Steals & River Nut Blocker Bluffs */
 use super::super::tracker::OpponentTracker;
+use super::context::GuardContext;
+use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
-    detect_river_nut_blocker, nash_open_push_max_bb, preflop_strength_tier,
+    detect_board_texture, nash_open_push_max_bb, preflop_strength_tier, BoardFlushTexture,
 };
-use crate::game::config::*;
-use crate::game::holdem::Card;
+use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
 
 impl OpponentTracker {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_tier1_soft_boosts(
         &self,
         probs: &mut [f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        bb: i32,
-        my_chips: i32,
-        pot_odds: f64,
-        is_three_flush: bool,
-        is_four_board_danger: bool,
-        is_passive_station: bool,
-        allow_pot_commit_rescue: bool,
-        never_fold_postflop: bool,
+        ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        let is_preflop = round == 1;
-
-        if is_passive_station && self.is_guard_enabled("PASSIVE_STATION_BOOST") {
+        if ctx.is_passive_station && self.is_guard_enabled("PASSIVE_STATION_BOOST") {
             reasons.push("PASSIVE_STATION_BOOST");
-            self.apply_passive_station_boost(
-                probs,
-                legal_actions,
-                bucket,
-                round,
-                to_call,
-                board,
-                bb,
-                is_three_flush,
-                is_four_board_danger,
-            );
+            self.apply_passive_station_boost(probs, ctx);
         }
 
-        if to_call > 0
-            && allow_pot_commit_rescue
-            && (pot_odds <= 0.12
-                || (pot_odds <= 0.15 && (is_preflop || bucket >= 15))
-                || never_fold_postflop)
+        self.apply_pot_commit_early(probs, ctx, reasons);
+        self.apply_preflop_steal_and_trap(probs, ctx, reasons);
+        self.apply_river_nut_blocker_bluff(probs, ctx, reasons);
+        self.apply_flop_wet_set_value(probs, ctx, reasons);
+    }
+
+    fn apply_pot_commit_early(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.to_call > 0
+            && ctx.allow_pot_commit_rescue
+            && (ctx.pot_odds <= 0.12
+                || (ctx.pot_odds <= 0.15 && (ctx.is_preflop || ctx.bucket >= 15))
+                || ctx.never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_EARLY")
+            && shift_action_to(probs, ctx.legal_actions, FOLD, &[CALL_CHECK, ALL_IN]) > 0.0
         {
-            if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                let f_prob = probs[f_i];
-                if f_prob > 0.0 {
-                    reasons.push("POT_COMMIT_EARLY");
-                    probs[f_i] = 0.0;
-                    if let Some(c_i) = legal_actions
-                        .iter()
-                        .position(|&a| a == CALL_CHECK)
-                        .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                    {
-                        probs[c_i] += f_prob;
-                    }
-                }
-            }
+            reasons.push("POT_COMMIT_EARLY");
         }
+    }
 
-        /* Preflop Button Steal & Anti-Shove-Bot SB Limp Trap (Tier 1 Soft Shift):
-         * - Against normal/passive opponents in Heads-Up, Button opens ~80% of hands profitably (tiers 1..=6).
-         * - Against a proven hyper-aggressive 3-bet/shove opponent (total_hands >= 12, raise_ratio > 0.45),
-         *   do NOT open-raise speculative steal hands (tiers 4..=6) into a 3-bet shove! Instead, limp-call
-         *   tiers 4..=5 to see a cheap flop and only open-raise tiers 1..=3.
-         */
-        let is_hyper_aggressor = self.total_hands >= 12
-            && (self.raise_ratio() > 0.45
-                || (self.pfr_ratio() > 0.58 && self.raise_ratio() > 0.35));
-        let max_steal_tier = if is_hyper_aggressor {
+    fn apply_preflop_steal_and_trap(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if !ctx.is_preflop {
+            return;
+        }
+        let max_steal_tier = if ctx.is_hyper_aggressor {
             3
-        } else if active_opponents == 1 {
+        } else if ctx.active_opponents == 1 {
             6
-        } else if active_opponents == 2 {
+        } else if ctx.active_opponents == 2 {
             4
         } else {
             3
         };
-        let steal_max_call = bb / 2;
-        let pf_tier_now = preflop_strength_tier(bucket);
-        let eff_stack_bb = if my_chips > 0 {
-            my_chips / bb.max(1)
-        } else {
-            100
-        };
+        let steal_max_call = ctx.bb / 2;
+        let pf_tier_now = preflop_strength_tier(ctx.bucket);
 
-        if is_preflop
-            && (10..=19).contains(&eff_stack_bb)
-            && to_call > 0
-            && to_call <= steal_max_call
-            && is_hyper_aggressor
+        if (10..=19).contains(&ctx.eff_stack_bb)
+            && ctx.to_call > 0
+            && ctx.to_call <= steal_max_call
+            && ctx.is_hyper_aggressor
             && pf_tier_now <= 5
-            && bucket >= 4
-            && nash_open_push_max_bb(bucket, active_opponents) + 2 >= eff_stack_bb
+            && ctx.bucket >= 4
+            && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) + 2 >= ctx.eff_stack_bb
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
                 reasons.push("PF_BUTTON_STEAL");
                 let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
+                for (i, &a) in ctx.legal_actions.iter().enumerate() {
                     if a == CALL_CHECK || (RAISE_MIN..ALL_IN).contains(&a) {
                         let s = probs[i] * 0.85;
                         probs[i] -= s;
@@ -117,177 +85,247 @@ impl OpponentTracker {
                 }
                 probs[ai_i] += shifted;
             }
-        } else if is_preflop
-            && (21..=40).contains(&eff_stack_bb)
-            && to_call > 0
-            && to_call <= steal_max_call
-            && is_hyper_aggressor
+        } else if (21..=40).contains(&ctx.eff_stack_bb)
+            && ctx.to_call > 0
+            && ctx.to_call <= steal_max_call
+            && ctx.is_hyper_aggressor
             && (4..=5).contains(&pf_tier_now)
+            && ctx.bucket > 12
             && self.is_guard_enabled("PF_SB_AGGRESSOR_TRAP")
         {
-            if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                reasons.push("PF_SB_AGGRESSOR_TRAP");
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        shifted += probs[i] * 0.85;
-                        probs[i] *= 0.15;
-                    } else if a == FOLD && probs[i] > 0.05 {
-                        shifted += probs[i] * 0.70;
-                        probs[i] *= 0.30;
-                    }
-                }
-                probs[c_i] += shifted;
-            }
-        } else if is_preflop
-            && to_call <= steal_max_call
+            self.apply_sb_aggressor_limp_trap(probs, ctx, reasons);
+        } else if ctx.to_call <= steal_max_call
             && pf_tier_now <= max_steal_tier
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
-            let call_idx = legal_actions.iter().position(|&a| a == CALL_CHECK);
-            let raise_idx = legal_actions
-                .iter()
-                .position(|&a| a == RAISE_MIN || a == RAISE_THIRD_POT);
-            /* Only intervene when the raw strategy is overly passive (e.g. fallback or weak node);
-             * let well-trained GTO blueprint open frequencies stand untouched when already raising >= 35%. */
-            let passive_mass = fold_idx.map(|i| probs[i]).unwrap_or(0.0)
-                + call_idx.map(|i| probs[i]).unwrap_or(0.0);
-            if let Some(r_i) = raise_idx {
-                if passive_mass > 0.65 || is_passive_station {
-                    reasons.push("PF_BUTTON_STEAL");
-                    if let Some(f_i) = fold_idx {
-                        if probs[f_i] > 0.05 {
-                            probs[r_i] += probs[f_i] * 0.85;
-                            probs[f_i] *= 0.15;
-                        }
-                    }
-                    if to_call > 0 {
-                        if let Some(c_i) = call_idx {
-                            let limp_shift = if pf_tier_now <= 2 {
-                                0.90
-                            } else if pf_tier_now <= 4 {
-                                0.75
-                            } else if eff_stack_bb > 15 {
-                                0.80
-                            } else {
-                                0.55
-                            };
-                            let shifted = probs[c_i] * limp_shift;
-                            probs[r_i] += shifted;
-                            probs[c_i] -= shifted;
-                        }
-                        if (10..=19).contains(&eff_stack_bb)
-                            && bucket >= 4
-                            && nash_open_push_max_bb(bucket, active_opponents) >= eff_stack_bb
-                        {
-                            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                                let s = probs[r_i] * 0.55;
-                                probs[r_i] -= s;
-                                probs[ai_i] += s;
-                            }
-                        }
-                    } else if pf_tier_now <= 3
-                        || (self.sb_total_hands >= 4
-                            && self.sb_limp_ratio() > 0.25
-                            && pf_tier_now <= 5)
-                    {
-                        if let Some(c_i) = call_idx {
-                            let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
-                            let shifted = probs[c_i] * limp_shift;
-                            probs[r_i] += shifted;
-                            probs[c_i] -= shifted;
-                        }
-                    }
-                }
-            }
-        } else if is_preflop
-            && active_opponents == 1
-            && to_call > steal_max_call
-            && to_call <= bb * 3
-            && (10..=20).contains(&eff_stack_bb)
+            self.apply_sb_button_steal_shift(probs, ctx, pf_tier_now, reasons);
+        } else if ctx.active_opponents == 1
+            && ctx.to_call > steal_max_call
+            && ctx.to_call <= ctx.bb * 3
+            && (10..=20).contains(&ctx.eff_stack_bb)
             && (pf_tier_now <= 2
-                || (pf_tier_now == 3 && (is_hyper_aggressor || eff_stack_bb <= 16)))
+                || (pf_tier_now == 3 && (ctx.is_hyper_aggressor || ctx.eff_stack_bb <= 16)))
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            /* Short-stack 3-bet re-steal shove: at 10–20 BB, convert non-all-in min-3bet/call mass
-             * into direct ALL_IN with strong hands rather than awkward half-stack 3-bets. */
-            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                reasons.push("PF_BUTTON_STEAL");
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a == RAISE_MIN || a == RAISE_THIRD_POT {
-                        let s = probs[i] * 0.70;
-                        probs[i] -= s;
-                        shifted += s;
-                    } else if a == CALL_CHECK && eff_stack_bb <= 16 {
-                        let s = probs[i] * 0.45;
-                        probs[i] -= s;
-                        shifted += s;
-                    }
-                }
-                probs[ai_i] += shifted;
-            }
-        } else if is_preflop
-            && active_opponents == 1
-            && to_call > steal_max_call
-            && to_call <= bb * 3
+            self.apply_short_3bet_resteal_shove(probs, ctx, reasons);
+        } else if ctx.active_opponents == 1
+            && ctx.to_call > steal_max_call
+            && ctx.to_call <= ctx.bb * 3
             && self.faced_3bet_count >= 3
             && self.fold_to_3bet_ratio() > 0.60
             && (2..=4).contains(&pf_tier_now)
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
-            let call_idx = legal_actions.iter().position(|&a| a == CALL_CHECK);
-            let raise_idx = legal_actions
-                .iter()
-                .position(|&a| a == RAISE_THIRD_POT || a == RAISE_MIN);
-            if let Some(r_i) = raise_idx {
-                reasons.push("PF_BUTTON_STEAL");
-                let mut shifted = 0.0f64;
-                if let Some(c_i) = call_idx {
-                    let s = probs[c_i] * 0.30;
-                    probs[c_i] -= s;
-                    shifted += s;
-                }
-                if let Some(f_i) = fold_idx {
-                    let s = probs[f_i] * 0.25;
-                    probs[f_i] -= s;
-                    shifted += s;
-                }
-                probs[r_i] += shifted;
+            self.apply_fold_to_3bet_exploit(probs, ctx, reasons);
+        }
+    }
+
+    fn apply_sb_aggressor_limp_trap(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        reasons.push("PF_SB_AGGRESSOR_TRAP");
+        let mut shifted = 0.0f64;
+        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+            if a >= RAISE_MIN {
+                shifted += probs[i] * 0.85;
+                probs[i] *= 0.15;
+            } else if a == FOLD && probs[i] > 0.05 {
+                shifted += probs[i] * 0.70;
+                probs[i] *= 0.30;
             }
         }
+        probs[c_i] += shifted;
+    }
 
-        /* Blocker-aware River Bluffing (Tier 1 Soft Shift, Heads-Up only) */
-        if round == 4
-            && active_opponents == 1
-            && to_call == 0
-            && bucket < 28
-            && !is_passive_station
-            && (self.total_actions() < 6 || self.fold_ratio() >= 0.30)
-            && super::river_nut_blocker_allowed(pot, bb, my_chips)
-            && self.is_guard_enabled("RIVER_NUT_BLOCKER_BLUFF")
-        {
-            if let (Some(h), Some(b)) = (hole, board) {
-                if detect_river_nut_blocker(h, b) {
-                    let raise_third = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT);
-                    let raise_min = legal_actions.iter().position(|&a| a == RAISE_MIN);
-                    let check_idx = legal_actions.iter().position(|&a| a == CALL_CHECK);
-                    let fold_idx = legal_actions.iter().position(|&a| a == FOLD);
-
-                    if let Some(r_i) = raise_third.or(raise_min) {
-                        reasons.push("RIVER_NUT_BLOCKER_BLUFF");
-                        probs[r_i] = (probs[r_i] * 1.65).max(0.25);
-                        if let Some(c_i) = check_idx {
-                            probs[c_i] *= 0.65;
-                        }
-                        if let Some(f_i) = fold_idx {
-                            probs[f_i] *= 0.50;
-                        }
-                    }
+    fn apply_sb_button_steal_shift(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        pf_tier_now: u8,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let fold_idx = action_idx(ctx.legal_actions, FOLD);
+        let call_idx = action_idx(ctx.legal_actions, CALL_CHECK);
+        let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
+            return;
+        };
+        /* Only intervene when the raw strategy is overly passive; leave strong blueprint raises untouched. */
+        let passive_mass =
+            fold_idx.map(|i| probs[i]).unwrap_or(0.0) + call_idx.map(|i| probs[i]).unwrap_or(0.0);
+        if !(passive_mass > 0.65 || ctx.is_passive_station || ctx.is_tight_passive_bb) {
+            return;
+        }
+        reasons.push("PF_BUTTON_STEAL");
+        if let Some(f_i) = fold_idx {
+            if probs[f_i] > 0.05 {
+                probs[r_i] += probs[f_i] * 0.85;
+                probs[f_i] *= 0.15;
+            }
+        }
+        if ctx.to_call > 0 {
+            if let Some(c_i) = call_idx {
+                let limp_shift = if pf_tier_now <= 2 {
+                    0.90
+                } else if pf_tier_now <= 4 {
+                    0.75
+                } else if ctx.eff_stack_bb > 15 {
+                    0.80
+                } else {
+                    0.55
+                };
+                let shifted = probs[c_i] * limp_shift;
+                probs[r_i] += shifted;
+                probs[c_i] -= shifted;
+            }
+            if (10..=19).contains(&ctx.eff_stack_bb)
+                && ctx.bucket >= 4
+                && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) >= ctx.eff_stack_bb
+            {
+                if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
+                    let s = probs[r_i] * 0.55;
+                    probs[r_i] -= s;
+                    probs[ai_i] += s;
                 }
             }
+        } else if pf_tier_now <= 3
+            || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5)
+        {
+            if let Some(c_i) = call_idx {
+                let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
+                let shifted = probs[c_i] * limp_shift;
+                probs[r_i] += shifted;
+                probs[c_i] -= shifted;
+            }
+        }
+    }
+
+    fn apply_short_3bet_resteal_shove(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) else {
+            return;
+        };
+        reasons.push("PF_BUTTON_STEAL");
+        let mut shifted = 0.0f64;
+        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+            if a == RAISE_MIN || a == RAISE_THIRD_POT {
+                let s = probs[i] * 0.70;
+                probs[i] -= s;
+                shifted += s;
+            } else if a == CALL_CHECK && ctx.eff_stack_bb <= 16 {
+                let s = probs[i] * 0.45;
+                probs[i] -= s;
+                shifted += s;
+            }
+        }
+        probs[ai_i] += shifted;
+    }
+
+    fn apply_fold_to_3bet_exploit(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
+            return;
+        };
+        reasons.push("PF_BUTTON_STEAL");
+        let mut shifted = 0.0f64;
+        if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+            let s = probs[c_i] * 0.30;
+            probs[c_i] -= s;
+            shifted += s;
+        }
+        if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+            let s = probs[f_i] * 0.25;
+            probs[f_i] -= s;
+            shifted += s;
+        }
+        probs[r_i] += shifted;
+    }
+
+    fn apply_river_nut_blocker_bluff(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if !ctx.has_river_nut_blocker || !self.is_guard_enabled("RIVER_NUT_BLOCKER_BLUFF") {
+            return;
+        }
+        let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
+            return;
+        };
+        reasons.push("RIVER_NUT_BLOCKER_BLUFF");
+        probs[r_i] = (probs[r_i] * 1.65).max(0.25);
+        if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+            probs[c_i] *= 0.65;
+        }
+        if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+            probs[f_i] *= 0.50;
+        }
+    }
+
+    fn apply_flop_wet_set_value(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.round != 2
+            || ctx.to_call != 0
+            || !(68..=72).contains(&ctx.bucket)
+            || !self.is_guard_enabled("FLOP_WET_SET_VALUE")
+        {
+            return;
+        }
+        let is_wet_flop = ctx
+            .board
+            .map(|b| {
+                let t = detect_board_texture(b);
+                t.flush_texture != BoardFlushTexture::Rainbow || t.is_connected
+            })
+            .unwrap_or(false);
+        if !is_wet_flop {
+            return;
+        }
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        if probs[c_i] <= 0.40 {
+            return;
+        }
+        let tp_idx = action_idx(ctx.legal_actions, RAISE_THIRD_POT);
+        let hp_idx = action_idx(ctx.legal_actions, RAISE_HALF_POT);
+        let shift = probs[c_i] * 0.65;
+        match (tp_idx, hp_idx) {
+            (Some(t_i), Some(h_i)) => {
+                reasons.push("FLOP_WET_SET_VALUE");
+                probs[c_i] -= shift;
+                probs[t_i] += shift * 0.50;
+                probs[h_i] += shift * 0.50;
+            }
+            (Some(t_i), None) => {
+                reasons.push("FLOP_WET_SET_VALUE");
+                probs[c_i] -= shift;
+                probs[t_i] += shift;
+            }
+            (None, Some(h_i)) => {
+                reasons.push("FLOP_WET_SET_VALUE");
+                probs[c_i] -= shift;
+                probs[h_i] += shift;
+            }
+            (None, None) => {}
         }
     }
 }

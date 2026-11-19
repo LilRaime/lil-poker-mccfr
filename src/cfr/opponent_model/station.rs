@@ -1,8 +1,8 @@
 /* Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
+use super::guards::{action_idx, first_action_idx, force_action, GuardContext};
 use super::tracker::OpponentTracker;
-use crate::cfr::abstraction::{detect_board_texture, is_dangerous_board, preflop_strength_tier};
+use crate::cfr::abstraction::preflop_strength_tier;
 use crate::game::config::*;
-use crate::game::holdem::Card;
 
 impl OpponentTracker {
     /* Checks if opponent predominantly checks and calls without raising */
@@ -15,291 +15,254 @@ impl OpponentTracker {
 
     /* Shift passive check/min-bet weight directly into geometric value sizing (RAISE_HALF_POT / RAISE_THIRD_POT)
      * so the bot extracts full stacks in 15-25 hands instead of checking down Top Pair / Overpair / Two Pair! */
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn apply_passive_station_boost(
-        &self,
-        probs: &mut [f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        board: Option<&[Card]>,
-        bb: i32,
-        is_three_flush: bool,
-        is_four_board_danger: bool,
-    ) {
-        let is_preflop = round == 1;
+    pub(super) fn apply_passive_station_boost(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
+        if ctx.is_preflop && ctx.to_call <= ctx.bb {
+            Self::boost_station_preflop(probs, ctx);
+        } else if !ctx.is_preflop && ctx.to_call == 0 && !ctx.is_four_board_danger {
+            Self::boost_station_postflop(probs, ctx);
+        }
+    }
 
-        if is_preflop && to_call <= bb {
-            let pf_tier = preflop_strength_tier(bucket);
-            if pf_tier <= 3 {
-                let target_idx = legal_actions
-                    .iter()
-                    .position(|&a| a == RAISE_HALF_POT)
-                    .or_else(|| legal_actions.iter().position(|&a| a == RAISE_THIRD_POT))
-                    .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN));
-                if let Some(t_i) = target_idx {
-                    let mut shifted = 0.0f64;
-                    for (i, &a) in legal_actions.iter().enumerate() {
-                        if a == CALL_CHECK {
-                            let s = probs[i] * 0.98;
-                            probs[i] -= s;
-                            shifted += s;
-                        } else if a == RAISE_MIN && i != t_i {
-                            let s = probs[i] * 0.90;
-                            probs[i] -= s;
-                            shifted += s;
-                        } else if a == RAISE_THIRD_POT && i != t_i {
-                            let s = probs[i] * 0.50;
-                            probs[i] -= s;
-                            shifted += s;
-                        }
-                    }
-                    probs[t_i] = (probs[t_i] + shifted).max(0.80);
-                }
-            } else if pf_tier <= 5 && bucket <= 105 {
-                let target_idx = legal_actions
-                    .iter()
-                    .position(|&a| a == RAISE_THIRD_POT)
-                    .or_else(|| legal_actions.iter().position(|&a| a == RAISE_HALF_POT))
-                    .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN));
-                if let Some(t_i) = target_idx {
-                    let mut shifted = 0.0f64;
-                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                        let s = probs[c_i] * 0.85;
-                        probs[c_i] -= s;
-                        shifted += s;
-                    }
-                    if let Some(m_i) = legal_actions.iter().position(|&a| a == RAISE_MIN) {
-                        if m_i != t_i {
-                            let s = probs[m_i] * 0.70;
-                            probs[m_i] -= s;
-                            shifted += s;
-                        }
-                    }
-                    probs[t_i] += shifted;
-                }
-            }
-        } else if !is_preflop && to_call == 0 && !is_four_board_danger {
-            let is_three_straight = board
-                .map(|b| {
-                    let mut ranks = [false; 13];
-                    for c in b {
-                        ranks[c.rank as usize] = true;
-                    }
-                    (0..=9).any(|s| (s..s + 4).filter(|&r| ranks[r]).count() >= 3)
-                })
-                .unwrap_or(false);
-            let is_dangerous_river = round == 4
-                && (board.map(is_dangerous_board).unwrap_or(false)
-                    || is_three_flush
-                    || is_three_straight);
-
-            if bucket <= 14 {
-                /* Pure air against a station who never folds: stop burning chips on air bluffs! */
+    fn boost_station_preflop(probs: &mut [f64], ctx: &GuardContext<'_>) {
+        let pf_tier = preflop_strength_tier(ctx.bucket);
+        if pf_tier <= 3 {
+            if let Some(t_i) = first_action_idx(
+                ctx.legal_actions,
+                &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN],
+            ) {
                 let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        let s = probs[i] * 0.90;
-                        probs[i] -= s;
-                        shifted += s;
-                    }
-                }
-                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                    probs[c_i] += shifted;
-                }
-            } else if bucket >= 65
-                && bucket != 73
-                && !(is_three_flush && bucket < 79)
-                && !(round == 4
-                    && (74..=78).contains(&bucket)
-                    && board
-                        .map(|b| detect_board_texture(b).is_paired)
-                        .unwrap_or(false))
-            {
-                /* Trips / Set / Straight / Flush / Full House+: relentless heavy value */
-                let hp_idx = legal_actions.iter().position(|&a| a == RAISE_HALF_POT);
-                let ai_idx = legal_actions.iter().position(|&a| a == ALL_IN);
-                let tp_idx = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT);
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
+                for (i, &a) in ctx.legal_actions.iter().enumerate() {
                     if a == CALL_CHECK {
                         let s = probs[i] * 0.98;
                         probs[i] -= s;
                         shifted += s;
-                    } else if a == RAISE_MIN {
-                        let s = probs[i] * 0.95;
+                    } else if a == RAISE_MIN && i != t_i {
+                        let s = probs[i] * 0.90;
                         probs[i] -= s;
                         shifted += s;
-                    } else if a == RAISE_THIRD_POT && (hp_idx.is_some() || ai_idx.is_some()) {
-                        let s = probs[i] * 0.65;
+                    } else if a == RAISE_THIRD_POT && i != t_i {
+                        let s = probs[i] * 0.50;
                         probs[i] -= s;
                         shifted += s;
                     }
                 }
-                if let Some(hp_i) = hp_idx {
-                    if let Some(ai_i) = ai_idx {
-                        probs[hp_i] = (probs[hp_i] + shifted * 0.70).max(0.65);
-                        probs[ai_i] += shifted * 0.30;
-                    } else {
-                        probs[hp_i] = (probs[hp_i] + shifted).max(0.85);
-                    }
-                } else if let Some(tp_i) = tp_idx {
-                    probs[tp_i] = (probs[tp_i] + shifted).max(0.85);
-                }
-            } else if (57..=64).contains(&bucket) && !is_three_flush {
-                /* Two Pair: barrel large value (RAISE_HALF_POT / RAISE_THIRD_POT) */
-                let target_idx = if is_dangerous_river && bucket < 61 {
-                    legal_actions.iter().position(|&a| a == RAISE_THIRD_POT)
-                } else {
-                    legal_actions
-                        .iter()
-                        .position(|&a| a == RAISE_HALF_POT)
-                        .or_else(|| legal_actions.iter().position(|&a| a == RAISE_THIRD_POT))
-                };
-                if let Some(t_i) = target_idx {
-                    let mut shifted = 0.0f64;
-                    for (i, &a) in legal_actions.iter().enumerate() {
-                        if a == CALL_CHECK {
-                            let s = probs[i] * 0.98;
-                            probs[i] -= s;
-                            shifted += s;
-                        } else if a == RAISE_MIN && i != t_i {
-                            let s = probs[i] * 0.90;
-                            probs[i] -= s;
-                            shifted += s;
-                        } else if a == RAISE_THIRD_POT && i != t_i {
-                            let s = probs[i] * 0.55;
-                            probs[i] -= s;
-                            shifted += s;
-                        }
-                    }
-                    probs[t_i] = (probs[t_i] + shifted).max(0.80);
-                }
-            } else if (45..=56).contains(&bucket) && !is_three_flush {
-                /* Top Pair Good/Top Kicker or Overpair: extract multi-street value instead of checking behind! */
+                probs[t_i] = (probs[t_i] + shifted).max(0.80);
+            }
+        } else if pf_tier <= 5 && ctx.bucket <= 105 {
+            if let Some(t_i) = first_action_idx(
+                ctx.legal_actions,
+                &[RAISE_THIRD_POT, RAISE_HALF_POT, RAISE_MIN],
+            ) {
                 let mut shifted = 0.0f64;
-                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                    let s = probs[c_i] * 0.98;
+                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                    let s = probs[c_i] * 0.85;
                     probs[c_i] -= s;
                     shifted += s;
                 }
-                if let Some(m_i) = legal_actions.iter().position(|&a| a == RAISE_MIN) {
-                    let s = probs[m_i] * 0.85;
-                    probs[m_i] -= s;
+                if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN) {
+                    if m_i != t_i {
+                        let s = probs[m_i] * 0.70;
+                        probs[m_i] -= s;
+                        shifted += s;
+                    }
+                }
+                probs[t_i] += shifted;
+            }
+        }
+    }
+
+    fn boost_station_postflop(probs: &mut [f64], ctx: &GuardContext<'_>) {
+        let is_dangerous_river = ctx.round == 4
+            && (ctx.is_dangerous_board || ctx.is_three_flush || ctx.is_three_straight_board);
+
+        if ctx.bucket <= 14 {
+            /* Pure air against a station who never folds: stop burning chips on air bluffs! */
+            let mut shifted = 0.0f64;
+            for (i, &a) in ctx.legal_actions.iter().enumerate() {
+                if a >= RAISE_MIN {
+                    let s = probs[i] * 0.90;
+                    probs[i] -= s;
                     shifted += s;
                 }
-                let hp_idx = legal_actions.iter().position(|&a| a == RAISE_HALF_POT);
-                let tp_idx = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT);
-                if !is_dangerous_river {
-                    if let Some(hp_i) = hp_idx {
-                        if let Some(tp_i) = tp_idx {
-                            probs[hp_i] = (probs[hp_i] + shifted * 0.65).max(0.60);
-                            probs[tp_i] += shifted * 0.35;
-                        } else {
-                            probs[hp_i] = (probs[hp_i] + shifted).max(0.80);
-                        }
-                    } else if let Some(tp_i) = tp_idx {
-                        probs[tp_i] = (probs[tp_i] + shifted).max(0.80);
-                    }
-                } else if let Some(tp_i) = tp_idx {
-                    probs[tp_i] = (probs[tp_i] + shifted).max(0.75);
+            }
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                probs[c_i] += shifted;
+            }
+        } else if ctx.bucket >= 65
+            && ctx.bucket != 73
+            && !(ctx.is_three_flush && ctx.bucket < 79)
+            && !(ctx.round == 4 && (74..=78).contains(&ctx.bucket) && ctx.is_paired_board)
+        {
+            Self::boost_station_monsters(probs, ctx);
+        } else if (57..=64).contains(&ctx.bucket) && !ctx.is_three_flush {
+            Self::boost_station_two_pair(probs, ctx, is_dangerous_river);
+        } else if (45..=56).contains(&ctx.bucket) && !ctx.is_three_flush {
+            Self::boost_station_top_pair(probs, ctx, is_dangerous_river);
+        } else if (35..=44).contains(&ctx.bucket)
+            && ctx.bucket != 39
+            && ctx.bucket != 40
+            && !ctx.is_three_flush
+            && !is_dangerous_river
+        {
+            Self::boost_station_thin_value(probs, ctx);
+        }
+    }
+
+    fn boost_station_monsters(probs: &mut [f64], ctx: &GuardContext<'_>) {
+        /* Trips / Set / Straight / Flush / Full House+: relentless heavy value */
+        let hp_idx = action_idx(ctx.legal_actions, RAISE_HALF_POT);
+        let ai_idx = action_idx(ctx.legal_actions, ALL_IN);
+        let tp_idx = action_idx(ctx.legal_actions, RAISE_THIRD_POT);
+        let mut shifted = 0.0f64;
+        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+            if a == CALL_CHECK {
+                let s = probs[i] * 0.98;
+                probs[i] -= s;
+                shifted += s;
+            } else if a == RAISE_MIN {
+                let s = probs[i] * 0.95;
+                probs[i] -= s;
+                shifted += s;
+            } else if a == RAISE_THIRD_POT && (hp_idx.is_some() || ai_idx.is_some()) {
+                let s = probs[i] * 0.65;
+                probs[i] -= s;
+                shifted += s;
+            }
+        }
+        if let Some(hp_i) = hp_idx {
+            if let Some(ai_i) = ai_idx {
+                probs[hp_i] = (probs[hp_i] + shifted * 0.70).max(0.65);
+                probs[ai_i] += shifted * 0.30;
+            } else {
+                probs[hp_i] = (probs[hp_i] + shifted).max(0.85);
+            }
+        } else if let Some(tp_i) = tp_idx {
+            probs[tp_i] = (probs[tp_i] + shifted).max(0.85);
+        }
+    }
+
+    fn boost_station_two_pair(probs: &mut [f64], ctx: &GuardContext<'_>, is_dangerous_river: bool) {
+        /* Two Pair: barrel large value (RAISE_HALF_POT / RAISE_THIRD_POT) */
+        let target_idx = if is_dangerous_river && ctx.bucket < 61 {
+            action_idx(ctx.legal_actions, RAISE_THIRD_POT)
+        } else {
+            first_action_idx(ctx.legal_actions, &[RAISE_HALF_POT, RAISE_THIRD_POT])
+        };
+        if let Some(t_i) = target_idx {
+            let mut shifted = 0.0f64;
+            for (i, &a) in ctx.legal_actions.iter().enumerate() {
+                if a == CALL_CHECK {
+                    let s = probs[i] * 0.98;
+                    probs[i] -= s;
+                    shifted += s;
+                } else if a == RAISE_MIN && i != t_i {
+                    let s = probs[i] * 0.90;
+                    probs[i] -= s;
+                    shifted += s;
+                } else if a == RAISE_THIRD_POT && i != t_i {
+                    let s = probs[i] * 0.55;
+                    probs[i] -= s;
+                    shifted += s;
                 }
-            } else if (35..=44).contains(&bucket)
-                && bucket != 39
-                && bucket != 40
-                && !is_three_flush
-                && !is_dangerous_river
-            {
-                /* Top Pair Weak Kicker or Strong Middle Pair: consistent thin value (33% pot) */
-                let target_idx = legal_actions
-                    .iter()
-                    .position(|&a| a == RAISE_THIRD_POT)
-                    .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN));
-                if let Some(t_i) = target_idx {
-                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                        let s = probs[c_i] * 0.68;
-                        probs[c_i] -= s;
-                        probs[t_i] = (probs[t_i] + s).max(0.60);
-                    }
+            }
+            probs[t_i] = (probs[t_i] + shifted).max(0.80);
+        }
+    }
+
+    fn boost_station_top_pair(probs: &mut [f64], ctx: &GuardContext<'_>, is_dangerous_river: bool) {
+        /* Top Pair Good/Top Kicker or Overpair: extract multi-street value instead of checking behind! */
+        let mut shifted = 0.0f64;
+        if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+            let s = probs[c_i] * 0.98;
+            probs[c_i] -= s;
+            shifted += s;
+        }
+        if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN) {
+            let s = probs[m_i] * 0.85;
+            probs[m_i] -= s;
+            shifted += s;
+        }
+        let hp_idx = action_idx(ctx.legal_actions, RAISE_HALF_POT);
+        let tp_idx = action_idx(ctx.legal_actions, RAISE_THIRD_POT);
+        if !is_dangerous_river {
+            if let Some(hp_i) = hp_idx {
+                if let Some(tp_i) = tp_idx {
+                    probs[hp_i] = (probs[hp_i] + shifted * 0.65).max(0.60);
+                    probs[tp_i] += shifted * 0.35;
+                } else {
+                    probs[hp_i] = (probs[hp_i] + shifted).max(0.80);
                 }
+            } else if let Some(tp_i) = tp_idx {
+                probs[tp_i] = (probs[tp_i] + shifted).max(0.80);
+            }
+        } else if let Some(tp_i) = tp_idx {
+            probs[tp_i] = (probs[tp_i] + shifted).max(0.75);
+        }
+    }
+
+    fn boost_station_thin_value(probs: &mut [f64], ctx: &GuardContext<'_>) {
+        /* Top Pair Weak Kicker or Strong Middle Pair: consistent thin value (33% pot) */
+        if let Some(t_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) {
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                let s = probs[c_i] * 0.68;
+                probs[c_i] -= s;
+                probs[t_i] = (probs[t_i] + s).max(0.60);
             }
         }
     }
 
     /* Postflop Heavy-Bet / Multi-Street Barrel Defense
      * & Unconditional Pot-Commitment Rescue (Priority Tier 3) */
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_postflop_barrel_and_pot_commitment_guards(
         &self,
         probs: &mut [f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        bb: i32,
-        pot_odds: f64,
-        is_three_flush: bool,
-        never_fold_postflop: bool,
+        ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        let is_preflop = round == 1;
-
         if self.is_guard_enabled("POST_BARREL_FOLD") {
-            if !is_preflop && is_three_flush && to_call >= bb && pot_odds >= 0.18 && bucket <= 18 {
-                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                    reasons.push("POST_BARREL_FOLD");
-                    for p in probs.iter_mut() {
-                        *p = 0.0;
-                    }
-                    probs[f_i] = 1.0;
-                }
+            let fold_three_flush_air = !ctx.is_preflop
+                && ctx.is_three_flush
+                && ctx.to_call >= ctx.bb
+                && ctx.pot_odds >= 0.18
+                && ctx.bucket <= 18;
+            if fold_three_flush_air && force_action(probs, ctx.legal_actions, FOLD) {
+                reasons.push("POST_BARREL_FOLD");
             }
-            if round == 2 && to_call >= bb * 4 {
-                let bare_bottom_pair = (28..=30).contains(&bucket);
-                if bare_bottom_pair && pot_odds >= 0.28 {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        reasons.push("POST_BARREL_FOLD");
-                        for p in probs.iter_mut() {
-                            *p = 0.0;
-                        }
-                        probs[f_i] = 1.0;
-                    }
-                }
+            if ctx.round == 2
+                && ctx.to_call >= ctx.bb * 4
+                && (28..=30).contains(&ctx.bucket)
+                && ctx.pot_odds >= 0.28
+                && force_action(probs, ctx.legal_actions, FOLD)
+            {
+                reasons.push("POST_BARREL_FOLD");
             }
-
-            if round >= 3 && to_call >= bb * 5 {
-                let should_fold_weak_pair = (28..=30).contains(&bucket) && pot_odds >= 0.33;
+            if ctx.round >= 3 && ctx.to_call >= ctx.bb * 5 {
+                let should_fold_weak_pair = (28..=30).contains(&ctx.bucket) && ctx.pot_odds >= 0.33;
                 let should_fold_three_flush_tp =
-                    is_three_flush && (28..=42).contains(&bucket) && pot_odds >= 0.28;
-                if should_fold_weak_pair || should_fold_three_flush_tp {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        reasons.push("POST_BARREL_FOLD");
-                        for p in probs.iter_mut() {
-                            *p = 0.0;
-                        }
-                        probs[f_i] = 1.0;
-                    }
+                    ctx.is_three_flush && (28..=42).contains(&ctx.bucket) && ctx.pot_odds >= 0.28;
+                if (should_fold_weak_pair || should_fold_three_flush_tp)
+                    && force_action(probs, ctx.legal_actions, FOLD)
+                {
+                    reasons.push("POST_BARREL_FOLD");
                 }
             }
         }
 
         /* Final Unconditional Pot-Commitment Rescue */
-        let allow_pot_commit_rescue =
-            !(is_preflop && preflop_strength_tier(bucket) >= 7 && to_call > bb * 2);
-        if to_call > 0
-            && allow_pot_commit_rescue
-            && (pot_odds <= 0.12
-                || (pot_odds <= 0.15 && (is_preflop || bucket >= 15))
-                || never_fold_postflop)
+        if ctx.to_call > 0
+            && ctx.allow_pot_commit_rescue
+            && (ctx.pot_odds <= 0.12
+                || (ctx.pot_odds <= 0.15 && (ctx.is_preflop || ctx.bucket >= 15))
+                || ctx.never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_TERMINAL")
         {
-            if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+            if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
                 let f_prob = probs[f_i];
                 if f_prob > 0.0 {
                     reasons.push("POT_COMMIT_TERMINAL");
                     probs[f_i] = 0.0;
-                    if let Some(c_i) = legal_actions
+                    if let Some(c_i) = ctx
+                        .legal_actions
                         .iter()
                         .position(|&a| a == CALL_CHECK || a == ALL_IN)
                     {

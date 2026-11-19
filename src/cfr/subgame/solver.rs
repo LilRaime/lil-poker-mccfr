@@ -397,20 +397,7 @@ impl SubgameSolver {
     ) -> Vec<f64> {
         ctx.clear();
 
-        /* High-entropy board- and chip-sensitive PRNG seed */
-        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-        for &c in hole {
-            seed = seed
-                .wrapping_mul(31)
-                .wrapping_add(((c.rank as u64) << 3) | (c.suit as u64));
-        }
-        for &c in board {
-            seed = seed
-                .wrapping_mul(37)
-                .wrapping_add(((c.rank as u64) << 3) | (c.suit as u64));
-        }
-        seed ^= (contributions[0] as u64).wrapping_shl(16) ^ (contributions[1] as u64);
-        seed ^= (round as u64).wrapping_shl(32);
+        let seed = compute_subgame_seed(hole, board, round, contributions);
         let mut rng = SmallRng::seed_from_u64(seed);
 
         let is_used = |c: Card| hole.contains(&c) || board.contains(&c);
@@ -425,18 +412,13 @@ impl SubgameSolver {
             .filter(|&c| !board.contains(&c))
             .collect();
 
-        let rem_len = remaining_deck.len();
-        if rem_len < 2 {
+        if remaining_deck.len() < 2 {
             let mut uniform = vec![0.0; HOLDEM_NUM_ACTIONS];
             uniform[CALL_CHECK as usize] = 1.0;
             return uniform;
         }
 
-        let nodes = &mut ctx.nodes;
-
         let effective_iterations = self.compute_budget(round, contributions, my_player);
-
-        /* Construct explicit Bayesian reach range distribution for Opponent (1 - my_player) */
         let reach_dist = OpponentReachDistribution::build_for_target_generic(
             &remaining_deck,
             board,
@@ -448,9 +430,6 @@ impl SubgameSolver {
             opp_vpip,
             opp_pfr,
         );
-
-        /* Construct Hero's own Bayesian reach distribution from board_only_deck so Hero's actual
-         * hole cards are naturally included in Hero's range without card-removal bias! */
         let hero_reach_opt = Some(OpponentReachDistribution::build_for_target_generic(
             &board_only_deck,
             board,
@@ -463,21 +442,10 @@ impl SubgameSolver {
             None,
         ));
 
-        /* Extract root infoset hash */
         let root_hash = hash_holdem_infoset_key(hole, board, round, history);
-
-        /* Warm-start root node from blueprint strategy if available (single-model stack-depth aware) */
         let eff_stack_bb = self.stack_size / BIG_BLIND.max(1);
-        let blueprint_root_opt: Option<Vec<f64>> = strategy_map.and_then(|smap| {
-            crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
-                |k| smap.get(k).map(|v| v.as_ref().to_vec()),
-                hole,
-                board,
-                round,
-                history,
-                eff_stack_bb,
-            )
-        });
+        let blueprint_root_opt =
+            lookup_blueprint_root(strategy_map, hole, board, round, history, eff_stack_bb);
 
         let hist_rounds = [
             crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
@@ -485,20 +453,10 @@ impl SubgameSolver {
             crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
             crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
         ];
-
         let available_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let eff_threads = self.threads.min(available_threads);
         let eff_stack = self.stack_size.max(contributions[0]).max(contributions[1]);
-        /* Derive lightweight node-locking bias (fold_mult, raise_mult) for Opponent child priors
-         * from observed VPIP/PFR so CFR+ solves an exploitative best response inside the subgame. */
-        let opp_prior_bias: Option<(f64, f64)> = match (opp_vpip, opp_pfr) {
-            (Some(_v), Some(p)) if p > 0.45 => Some((0.75, 1.45)), /* Maniac: folds less, raises more */
-            (Some(v), Some(p)) if v > 0.68 && p < 0.22 => Some((0.65, 0.70)), /* Station: calls more */
-            (Some(v), _) if v < 0.25 => Some((1.40, 0.85)), /* Nit/Rock: folds more */
-            _ => None,
-        };
         let iter_ctx = SubgameIterContext {
             hole,
             board,
@@ -512,31 +470,58 @@ impl SubgameSolver {
             reach_dist: &reach_dist,
             hero_reach_opt: hero_reach_opt.as_ref(),
         };
-
-        let make_warm_root = |bp_probs: &[f64]| -> InfosetNode {
-            let root_node = InfosetNode::new(HOLDEM_NUM_ACTIONS);
-            root_node.accumulate_strategy(bp_probs, 25.0);
-            let init_regrets: Vec<f64> = bp_probs.iter().map(|&p| p * 50.0).collect();
-            root_node.update_regrets_cfr_plus(&init_regrets);
-            root_node
+        let run_params = SubgameRunParams {
+            root_hash,
+            opp_prior_bias: compute_opp_prior_bias(opp_vpip, opp_pfr),
+            effective_iterations,
+            eff_threads: self.threads.min(available_threads),
+            seed,
         };
+        let solved_strategy = self.run_cfr_iterations(
+            &iter_ctx,
+            &run_params,
+            blueprint_root_opt.as_deref(),
+            &mut ctx.nodes,
+            &mut rng,
+        );
 
+        let (to_call, pot, legal) =
+            build_root_legal_actions(contributions, my_player, eff_stack, raises_this_round);
+        finalize_root_strategy(
+            solved_strategy,
+            blueprint_root_opt.as_deref(),
+            &iter_ctx,
+            to_call,
+            pot,
+            &legal,
+        )
+    }
+
+    fn run_cfr_iterations(
+        &self,
+        iter_ctx: &SubgameIterContext<'_>,
+        params: &SubgameRunParams,
+        blueprint_root_opt: Option<&[f64]>,
+        nodes: &mut HashMap<u64, InfosetNode>,
+        rng: &mut SmallRng,
+    ) -> Option<Vec<f64>> {
         /* Run local CFR+ iterations:
          * - When updating Opponent: always sample Hero from hero_reach (no hole-card leak!).
          * - When updating Hero: alternate exact *hole (dense root convergence) and hero_reach. */
-        let solved_strategy: Option<Vec<f64>> = if eff_threads > 1 && effective_iterations >= 200 {
+        if params.eff_threads > 1 && params.effective_iterations >= 200 {
             use rayon::prelude::*;
-            let num_threads = eff_threads.min(8);
-            let iters_per_thread = effective_iterations.div_ceil(num_threads);
+            let num_threads = params.eff_threads.min(8);
+            let iters_per_thread = params.effective_iterations.div_ceil(num_threads);
             let shared_nodes: DashMap<u64, InfosetNode> =
                 DashMap::with_capacity_and_shard_amount(512, 64);
 
-            if let Some(ref bp_probs) = blueprint_root_opt {
-                shared_nodes.insert(root_hash, make_warm_root(bp_probs));
+            if let Some(bp_probs) = blueprint_root_opt {
+                shared_nodes.insert(params.root_hash, make_warm_root(bp_probs));
             }
 
             (0..num_threads).into_par_iter().for_each(|t_id| {
-                let t_seed = seed
+                let t_seed = params
+                    .seed
                     .wrapping_add((t_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
                     .wrapping_add(0x517c_c1b7_2722_0a95);
                 let mut t_rng = SmallRng::seed_from_u64(t_seed);
@@ -544,16 +529,16 @@ impl SubgameSolver {
                 for iter_idx in 0..iters_per_thread {
                     let updating_player = (iter_idx + t_id) % 2;
                     let sample_hero_from_range =
-                        updating_player != my_player || ((iter_idx / 2) % 2) == 1;
+                        updating_player != iter_ctx.my_player || ((iter_idx / 2) % 2) == 1;
                     let (game, precomputed_buckets) =
-                        build_iteration_state(&iter_ctx, sample_hero_from_range, &mut t_rng);
+                        build_iteration_state(iter_ctx, sample_hero_from_range, &mut t_rng);
 
                     self.cfr_shared(
                         &game,
-                        round,
-                        root_hash,
-                        my_player,
-                        opp_prior_bias,
+                        iter_ctx.round,
+                        params.root_hash,
+                        iter_ctx.my_player,
+                        params.opp_prior_bias,
                         updating_player,
                         (iter_idx + 1) as f64,
                         &precomputed_buckets,
@@ -564,120 +549,235 @@ impl SubgameSolver {
             });
 
             shared_nodes
-                .get(&root_hash)
+                .get(&params.root_hash)
                 .map(|n| n.value().get_average_strategy())
         } else {
-            if let Some(ref bp_probs) = blueprint_root_opt {
-                nodes.insert(root_hash, make_warm_root(bp_probs));
+            if let Some(bp_probs) = blueprint_root_opt {
+                nodes.insert(params.root_hash, make_warm_root(bp_probs));
             }
 
-            for iter_idx in 0..effective_iterations {
+            for iter_idx in 0..params.effective_iterations {
                 let updating_player = iter_idx % 2;
                 let sample_hero_from_range =
-                    updating_player != my_player || ((iter_idx / 2) % 2) == 1;
+                    updating_player != iter_ctx.my_player || ((iter_idx / 2) % 2) == 1;
                 let (game, precomputed_buckets) =
-                    build_iteration_state(&iter_ctx, sample_hero_from_range, &mut rng);
+                    build_iteration_state(iter_ctx, sample_hero_from_range, rng);
 
                 self.cfr_local(
                     &game,
-                    round,
-                    root_hash,
-                    my_player,
-                    opp_prior_bias,
+                    iter_ctx.round,
+                    params.root_hash,
+                    iter_ctx.my_player,
+                    params.opp_prior_bias,
                     updating_player,
                     (iter_idx + 1) as f64,
                     &precomputed_buckets,
                     nodes,
-                    &mut rng,
+                    rng,
                 );
             }
-            nodes.get(&root_hash).map(|n| n.get_average_strategy())
-        };
-
-        /* Extract average strategy for root infoset */
-        let opp = 1 - my_player;
-        let to_call = (contributions[opp] - contributions[my_player]).max(0);
-        let pot = contributions[0] + contributions[1];
-        let any_allin = contributions[opp] >= eff_stack || contributions[my_player] >= eff_stack;
-        let legal = if any_allin {
-            if to_call > 0 {
-                vec![FOLD, CALL_CHECK]
-            } else {
-                vec![CALL_CHECK]
-            }
-        } else if raises_this_round >= MAX_RAISES_PER_ROUND {
-            if to_call > 0 {
-                vec![FOLD, CALL_CHECK, ALL_IN]
-            } else {
-                vec![CALL_CHECK, ALL_IN]
-            }
-        } else if to_call > 0 {
-            vec![
-                FOLD,
-                CALL_CHECK,
-                RAISE_MIN,
-                RAISE_THIRD_POT,
-                RAISE_HALF_POT,
-                ALL_IN,
-            ]
-        } else {
-            vec![
-                CALL_CHECK,
-                RAISE_MIN,
-                RAISE_THIRD_POT,
-                RAISE_HALF_POT,
-                ALL_IN,
-            ]
-        };
-        let fallback = if let Some(ref bp) = blueprint_root_opt {
-            let mut arr = [0.0f64; HOLDEM_NUM_ACTIONS];
-            for (i, &v) in bp.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
-                arr[i] = v;
-            }
-            arr
-        } else {
-            crate::cfr::fallback::get_holdem_fallback_strategy(
-                hole, board, round, to_call, pot, &legal,
-            )
-        };
-
-        if let Some(mut solved) = solved_strategy {
-            /* Safe Resolving (Burch et al. 2014):
-             * Blend real-time solved subgame policy with robust GTO fallback bounds
-             * to guarantee gift-proofing and prevent out-of-distribution bluff spew. */
-            let current_bucket = crate::cfr::abstraction::postflop_equity_bucket(hole, board);
-            let is_air_or_board_pair =
-                current_bucket < 15 || current_bucket == 28 || current_bucket == 29;
-            if is_air_or_board_pair {
-                solved[ALL_IN as usize] = 0.0;
-                if to_call > 0 && (current_bucket < 15 || current_bucket == 28) {
-                    for r_act in RAISE_MIN..=ALL_IN {
-                        solved[r_act as usize] = 0.0;
-                    }
-                }
-            }
-            let (solved_w, fb_w) = if is_air_or_board_pair {
-                (0.35, 0.65)
-            } else {
-                (0.85, 0.15)
-            };
-            let mut resolved = vec![0.0f64; HOLDEM_NUM_ACTIONS];
-            let mut sum = 0.0f64;
-            for &a in &legal {
-                let idx = a as usize;
-                let val = (solved_w * solved[idx] + fb_w * fallback[idx]).max(0.0);
-                resolved[idx] = val;
-                sum += val;
-            }
-            if sum > 1e-9 {
-                let inv = 1.0 / sum;
-                for &a in &legal {
-                    resolved[a as usize] *= inv;
-                }
-            }
-            resolved
-        } else {
-            fallback.to_vec()
+            nodes
+                .get(&params.root_hash)
+                .map(|n| n.get_average_strategy())
         }
+    }
+}
+
+struct SubgameRunParams {
+    root_hash: u64,
+    opp_prior_bias: Option<(f64, f64)>,
+    effective_iterations: usize,
+    eff_threads: usize,
+    seed: u64,
+}
+
+fn compute_subgame_seed(
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    contributions: [i32; 2],
+) -> u64 {
+    /* High-entropy board- and chip-sensitive PRNG seed */
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    for &c in hole {
+        seed = seed
+            .wrapping_mul(31)
+            .wrapping_add(((c.rank as u64) << 3) | (c.suit as u64));
+    }
+    for &c in board {
+        seed = seed
+            .wrapping_mul(37)
+            .wrapping_add(((c.rank as u64) << 3) | (c.suit as u64));
+    }
+    seed ^= (contributions[0] as u64).wrapping_shl(16) ^ (contributions[1] as u64);
+    seed ^ (round as u64).wrapping_shl(32)
+}
+
+fn compute_opp_prior_bias(opp_vpip: Option<f64>, opp_pfr: Option<f64>) -> Option<(f64, f64)> {
+    /* Lightweight node-locking bias (fold_mult, raise_mult) for Opponent child priors */
+    match (opp_vpip, opp_pfr) {
+        (Some(_v), Some(p)) if p > 0.45 => Some((0.75, 1.45)), /* Maniac: folds less, raises more */
+        (Some(v), Some(p)) if v > 0.68 && p < 0.22 => Some((0.65, 0.70)), /* Station: calls more */
+        (Some(v), _) if v < 0.25 => Some((1.40, 0.85)),        /* Nit/Rock: folds more */
+        _ => None,
+    }
+}
+
+fn make_warm_root(bp_probs: &[f64]) -> InfosetNode {
+    let root_node = InfosetNode::new(HOLDEM_NUM_ACTIONS);
+    root_node.accumulate_strategy(bp_probs, 25.0);
+    let init_regrets: Vec<f64> = bp_probs.iter().map(|&p| p * 50.0).collect();
+    root_node.update_regrets_cfr_plus(&init_regrets);
+    root_node
+}
+
+fn build_root_legal_actions(
+    contributions: [i32; 2],
+    my_player: usize,
+    eff_stack: i32,
+    raises_this_round: u8,
+) -> (i32, i32, Vec<u8>) {
+    let opp = 1 - my_player;
+    let to_call = (contributions[opp] - contributions[my_player]).max(0);
+    let pot = contributions[0] + contributions[1];
+    let any_allin = contributions[opp] >= eff_stack || contributions[my_player] >= eff_stack;
+    let mut legal = if any_allin {
+        if to_call > 0 {
+            vec![FOLD, CALL_CHECK]
+        } else {
+            vec![CALL_CHECK]
+        }
+    } else if raises_this_round >= MAX_RAISES_PER_ROUND {
+        if to_call > 0 {
+            vec![FOLD, CALL_CHECK, ALL_IN]
+        } else {
+            vec![CALL_CHECK, ALL_IN]
+        }
+    } else if to_call > 0 {
+        vec![
+            FOLD,
+            CALL_CHECK,
+            RAISE_MIN,
+            RAISE_THIRD_POT,
+            RAISE_HALF_POT,
+            ALL_IN,
+        ]
+    } else {
+        vec![
+            CALL_CHECK,
+            RAISE_MIN,
+            RAISE_THIRD_POT,
+            RAISE_HALF_POT,
+            ALL_IN,
+        ]
+    };
+    if legal.contains(&ALL_IN) && legal.iter().any(|&a| (RAISE_MIN..ALL_IN).contains(&a)) {
+        let rem_stack = (eff_stack - contributions[my_player]).max(0);
+        let rem_after_call = (rem_stack - to_call).max(0);
+        let pot_after_call = pot.max(1) + to_call;
+        if rem_after_call > pot_after_call * 3 {
+            legal.retain(|&a| a != ALL_IN);
+        }
+    }
+    (to_call, pot, legal)
+}
+
+fn apply_safe_resolving(
+    mut solved: Vec<f64>,
+    fallback: &[f64; HOLDEM_NUM_ACTIONS],
+    hole: &[Card; 2],
+    board: &[Card],
+    to_call: i32,
+    legal: &[u8],
+) -> Vec<f64> {
+    /* Safe Resolving (Burch et al. 2014): blend solved policy with robust GTO fallback bounds */
+    let current_bucket = postflop_equity_bucket(hole, board);
+    let is_air_or_board_pair = current_bucket < 15 || current_bucket == 28 || current_bucket == 29;
+    if is_air_or_board_pair {
+        solved[ALL_IN as usize] = 0.0;
+        if to_call > 0 && (current_bucket < 15 || current_bucket == 28) {
+            for r_act in RAISE_MIN..=ALL_IN {
+                solved[r_act as usize] = 0.0;
+            }
+        }
+    }
+    let (solved_w, fb_w) = if is_air_or_board_pair {
+        (0.35, 0.65)
+    } else {
+        (0.85, 0.15)
+    };
+    let mut resolved = vec![0.0f64; HOLDEM_NUM_ACTIONS];
+    let mut sum = 0.0f64;
+    for &a in legal {
+        let idx = a as usize;
+        let val = (solved_w * solved[idx] + fb_w * fallback[idx]).max(0.0);
+        resolved[idx] = val;
+        sum += val;
+    }
+    if sum > 1e-9 {
+        let inv = 1.0 / sum;
+        for &a in legal {
+            resolved[a as usize] *= inv;
+        }
+    }
+    resolved
+}
+
+fn lookup_blueprint_root<H: crate::cfr::abstraction::HistoryActions + ?Sized, V: AsRef<[f64]>>(
+    strategy_map: Option<&HashMap<String, V>>,
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &H,
+    eff_stack_bb: i32,
+) -> Option<Vec<f64>> {
+    strategy_map.and_then(|smap| {
+        crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
+            |k| smap.get(k).map(|v| v.as_ref().to_vec()),
+            hole,
+            board,
+            round,
+            history,
+            eff_stack_bb,
+        )
+    })
+}
+
+fn finalize_root_strategy(
+    solved_strategy: Option<Vec<f64>>,
+    blueprint_root_opt: Option<&[f64]>,
+    iter_ctx: &SubgameIterContext<'_>,
+    to_call: i32,
+    pot: i32,
+    legal: &[u8],
+) -> Vec<f64> {
+    let fallback = if let Some(bp) = blueprint_root_opt {
+        let mut arr = [0.0f64; HOLDEM_NUM_ACTIONS];
+        for (i, &v) in bp.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
+            arr[i] = v;
+        }
+        arr
+    } else {
+        crate::cfr::fallback::get_holdem_fallback_strategy(
+            iter_ctx.hole,
+            iter_ctx.board,
+            iter_ctx.round,
+            to_call,
+            pot,
+            legal,
+        )
+    };
+
+    if let Some(solved) = solved_strategy {
+        apply_safe_resolving(
+            solved,
+            &fallback,
+            iter_ctx.hole,
+            iter_ctx.board,
+            to_call,
+            legal,
+        )
+    } else {
+        fallback.to_vec()
     }
 }

@@ -399,3 +399,477 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
         raises
     );
 }
+
+#[test]
+fn test_short_stack_nash_sb_steal_and_4bet_guards() {
+    use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
+
+    let tracker = OpponentTracker::new();
+    let legal_sb = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let legal_bb = [FOLD, CALL_CHECK, RAISE_MIN, ALL_IN];
+
+    /* 1. Short-stack HU SB open pushes (<= 12 BB): Q5o@3.2BB, 85o@2.7BB, 62o@4.2BB, Q2o@6.9BB, 93s@6.4BB, K6o@9.8BB */
+    let open_push_cases = [
+        (
+            Rank::Queen,
+            Suit::Spades,
+            Rank::Five,
+            Suit::Hearts,
+            600,
+            1920,
+            "Q5o @ 3.2 BB",
+        ),
+        (
+            Rank::Eight,
+            Suit::Clubs,
+            Rank::Five,
+            Suit::Spades,
+            600,
+            1620,
+            "85o @ 2.7 BB",
+        ),
+        (
+            Rank::Six,
+            Suit::Hearts,
+            Rank::Two,
+            Suit::Clubs,
+            600,
+            2520,
+            "62o @ 4.2 BB",
+        ),
+        (
+            Rank::Queen,
+            Suit::Hearts,
+            Rank::Two,
+            Suit::Spades,
+            200,
+            1380,
+            "Q2o @ 6.9 BB",
+        ),
+        (
+            Rank::Nine,
+            Suit::Clubs,
+            Rank::Three,
+            Suit::Clubs,
+            600,
+            3840,
+            "93s @ 6.4 BB",
+        ),
+        (
+            Rank::King,
+            Suit::Diamonds,
+            Rank::Six,
+            Suit::Spades,
+            600,
+            5880,
+            "K6o @ 9.8 BB",
+        ),
+    ];
+    for (r1, s1, r2, s2, bb, stack, label) in open_push_cases {
+        let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
+        let (act, reason) = tracker
+            .select_short_stack_preflop_action(b, bb / 2, bb + bb / 2, 1, bb, stack, &legal_sb)
+            .expect("short stack push/fold active");
+        assert_eq!(
+            act, ALL_IN,
+            "{} must open-shove ALL_IN, got {} ({})",
+            label, act, reason
+        );
+    }
+
+    /* 2. Short-stack HU BB defense vs min-raise: 42s@9.4BB, J2s@7.9BB, J3o@6.4BB */
+    let bb_call_cases = [
+        (
+            Rank::Four,
+            Suit::Clubs,
+            Rank::Two,
+            Suit::Clubs,
+            200,
+            1880,
+            "42s @ 9.4 BB",
+        ),
+        (
+            Rank::Jack,
+            Suit::Spades,
+            Rank::Two,
+            Suit::Spades,
+            200,
+            1580,
+            "J2s @ 7.9 BB",
+        ),
+        (
+            Rank::Jack,
+            Suit::Diamonds,
+            Rank::Three,
+            Suit::Hearts,
+            200,
+            1280,
+            "J3o @ 6.4 BB",
+        ),
+    ];
+    for (r1, s1, r2, s2, bb, stack, label) in bb_call_cases {
+        let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
+        let (act, reason) = tracker
+            .select_short_stack_preflop_action(b, bb, bb * 3, 1, bb, stack, &legal_bb)
+            .expect("short stack BB defense active");
+        assert_eq!(
+            act, CALL_CHECK,
+            "{} facing HU min-raise must defend CALL_CHECK, got {} ({})",
+            label, act, reason
+        );
+    }
+
+    /* 3. Ultra-nit BB (VPIP ~17%, PFR ~6%, 15 hands): SB steals Tier 7 (8s 3s) and Tier 8 (Js 3d) */
+    let mut ultra_nit = OpponentTracker::new();
+    for i in 0..15 {
+        if i == 0 {
+            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
+        } else if i < 3 {
+            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 100, 150);
+        } else {
+            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 200);
+        }
+        ultra_nit.end_hand();
+    }
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4242);
+    let fold_heavy_sb: [f64; HOLDEM_NUM_ACTIONS] = [0.95, 0.05, 0.0, 0.0, 0.0, 0.0];
+    for (c1, c2, label) in [
+        (
+            Card::new(Rank::Eight, Suit::Spades),
+            Card::new(Rank::Three, Suit::Spades),
+            "8s3s (Tier 7)",
+        ),
+        (
+            Card::new(Rank::Jack, Suit::Spades),
+            Card::new(Rank::Three, Suit::Diamonds),
+            "Js3d (Tier 8)",
+        ),
+    ] {
+        let hole = [c1, c2];
+        let b = preflop_bucket(c1, c2).0;
+        let mut steals = 0usize;
+        for _ in 0..100 {
+            let (act, _) = ultra_nit.select_action_purified_traced_with_stack(
+                &fold_heavy_sb,
+                &legal_sb,
+                b,
+                1,
+                50,
+                150,
+                Some(&hole),
+                None,
+                1,
+                100,
+                9950,
+                &mut rng,
+            );
+            if act == RAISE_MIN {
+                steals += 1;
+            }
+        }
+        assert!(
+            steals >= 55,
+            "Against ultra-nit BB, SB with {} must steal with RAISE_MIN majority of the time, got {}/100",
+            label,
+            steals
+        );
+    }
+
+    /* 4. Pocket 44 in HU facing 3 BB iso-raise (to_call = 300, pot = 500, bb = 100) must call, never fold */
+    let hole_44 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_44 = preflop_bucket(hole_44[0], hole_44[1]).0;
+    let fold_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.80, 0.20, 0.0, 0.0, 0.0, 0.0];
+    let (act_44, _) = tracker.select_action_purified_traced_with_stack(
+        &fold_biased,
+        &legal_sb,
+        b_44,
+        1,
+        300,
+        500,
+        Some(&hole_44),
+        None,
+        1,
+        100,
+        8700,
+        &mut rng,
+    );
+    assert_eq!(
+        act_44, CALL_CHECK,
+        "Pocket 44 in HU facing 3 BB iso-raise must call, never fold"
+    );
+
+    /* 5. Pocket 99 at 52 BB facing 14 BB 3-bet (to_call = 1725, bb = 150) must never jam ALL_IN */
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
+    let jam_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.20, 0.0, 0.15, 0.0, 0.60];
+    for _ in 0..40 {
+        let (act_99, _) = tracker.select_action_purified_traced_with_stack(
+            &jam_biased,
+            &legal_sb,
+            b_99,
+            1,
+            1725,
+            2550,
+            Some(&hole_99),
+            None,
+            1,
+            150,
+            7800,
+            &mut rng,
+        );
+        assert_ne!(
+            act_99, ALL_IN,
+            "Pocket 99 at 52 BB facing 14 BB 3-bet must never cold 4-bet jam ALL_IN"
+        );
+    }
+}
+
+#[test]
+fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
+    use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
+
+    let tracker = OpponentTracker::new();
+    let legal_sb = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let legal_bb = [FOLD, CALL_CHECK, RAISE_MIN, ALL_IN];
+
+    /* 1. Short-stack HU SB open pushes (<= 12 BB): Q5o@3.2BB, 85o@2.7BB, 62o@4.2BB, Q2o@6.9BB, 93s@6.4BB, K6o@9.8BB */
+    let open_push_cases = [
+        (
+            Rank::Queen,
+            Suit::Spades,
+            Rank::Five,
+            Suit::Hearts,
+            600,
+            1920,
+            "Q5o @ 3.2 BB",
+        ),
+        (
+            Rank::Eight,
+            Suit::Clubs,
+            Rank::Five,
+            Suit::Spades,
+            600,
+            1620,
+            "85o @ 2.7 BB",
+        ),
+        (
+            Rank::Six,
+            Suit::Hearts,
+            Rank::Two,
+            Suit::Clubs,
+            600,
+            2520,
+            "62o @ 4.2 BB",
+        ),
+        (
+            Rank::Queen,
+            Suit::Hearts,
+            Rank::Two,
+            Suit::Spades,
+            200,
+            1380,
+            "Q2o @ 6.9 BB",
+        ),
+        (
+            Rank::Nine,
+            Suit::Clubs,
+            Rank::Three,
+            Suit::Clubs,
+            600,
+            3840,
+            "93s @ 6.4 BB",
+        ),
+        (
+            Rank::King,
+            Suit::Diamonds,
+            Rank::Six,
+            Suit::Spades,
+            600,
+            5880,
+            "K6o @ 9.8 BB",
+        ),
+    ];
+    for (r1, s1, r2, s2, bb, stack, label) in open_push_cases {
+        let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
+        let (act, reason) = tracker
+            .select_short_stack_preflop_action(b, bb / 2, bb + bb / 2, 1, bb, stack, &legal_sb)
+            .expect("short stack push/fold active");
+        assert_eq!(
+            act, ALL_IN,
+            "{} must open-shove ALL_IN, got {} ({})",
+            label, act, reason
+        );
+    }
+
+    /* 2. Short-stack HU BB defense vs min-raise: 42s@9.4BB, J2s@7.9BB, J3o@6.4BB */
+    let bb_call_cases = [
+        (
+            Rank::Four,
+            Suit::Clubs,
+            Rank::Two,
+            Suit::Clubs,
+            200,
+            1880,
+            "42s @ 9.4 BB",
+        ),
+        (
+            Rank::Jack,
+            Suit::Spades,
+            Rank::Two,
+            Suit::Spades,
+            200,
+            1580,
+            "J2s @ 7.9 BB",
+        ),
+        (
+            Rank::Jack,
+            Suit::Diamonds,
+            Rank::Three,
+            Suit::Hearts,
+            200,
+            1280,
+            "J3o @ 6.4 BB",
+        ),
+    ];
+    for (r1, s1, r2, s2, bb, stack, label) in bb_call_cases {
+        let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
+        let (act, reason) = tracker
+            .select_short_stack_preflop_action(b, bb, bb * 3, 1, bb, stack, &legal_bb)
+            .expect("short stack BB defense active");
+        assert_eq!(
+            act, CALL_CHECK,
+            "{} facing HU min-raise must defend CALL_CHECK, got {} ({})",
+            label, act, reason
+        );
+    }
+
+    /* 3. Ultra-nit BB (VPIP ~17%, PFR ~6%, 15 hands): SB steals Tier 7 (8s 3s) and Tier 8 (Js 3d) */
+    let mut ultra_nit = OpponentTracker::new();
+    for i in 0..15 {
+        if i == 0 {
+            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
+        } else if i < 3 {
+            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 100, 150);
+        } else {
+            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 200);
+        }
+        ultra_nit.end_hand();
+    }
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4242);
+    let fold_heavy_sb: [f64; HOLDEM_NUM_ACTIONS] = [0.95, 0.05, 0.0, 0.0, 0.0, 0.0];
+    for (c1, c2, label) in [
+        (
+            Card::new(Rank::Eight, Suit::Spades),
+            Card::new(Rank::Three, Suit::Spades),
+            "8s3s (Tier 7)",
+        ),
+        (
+            Card::new(Rank::Jack, Suit::Spades),
+            Card::new(Rank::Three, Suit::Diamonds),
+            "Js3d (Tier 8)",
+        ),
+    ] {
+        let hole = [c1, c2];
+        let b = preflop_bucket(c1, c2).0;
+        let mut steals = 0usize;
+        for _ in 0..100 {
+            let (act, _) = ultra_nit.select_action_purified_traced_with_stack(
+                &fold_heavy_sb,
+                &legal_sb,
+                b,
+                1,
+                50,
+                150,
+                Some(&hole),
+                None,
+                1,
+                100,
+                9950,
+                &mut rng,
+            );
+            if act == RAISE_MIN {
+                steals += 1;
+            }
+        }
+        assert!(
+            steals >= 55,
+            "Against ultra-nit BB, SB with {} must steal with RAISE_MIN majority of the time, got {}/100",
+            label,
+            steals
+        );
+    }
+
+    /* 4. Shadow H#19: Pocket 44 in HU facing 3 BB iso-raise (to_call = 300, pot = 500, bb = 100) must call, never fold */
+    let hole_44 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_44 = preflop_bucket(hole_44[0], hole_44[1]).0;
+    let fold_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.80, 0.20, 0.0, 0.0, 0.0, 0.0];
+    let (act_44, _) = tracker.select_action_purified_traced_with_stack(
+        &fold_biased,
+        &legal_sb,
+        b_44,
+        1,
+        300,
+        500,
+        Some(&hole_44),
+        None,
+        1,
+        100,
+        8700,
+        &mut rng,
+    );
+    assert_eq!(
+        act_44, CALL_CHECK,
+        "Shadow H#19: Pocket 44 in HU facing 3 BB iso-raise must call, never fold"
+    );
+
+    /* 5. NashForged H#27: Pocket 99 at 52 BB facing 14 BB 3-bet (to_call = 1725, bb = 150) must never jam ALL_IN */
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
+    let jam_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.20, 0.0, 0.15, 0.0, 0.60];
+    for _ in 0..40 {
+        let (act_99, _) = tracker.select_action_purified_traced_with_stack(
+            &jam_biased,
+            &legal_sb,
+            b_99,
+            1,
+            1725,
+            2550,
+            Some(&hole_99),
+            None,
+            1,
+            150,
+            7800,
+            &mut rng,
+        );
+        assert_ne!(
+            act_99, ALL_IN,
+            "NashForged H#27: Pocket 99 at 52 BB facing 14 BB 3-bet must never cold 4-bet jam ALL_IN"
+        );
+    }
+}

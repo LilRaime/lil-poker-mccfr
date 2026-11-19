@@ -71,305 +71,466 @@ pub fn simulate_holdem_hand_traced(
         println!("\n--- {} ---", label);
     }
 
-    let initial_chips = game.stack_size;
+    let cfg = SimHandConfig {
+        my_player,
+        strategy,
+        strategy_index,
+        opp_archetype,
+        opp_strategy,
+        subgame_solver,
+        enable_subgame_search,
+        delay_ms,
+        show_logs,
+        label,
+    };
     let hole = game.hole[my_player];
-    let card_str = format!("[{}, {}]", hole[0], hole[1]);
-
-    let mut step_count = 0;
-    let mut cumulative_reward = 0.0f64;
-    let mut prev_my_contrib = game.contributions[my_player];
-    let mut hand_guard_reasons: Vec<&'static str> = Vec::new();
-    let mut subgame_ctx = crate::cfr::subgame::SubgameContext::new();
-    let opp_is_sb = my_player == 1;
-    let mut opp_acted_pf = false;
-    let mut opp_pf_vpip = false;
-    let mut opp_pf_pfr = false;
-    let mut opp_faced_3bet_recorded = false;
+    let mut state = SimLoopState {
+        initial_chips: game.stack_size,
+        hole_str: format!("[{}, {}]", hole[0], hole[1]),
+        step_count: 0,
+        cumulative_reward: 0.0f64,
+        prev_my_contrib: game.contributions[my_player],
+        hand_guard_reasons: Vec::new(),
+        subgame_ctx: crate::cfr::subgame::SubgameContext::new(),
+    };
+    let mut pf_state = OppPreflopTrackerState {
+        opp_is_sb: my_player == 1,
+        opp_acted_pf: false,
+        opp_pf_vpip: false,
+        opp_pf_pfr: false,
+        opp_faced_3bet_recorded: false,
+    };
 
     while !game.is_terminal() {
         let cp = game.current_player();
-
         if cp == my_player {
-            step_count += 1;
-            let phase_str = match game.round {
-                1 => "Preflop",
-                2 => "Flop",
-                3 => "Turn",
-                4 => "River",
-                _ => "Waiting",
-            };
-
-            let board_str = format!(
-                "[{}]",
-                game.board
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-
-            let legal = game.legal_actions();
-            let opp = 1 - my_player;
-            let to_call = (game.contributions[opp] - game.contributions[my_player]).max(0);
-            let pot = game.contributions[0] + game.contributions[1];
-
-            let used_subgame = enable_subgame_search
-                && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
-            /* 1. Get raw Blueprint/Subgame probabilities */
-            let raw_probs = if used_subgame {
-                let obs_vpip = if opp_tracker.total_hands >= 6 {
-                    Some(opp_tracker.vpip_ratio())
-                } else {
-                    None
-                };
-                let obs_pfr = if opp_tracker.total_hands >= 6 {
-                    Some(opp_tracker.pfr_ratio())
-                } else {
-                    None
-                };
-                let subgame_contribs = if initial_chips != STACK_SIZE {
-                    let scale = STACK_SIZE as f64 / initial_chips.max(1) as f64;
-                    [
-                        ((game.contributions[0] as f64 * scale).round() as i32)
-                            .clamp(SMALL_BLIND, STACK_SIZE),
-                        ((game.contributions[1] as f64 * scale).round() as i32)
-                            .clamp(SMALL_BLIND, STACK_SIZE),
-                    ]
-                } else {
-                    game.contributions
-                };
-                subgame_solver.solve_with_stats_generic(
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    &game.history,
-                    my_player,
-                    subgame_contribs,
-                    game.raises_this_round,
-                    &mut subgame_ctx,
-                    strategy.as_ref(),
-                    obs_vpip,
-                    obs_pfr,
-                )
-            } else if let Some(ref strat) = strategy {
-                let eff_stack_bb = (initial_chips / BIG_BLIND.max(1)).max(1);
-                if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical_with_stack(
-                    |k| strat.get(k),
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    &game.history,
-                    eff_stack_bb,
-                ) {
-                    s.to_vec()
-                } else if let Some(idx) = strategy_index {
-                    idx.get_blended_fallback(
-                        &game.hole[my_player],
-                        &game.board,
-                        game.round,
-                        to_call,
-                        pot,
-                        &legal,
-                    )
-                } else {
-                    find_strategy_or_fallback(
-                        strat,
-                        &game.hole[my_player],
-                        &game.board,
-                        game.round,
-                        to_call,
-                        pot,
-                        &legal,
-                    )
-                }
-            } else {
-                get_holdem_fallback_strategy(
-                    &game.hole[my_player],
-                    &game.board,
-                    game.round,
-                    to_call,
-                    pot,
-                    &legal,
-                )
-                .to_vec()
-            };
-
-            /* 2. Adjust using Opponent Tracker with hand context */
-            let current_bucket = if game.round == 1 {
-                preflop_bucket(game.hole[my_player][0], game.hole[my_player][1]).0
-            } else {
-                postflop_equity_bucket(&game.hole[my_player], &game.board)
-            };
-
-            /* 3. Sample action with <= 12 BB Nash Push/Fold fast-path or full purified selection */
-            let cur_my_chips = (initial_chips - game.contributions[my_player]).max(0);
-            let short_choice =
-                if game.round == 1 && cur_my_chips > 0 && cur_my_chips <= BIG_BLIND * 12 {
-                    opp_tracker.select_short_stack_preflop_action(
-                        current_bucket,
-                        to_call,
-                        pot,
-                        1,
-                        BIG_BLIND,
-                        cur_my_chips,
-                        &legal,
-                    )
-                } else {
-                    None
-                };
-            let (mut act, mut trace) = if let Some((short_act, short_reason)) = short_choice {
-                let total_p = (pot + to_call).max(1);
-                let po_bps =
-                    ((to_call as f64 / total_p as f64).clamp(0.0, 1.0) * 1000.0).round() as u16;
-                (
-                    short_act,
-                    crate::cfr::opponent_model::DecisionTrace {
-                        bucket: current_bucket,
-                        round: 1,
-                        pot_odds_bps: po_bps,
-                        raw_top_action: short_act,
-                        final_action: short_act,
-                        guard_reasons: vec![short_reason],
-                    },
-                )
-            } else {
-                opp_tracker.select_action_purified_traced_with_stack_ex(
-                    &raw_probs,
-                    &legal,
-                    current_bucket,
-                    game.round,
-                    to_call,
-                    pot,
-                    Some(&game.hole[my_player]),
-                    Some(&game.board),
-                    1,
-                    BIG_BLIND,
-                    cur_my_chips,
-                    used_subgame,
-                    rng,
-                )
-            };
-            /* Live-parity post-selection guardrails */
-            if game.round == 4 && to_call == 0 && current_bucket < 65 && act >= RAISE_MIN {
-                let turn_hist = game.history[2].as_slice();
-                let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
-                let opp_was_last_turn_raiser = turn_hist
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|&(_, &a)| a >= RAISE_MIN)
-                    .map(|(idx, _)| {
-                        let is_oop_action = idx % 2 == 0;
-                        (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
-                    })
-                    .unwrap_or(false);
-                if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
-                    act = CALL_CHECK;
-                    trace.guard_reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
-                }
-            }
-            if to_call > 0 && act == FOLD && legal.contains(&CALL_CHECK) {
-                let new_pot = (pot + to_call).max(1);
-                let is_postflop_micro_commit = game.round >= 2
-                    && (to_call * 8 <= new_pot
-                        || (to_call * 6 <= new_pot && current_bucket >= 15)
-                        || (cur_my_chips > 0 && cur_my_chips <= BIG_BLIND && pot >= BIG_BLIND * 4));
-                let is_preflop_priced_in = game.round == 1
-                    && (to_call <= BIG_BLIND * 2
-                        || crate::cfr::abstraction::preflop_strength_tier(current_bucket) <= 6)
-                    && to_call * 6 <= new_pot;
-                if is_postflop_micro_commit || is_preflop_priced_in {
-                    act = CALL_CHECK;
-                    trace.guard_reasons.push("POT_COMMIT_DECISION_RESCUE");
-                }
-            }
-            for r in trace.guard_reasons {
-                if !hand_guard_reasons.contains(&r) {
-                    hand_guard_reasons.push(r);
-                }
-            }
-
-            let act_name = match act {
-                H_FOLD => "FOLD",
-                CALL_CHECK => "CALL_CHECK",
-                RAISE_MIN => "RAISE_MIN",
-                RAISE_THIRD_POT => "RAISE_THIRD_POT",
-                RAISE_HALF_POT => "RAISE_HALF_POT",
-                ALL_IN => "ALL_IN",
-                _ => "UNKNOWN",
-            };
-
-            game = game.apply_action(act);
-
-            let pot = game.contributions[0] + game.contributions[1];
-            let my_chips = (initial_chips - game.contributions[my_player]).max(0);
-
-            let delta_contrib = (game.contributions[my_player] - prev_my_contrib) as f64;
-            prev_my_contrib = game.contributions[my_player];
-
-            let step_reward = if game.is_terminal() {
-                let final_ret = game.get_returns()[my_player];
-                final_ret / initial_chips as f64
-            } else {
-                -0.0005 * delta_contrib
-            };
-            cumulative_reward += step_reward;
-
-            if show_logs {
-                println!(
-                    "Step {} | Phase: {} | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
-                    step_count, phase_str, card_str, board_str, act_name, pot, my_chips, step_reward
-                );
-            }
-
-            if delay_ms > 0 {
-                sleep(Duration::from_millis(delay_ms));
-            }
-        } else {
-            /* Opponent turn */
-            let legal = game.legal_actions();
-            if legal.is_empty() {
-                break;
-            }
-            let facing_cbet = game.round == 2 && game.raises_this_round > 0;
-            let prev_opp_contrib = game.contributions[cp];
-            let opp_to_call_before = (game.contributions[1 - cp] - prev_opp_contrib).max(0);
-            let prev_pot = game.contributions[0] + game.contributions[1];
-            let round_before = game.round;
-            let prior_pf_raises = if round_before == 1 {
-                game.history[0].iter().filter(|&&a| a >= RAISE_MIN).count()
-            } else {
-                0
-            };
-            let act = sample_opponent_action(opp_archetype, opp_strategy, &game, cp, rng);
-            if round_before == 1 {
-                if opp_pf_pfr && prior_pf_raises >= 2 && !opp_faced_3bet_recorded {
-                    opp_tracker.record_facing_3bet(act == H_FOLD);
-                    opp_faced_3bet_recorded = true;
-                }
-                opp_acted_pf = true;
-                if act >= RAISE_MIN {
-                    opp_pf_vpip = true;
-                    opp_pf_pfr = true;
-                } else if act == CALL_CHECK && opp_to_call_before > 0 {
-                    opp_pf_vpip = true;
-                }
-            }
-            game = game.apply_action(act);
-            let bet_added = (game.contributions[cp] - prev_opp_contrib).max(0);
-            /* Record opponent action with detailed bet sizing for opponent modeling tracker */
-            opp_tracker.record_action_street_detailed(
-                act,
-                round_before,
-                facing_cbet,
-                bet_added,
-                prev_pot,
-            );
+            step_bot_turn(&mut game, &cfg, &mut state, opp_tracker, rng);
+        } else if !step_opponent_turn(&mut game, &cfg, cp, opp_tracker, &mut pf_state, rng) {
+            break;
         }
     }
 
-    if opp_acted_pf {
-        opp_tracker.record_preflop_positional(opp_is_sb, opp_pf_vpip, opp_pf_pfr);
+    finalize_sim_hand_tracking(&game, my_player, opp_tracker, &pf_state);
+    let final_ret = game.get_returns()[my_player];
+    log_sim_terminal_summary(&game, &cfg, &mut state, final_ret);
+
+    (final_ret, state.hand_guard_reasons)
+}
+
+struct SimHandConfig<'a> {
+    my_player: usize,
+    strategy: &'a Option<HoldemStrategy>,
+    strategy_index: Option<&'a StrategyLookupIndex>,
+    opp_archetype: &'a str,
+    opp_strategy: &'a Option<HoldemStrategy>,
+    subgame_solver: &'a SubgameSolver,
+    enable_subgame_search: bool,
+    delay_ms: u64,
+    show_logs: bool,
+    label: &'a str,
+}
+
+struct SimLoopState {
+    initial_chips: i32,
+    hole_str: String,
+    step_count: usize,
+    cumulative_reward: f64,
+    prev_my_contrib: i32,
+    hand_guard_reasons: Vec<&'static str>,
+    subgame_ctx: crate::cfr::subgame::SubgameContext,
+}
+
+struct OppPreflopTrackerState {
+    opp_is_sb: bool,
+    opp_acted_pf: bool,
+    opp_pf_vpip: bool,
+    opp_pf_pfr: bool,
+    opp_faced_3bet_recorded: bool,
+}
+
+struct SimBotTurn<'a> {
+    legal: &'a [u8],
+    current_bucket: usize,
+    to_call: i32,
+    pot: i32,
+    cur_my_chips: i32,
+    used_subgame: bool,
+}
+
+fn phase_name(round: u8) -> &'static str {
+    match round {
+        1 => "Preflop",
+        2 => "Flop",
+        3 => "Turn",
+        4 => "River",
+        _ => "Waiting",
+    }
+}
+
+fn format_board_str(board: &[crate::game::holdem::Card]) -> String {
+    format!(
+        "[{}]",
+        board
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn sim_action_name(act: u8) -> &'static str {
+    match act {
+        H_FOLD => "FOLD",
+        CALL_CHECK => "CALL_CHECK",
+        RAISE_MIN => "RAISE_MIN",
+        RAISE_THIRD_POT => "RAISE_THIRD_POT",
+        RAISE_HALF_POT => "RAISE_HALF_POT",
+        ALL_IN => "ALL_IN",
+        _ => "UNKNOWN",
+    }
+}
+
+fn step_bot_turn(
+    game: &mut TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
+    state: &mut SimLoopState,
+    opp_tracker: &OpponentTracker,
+    rng: &mut SmallRng,
+) {
+    state.step_count += 1;
+    let phase_str = phase_name(game.round);
+    let board_str = format_board_str(&game.board);
+    let legal = game.legal_actions();
+    let opp = 1 - cfg.my_player;
+    let to_call = (game.contributions[opp] - game.contributions[cfg.my_player]).max(0);
+    let pot = game.contributions[0] + game.contributions[1];
+
+    let (raw_probs, used_subgame) =
+        compute_bot_raw_probs(game, cfg, opp_tracker, state, &legal, to_call, pot);
+    let current_bucket = if game.round == 1 {
+        preflop_bucket(game.hole[cfg.my_player][0], game.hole[cfg.my_player][1]).0
+    } else {
+        postflop_equity_bucket(&game.hole[cfg.my_player], &game.board)
+    };
+    let turn = SimBotTurn {
+        legal: &legal,
+        current_bucket,
+        to_call,
+        pot,
+        cur_my_chips: (state.initial_chips - game.contributions[cfg.my_player]).max(0),
+        used_subgame,
+    };
+
+    let (mut act, mut trace) =
+        select_bot_sim_action(game, cfg.my_player, &raw_probs, &turn, opp_tracker, rng);
+    apply_sim_post_selection_guards(
+        game,
+        cfg.my_player,
+        &turn,
+        opp_tracker,
+        &mut act,
+        &mut trace.guard_reasons,
+    );
+    for r in trace.guard_reasons {
+        if !state.hand_guard_reasons.contains(&r) {
+            state.hand_guard_reasons.push(r);
+        }
+    }
+
+    let act_name = sim_action_name(act);
+    *game = game.apply_action(act);
+
+    let post_pot = game.contributions[0] + game.contributions[1];
+    let my_chips = (state.initial_chips - game.contributions[cfg.my_player]).max(0);
+    let delta_contrib = (game.contributions[cfg.my_player] - state.prev_my_contrib) as f64;
+    state.prev_my_contrib = game.contributions[cfg.my_player];
+
+    let step_reward = if game.is_terminal() {
+        game.get_returns()[cfg.my_player] / state.initial_chips as f64
+    } else {
+        -0.0005 * delta_contrib
+    };
+    state.cumulative_reward += step_reward;
+
+    if cfg.show_logs {
+        println!(
+            "Step {} | Phase: {} | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
+            state.step_count, phase_str, state.hole_str, board_str, act_name, post_pot, my_chips, step_reward
+        );
+    }
+    if cfg.delay_ms > 0 {
+        sleep(Duration::from_millis(cfg.delay_ms));
+    }
+}
+
+fn compute_bot_raw_probs(
+    game: &TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
+    opp_tracker: &OpponentTracker,
+    state: &mut SimLoopState,
+    legal: &[u8],
+    to_call: i32,
+    pot: i32,
+) -> (Vec<f64>, bool) {
+    let initial_chips = state.initial_chips;
+    let subgame_ctx = &mut state.subgame_ctx;
+    let used_subgame = cfg.enable_subgame_search
+        && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
+    let raw_probs = if used_subgame {
+        let obs_vpip = if opp_tracker.total_hands >= 6 || opp_tracker.is_overbet_bluffer() {
+            Some(opp_tracker.vpip_ratio())
+        } else {
+            None
+        };
+        let obs_pfr = if opp_tracker.is_overbet_bluffer() {
+            Some(opp_tracker.pfr_ratio().max(0.50))
+        } else if opp_tracker.total_hands >= 6 {
+            Some(opp_tracker.pfr_ratio())
+        } else {
+            None
+        };
+        let subgame_contribs = if initial_chips != STACK_SIZE {
+            let scale = STACK_SIZE as f64 / initial_chips.max(1) as f64;
+            [
+                ((game.contributions[0] as f64 * scale).round() as i32)
+                    .clamp(SMALL_BLIND, STACK_SIZE),
+                ((game.contributions[1] as f64 * scale).round() as i32)
+                    .clamp(SMALL_BLIND, STACK_SIZE),
+            ]
+        } else {
+            game.contributions
+        };
+        cfg.subgame_solver.solve_with_stats_generic(
+            &game.hole[cfg.my_player],
+            &game.board,
+            game.round,
+            &game.history,
+            cfg.my_player,
+            subgame_contribs,
+            game.raises_this_round,
+            subgame_ctx,
+            cfg.strategy.as_ref(),
+            obs_vpip,
+            obs_pfr,
+        )
+    } else if let Some(ref strat) = *cfg.strategy {
+        let eff_stack_bb = (initial_chips / BIG_BLIND.max(1)).max(1);
+        if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical_with_stack(
+            |k| strat.get(k),
+            &game.hole[cfg.my_player],
+            &game.board,
+            game.round,
+            &game.history,
+            eff_stack_bb,
+        ) {
+            s.to_vec()
+        } else if let Some(idx) = cfg.strategy_index {
+            idx.get_blended_fallback(
+                &game.hole[cfg.my_player],
+                &game.board,
+                game.round,
+                to_call,
+                pot,
+                legal,
+            )
+        } else {
+            find_strategy_or_fallback(
+                strat,
+                &game.hole[cfg.my_player],
+                &game.board,
+                game.round,
+                to_call,
+                pot,
+                legal,
+            )
+        }
+    } else {
+        get_holdem_fallback_strategy(
+            &game.hole[cfg.my_player],
+            &game.board,
+            game.round,
+            to_call,
+            pot,
+            legal,
+        )
+        .to_vec()
+    };
+    (raw_probs, used_subgame)
+}
+
+fn select_bot_sim_action(
+    game: &TexasHoldemGame,
+    my_player: usize,
+    raw_probs: &[f64],
+    turn: &SimBotTurn<'_>,
+    opp_tracker: &OpponentTracker,
+    rng: &mut SmallRng,
+) -> (u8, crate::cfr::opponent_model::DecisionTrace) {
+    let short_choice =
+        if game.round == 1 && turn.cur_my_chips > 0 && turn.cur_my_chips <= BIG_BLIND * 12 {
+            opp_tracker.select_short_stack_preflop_action(
+                turn.current_bucket,
+                turn.to_call,
+                turn.pot,
+                1,
+                BIG_BLIND,
+                turn.cur_my_chips,
+                turn.legal,
+            )
+        } else {
+            None
+        };
+
+    if let Some((short_act, short_reason)) = short_choice {
+        let total_p = (turn.pot + turn.to_call).max(1);
+        let po_bps =
+            ((turn.to_call as f64 / total_p as f64).clamp(0.0, 1.0) * 1000.0).round() as u16;
+        (
+            short_act,
+            crate::cfr::opponent_model::DecisionTrace {
+                bucket: turn.current_bucket,
+                round: 1,
+                pot_odds_bps: po_bps,
+                raw_top_action: short_act,
+                final_action: short_act,
+                guard_reasons: vec![short_reason],
+            },
+        )
+    } else {
+        opp_tracker.select_action_purified_traced_with_stack_ex(
+            raw_probs,
+            turn.legal,
+            turn.current_bucket,
+            game.round,
+            turn.to_call,
+            turn.pot,
+            Some(&game.hole[my_player]),
+            Some(&game.board),
+            1,
+            BIG_BLIND,
+            turn.cur_my_chips,
+            turn.used_subgame,
+            rng,
+        )
+    }
+}
+
+fn apply_sim_post_selection_guards(
+    game: &TexasHoldemGame,
+    my_player: usize,
+    turn: &SimBotTurn<'_>,
+    opp_tracker: &OpponentTracker,
+    act: &mut u8,
+    reasons: &mut Vec<&'static str>,
+) {
+    /* Live-parity post-selection guardrails */
+    if game.round == 4 && turn.to_call == 0 && turn.current_bucket < 65 && *act >= RAISE_MIN {
+        let turn_hist = game.history[2].as_slice();
+        let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
+        let opp_was_last_turn_raiser = turn_hist
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|&(_, &a)| a >= RAISE_MIN)
+            .map(|(idx, _)| {
+                let is_oop_action = idx % 2 == 0;
+                (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
+            })
+            .unwrap_or(false);
+        if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
+            *act = CALL_CHECK;
+            reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
+        }
+    }
+    if game.round == 2
+        && turn.to_call == 0
+        && my_player == 1
+        && *act == RAISE_MIN
+        && turn.current_bucket < 40
+        && opp_tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
+    {
+        let pf_hist = game.history[0].as_slice();
+        let pf_raises = pf_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
+        let opp_was_pf_aggressor =
+            pf_raises == 1 && pf_hist.first().copied().unwrap_or(0) >= RAISE_MIN;
+        if opp_was_pf_aggressor {
+            *act = CALL_CHECK;
+            reasons.push("FLOP_OOP_MICRO_DONK_SUPPRESS");
+        }
+    }
+    if turn.to_call > 0 && *act == H_FOLD && turn.legal.contains(&CALL_CHECK) {
+        let new_pot = (turn.pot + turn.to_call).max(1);
+        let is_postflop_micro_commit = game.round >= 2
+            && (turn.to_call * 8 <= new_pot
+                || (turn.to_call * 6 <= new_pot && turn.current_bucket >= 15)
+                || (turn.cur_my_chips > 0
+                    && turn.cur_my_chips <= BIG_BLIND
+                    && turn.pot >= BIG_BLIND * 4));
+        let is_preflop_priced_in = game.round == 1
+            && (turn.to_call <= BIG_BLIND * 2
+                || crate::cfr::abstraction::preflop_strength_tier(turn.current_bucket) <= 6)
+            && turn.to_call * 6 <= new_pot;
+        if is_postflop_micro_commit || is_preflop_priced_in {
+            *act = CALL_CHECK;
+            reasons.push("POT_COMMIT_DECISION_RESCUE");
+        }
+    }
+}
+
+fn step_opponent_turn(
+    game: &mut TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
+    cp: usize,
+    opp_tracker: &mut OpponentTracker,
+    pf_state: &mut OppPreflopTrackerState,
+    rng: &mut SmallRng,
+) -> bool {
+    let legal = game.legal_actions();
+    if legal.is_empty() {
+        return false;
+    }
+    let facing_cbet = game.round == 2 && game.raises_this_round > 0;
+    let prev_opp_contrib = game.contributions[cp];
+    let opp_to_call_before = (game.contributions[1 - cp] - prev_opp_contrib).max(0);
+    let prev_pot = game.contributions[0] + game.contributions[1];
+    let round_before = game.round;
+    let prior_pf_raises = if round_before == 1 {
+        game.history[0].iter().filter(|&&a| a >= RAISE_MIN).count()
+    } else {
+        0
+    };
+    let act = sample_opponent_action(cfg.opp_archetype, cfg.opp_strategy, game, cp, rng);
+    if round_before == 1 {
+        if pf_state.opp_pf_pfr && prior_pf_raises >= 2 && !pf_state.opp_faced_3bet_recorded {
+            opp_tracker.record_facing_3bet(act == H_FOLD);
+            pf_state.opp_faced_3bet_recorded = true;
+        }
+        pf_state.opp_acted_pf = true;
+        if act >= RAISE_MIN {
+            pf_state.opp_pf_vpip = true;
+            pf_state.opp_pf_pfr = true;
+        } else if act == CALL_CHECK && opp_to_call_before > 0 {
+            pf_state.opp_pf_vpip = true;
+        }
+    }
+    *game = game.apply_action(act);
+    let bet_added = (game.contributions[cp] - prev_opp_contrib).max(0);
+    opp_tracker.record_action_street_detailed(act, round_before, facing_cbet, bet_added, prev_pot);
+    true
+}
+
+fn finalize_sim_hand_tracking(
+    game: &TexasHoldemGame,
+    my_player: usize,
+    opp_tracker: &mut OpponentTracker,
+    pf_state: &OppPreflopTrackerState,
+) {
+    if pf_state.opp_acted_pf {
+        opp_tracker.record_preflop_positional(
+            pf_state.opp_is_sb,
+            pf_state.opp_pf_vpip,
+            pf_state.opp_pf_pfr,
+        );
     }
     if !game.board.is_empty() && game.history.iter().all(|rh| !rh.contains(&H_FOLD)) {
         let opp_player = 1 - my_player;
@@ -380,45 +541,43 @@ pub fn simulate_holdem_hand_traced(
         opp_tracker.record_showdown_hand(game.hole[opp_player], &game.board, opp_raised_river);
     }
     opp_tracker.end_hand();
+}
 
-    let final_ret = game.get_returns()[my_player];
+fn log_sim_terminal_summary(
+    game: &TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
+    state: &mut SimLoopState,
+    final_ret: f64,
+) {
+    if cfg.show_logs
+        && (state.step_count == 0 || state.prev_my_contrib != game.contributions[cfg.my_player])
+    {
+        state.step_count += 1;
+        let board_str = format_board_str(&game.board);
+        let my_chips = (state.initial_chips + final_ret as i32).max(0);
+        let term_reward = final_ret / state.initial_chips as f64;
+        state.cumulative_reward += term_reward;
 
-    if show_logs && (step_count == 0 || prev_my_contrib != game.contributions[my_player]) {
-        step_count += 1;
-        let board_str = format!(
-            "[{}]",
-            game.board
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let pot = 0;
-        let my_chips = (initial_chips + final_ret as i32).max(0);
-        let term_reward = final_ret / initial_chips as f64;
-        cumulative_reward += term_reward;
-
-        let act_name =
-            if step_count == 1 && game.returns[1 - my_player] < 0.0 && game.board.is_empty() {
-                "OPP_FOLD"
-            } else if prev_my_contrib != game.contributions[my_player] {
-                "FOLD"
-            } else {
-                "SHOWDOWN"
-            };
+        let act_name = if state.step_count == 1
+            && game.returns[1 - cfg.my_player] < 0.0
+            && game.board.is_empty()
+        {
+            "OPP_FOLD"
+        } else if state.prev_my_contrib != game.contributions[cfg.my_player] {
+            "FOLD"
+        } else {
+            "SHOWDOWN"
+        };
 
         println!(
             "Step {} | Phase: End | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
-            step_count, card_str, board_str, act_name, pot, my_chips, term_reward
+            state.step_count, state.hole_str, board_str, act_name, 0, my_chips, term_reward
         );
     }
-
-    if show_logs {
+    if cfg.show_logs {
         println!(
             "Finished {} | Total Steps: {} | Cumulative Reward: {:+.4} | Net Chips: {:+}",
-            label, step_count, cumulative_reward, final_ret as i32
+            cfg.label, state.step_count, state.cumulative_reward, final_ret as i32
         );
     }
-
-    (final_ret, hand_guard_reasons)
 }

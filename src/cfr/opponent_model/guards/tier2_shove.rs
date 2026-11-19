@@ -1,490 +1,599 @@
 /* Priority Tier 2A: Preflop Discipline & All-In / Heavy-Bet Shove Defense */
 use super::super::tracker::OpponentTracker;
+use super::context::GuardContext;
+use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
 use crate::cfr::abstraction::{
-    calculate_range_equity, detect_board_texture, is_dangerous_board, is_four_flush_board,
-    is_four_straight_board, nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
+    calculate_range_equity, nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
 };
-use crate::game::config::*;
-use crate::game::holdem::Card;
+use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_MIN, RAISE_THIRD_POT};
 
 impl OpponentTracker {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_tier2_preflop_and_shove_defense(
         &self,
         probs: &mut [f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        bb: i32,
-        my_chips: i32,
-        eff_allin_threshold: i32,
-        pot_odds: f64,
-        is_three_flush: bool,
+        ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        let is_preflop = round == 1;
-        let is_allin_call = my_chips > 0 && to_call >= my_chips;
-        let eff_stack_bb = if my_chips > 0 {
-            my_chips / bb.max(1)
-        } else {
-            100
-        };
-        let is_short_stack = my_chips > 0 && eff_stack_bb <= 25;
-        let sm_raise = self.smoothed_raise_ratio();
-        let sm_pfr = self.smoothed_pfr();
-        let sm_vpip = self.smoothed_vpip();
-        let is_known_maniac = self.total_actions() >= 10
-            && (sm_raise > 0.36
-                || (sm_pfr > 0.48 && sm_raise > 0.28)
-                || (sm_vpip > 0.80 && sm_raise > 0.28));
-        let is_extreme_shove_bot = self.total_hands >= 8 && sm_raise > 0.42 && sm_vpip > 0.68;
-        let can_raise = !is_allin_call
-            && legal_actions
-                .iter()
-                .any(|&a| (RAISE_MIN..=ALL_IN).contains(&a));
+        if ctx.is_preflop && self.is_guard_enabled("PF_DISCIPLINE_GUARD") {
+            self.apply_preflop_discipline_guard(probs, ctx, reasons);
+        }
 
-        /* Preflop Trash, Priced-In BB Defense & Limp-Pot OOP ISO-Raise Guard */
-        if is_preflop && self.is_guard_enabled("PF_DISCIPLINE_GUARD") {
-            let pf_tier = preflop_strength_tier(bucket);
-            let is_sb_open =
-                active_opponents == 1 && to_call > 0 && to_call <= bb / 2 && pot <= bb * 2;
-            let is_multiway_cold_3bet_shove = active_opponents >= 2 && pot > to_call + bb * 3;
-            let raw_max_nash_bb = nash_call_shove_max_bb(
-                bucket,
-                active_opponents,
-                is_known_maniac || is_extreme_shove_bot,
-            );
-            let max_nash_bb = if is_multiway_cold_3bet_shove {
-                (raw_max_nash_bb * 2) / 3
-            } else {
-                raw_max_nash_bb
-            };
-            let short_nash_call_ok =
-                (is_allin_call || !can_raise || (is_short_stack && to_call >= bb * 6))
-                    && to_call > 0
-                    && to_call <= max_nash_bb * bb
-                    && (pf_tier <= 4 || (is_known_maniac && pf_tier <= 5));
-            if to_call == 0 && pf_tier >= 6 {
-                reasons.push("PF_DISCIPLINE_GUARD");
+        let (is_shove_faced, is_stack_commit_draw_bet) = self.detect_shove_faced(ctx);
+        if is_shove_faced && self.is_guard_enabled("SHOVE_DEFENSE_FOLD") {
+            self.apply_shove_defense_fold(probs, ctx, is_stack_commit_draw_bet, reasons);
+        }
+    }
+
+    fn apply_preflop_discipline_guard(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let pf_tier = preflop_strength_tier(ctx.bucket);
+        if !self.apply_sb_open_discipline(probs, ctx, pf_tier, reasons) {
+            self.apply_preflop_facing_raise_discipline(probs, ctx, pf_tier, reasons);
+        }
+        self.apply_preflop_pair_and_jam_caps(probs, ctx, pf_tier, reasons);
+    }
+
+    fn apply_sb_open_discipline(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        pf_tier: u8,
+        reasons: &mut Vec<&'static str>,
+    ) -> bool {
+        let is_sb_open = ctx.active_opponents == 1
+            && ctx.to_call > 0
+            && ctx.to_call <= ctx.bb / 2
+            && ctx.pot <= ctx.bb * 2;
+        let is_multiway_cold_3bet_shove =
+            ctx.is_preflop && ctx.active_opponents >= 2 && ctx.pot > ctx.to_call + ctx.bb * 3;
+        let raw_max_nash_bb = nash_call_shove_max_bb(
+            ctx.bucket,
+            ctx.active_opponents,
+            ctx.is_known_maniac || ctx.is_extreme_shove_bot,
+        );
+        let max_nash_bb = if is_multiway_cold_3bet_shove {
+            (raw_max_nash_bb * 2) / 3
+        } else {
+            raw_max_nash_bb
+        };
+        let short_nash_call_ok = (ctx.is_allin_call
+            || !ctx.can_raise
+            || (ctx.is_short_stack && ctx.to_call >= ctx.bb * 6))
+            && ctx.to_call > 0
+            && ctx.to_call <= max_nash_bb * ctx.bb
+            && (pf_tier <= 4 || (ctx.is_known_maniac && pf_tier <= 5));
+
+        if ctx.to_call == 0 && pf_tier >= 6 {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                probs[c_i] = (probs[c_i] + shifted).max(0.95);
+            }
+            true
+        } else if short_nash_call_ok {
+            if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                let f_w = probs[f_i];
+                probs[f_i] = 0.0;
+                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
+                    probs[c_i] += f_w;
+                }
+            }
+            true
+        } else if is_sb_open
+            && !ctx.is_tight_passive_bb
+            && ctx.eff_stack_bb <= 35
+            && ((ctx.is_extreme_shove_bot && pf_tier >= 6)
+                || (ctx.is_known_maniac
+                    && (pf_tier == 8
+                        || (pf_tier == 7 && ctx.bucket >= 120 && ctx.eff_stack_bb <= 25))))
+            && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) < ctx.eff_stack_bb
+        {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            force_action(probs, ctx.legal_actions, FOLD);
+            true
+        } else if is_sb_open && pf_tier >= 7 {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            self.apply_sb_trash_steal_or_fold(probs, ctx, pf_tier);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apply_sb_trash_steal_or_fold(&self, probs: &mut [f64], ctx: &GuardContext<'_>, pf_tier: u8) {
+        if ctx.is_tight_passive_bb {
+            if let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) {
+                let steal_frac = if pf_tier == 7 { 0.85 } else { 0.70 };
                 let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        shifted += probs[i];
-                        probs[i] = 0.0;
+                if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    let s = probs[f_i] * steal_frac;
+                    probs[f_i] -= s;
+                    shifted += s;
+                }
+                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                    let c_w = probs[c_i];
+                    let s = c_w * steal_frac;
+                    probs[c_i] = 0.0;
+                    shifted += s;
+                    if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                        probs[f_i] += c_w - s;
                     }
                 }
-                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                    probs[c_i] = (probs[c_i] + shifted).max(0.95);
+                probs[r_i] += shifted;
+            }
+        } else if pf_tier == 8
+            || ctx.is_extreme_shove_bot
+            || (ctx.is_known_maniac && ctx.bucket >= 114)
+        {
+            force_action(probs, ctx.legal_actions, FOLD);
+        } else if !ctx.is_passive_station {
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                let limp_w = probs[c_i];
+                probs[c_i] = 0.0;
+                let steal_share = if ctx.bucket < 91 || (111..=113).contains(&ctx.bucket) {
+                    0.35
+                } else {
+                    0.20
+                };
+                if let Some(r_i) =
+                    first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT])
+                {
+                    probs[r_i] += limp_w * steal_share;
                 }
-            } else if short_nash_call_ok {
-                /* Within Nash push/call depth on short stack: do not fold away profitable calls */
-                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                    let f_w = probs[f_i];
-                    probs[f_i] = 0.0;
-                    if let Some(c_i) = legal_actions
-                        .iter()
-                        .position(|&a| a == CALL_CHECK)
-                        .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                    {
-                        probs[c_i] += f_w;
-                    }
+                if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    probs[f_i] += limp_w * (1.0 - steal_share);
                 }
-            } else if is_sb_open
-                && eff_stack_bb <= 35
-                && (is_known_maniac || is_extreme_shove_bot)
-                && pf_tier >= 6
-                && nash_open_push_max_bb(bucket, active_opponents) < eff_stack_bb
-            {
-                /* Short-stack SB vs hyper-aggressor: fold weak non-Nash hands rather than
-                 * limp-folding or 2.5x min-raise-folding to frequent BB iso-shoves. */
-                reasons.push("PF_DISCIPLINE_GUARD");
-                if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                    for (i, &a) in legal_actions.iter().enumerate() {
-                        if a != FOLD {
-                            probs[i] = 0.0;
-                        }
-                    }
-                    probs[f_i] = 1.0;
-                }
-            } else if is_sb_open && pf_tier >= 7 {
-                reasons.push("PF_DISCIPLINE_GUARD");
-                let is_tight_passive_bb =
-                    self.total_hands >= 8 && self.vpip_ratio() < 0.28 && self.pfr_ratio() < 0.18;
-                if pf_tier == 8 || is_known_maniac || is_extreme_shove_bot {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        for p in probs.iter_mut() {
-                            *p = 0.0;
-                        }
-                        probs[f_i] = 1.0;
-                    }
-                } else if !self.is_passive_station() && !is_tight_passive_bb {
-                    /* Avoid SB limp-folding Tier 7 trash at 21-100 BB: fold or steal instead of limp-folding */
-                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                        let limp_w = probs[c_i];
-                        probs[c_i] = 0.0;
-                        if let Some(r_i) = legal_actions
-                            .iter()
-                            .position(|&a| a == RAISE_MIN)
-                            .or_else(|| legal_actions.iter().position(|&a| a == RAISE_THIRD_POT))
-                        {
-                            probs[r_i] += limp_w * 0.20;
-                        }
-                        if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                            probs[f_i] += limp_w * 0.80;
-                        }
-                    }
-                }
-            } else if to_call > 0 && pf_tier >= 7 {
-                reasons.push("PF_DISCIPLINE_GUARD");
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        shifted += probs[i];
-                        probs[i] = 0.0;
-                    }
-                }
-                if pot_odds <= 0.22 || (pot_odds <= 0.26 && pf_tier <= 7) {
-                    if let Some(c_i) = legal_actions
-                        .iter()
-                        .position(|&a| a == CALL_CHECK)
-                        .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                    {
-                        probs[c_i] += shifted;
-                    }
-                } else if to_call > bb / 2 && (pf_tier == 8 || pot_odds > 0.28) {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                            shifted += probs[c_i];
-                            probs[c_i] = 0.0;
-                        }
-                        probs[f_i] = (probs[f_i] + shifted).max(0.98);
-                    }
-                } else if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                    probs[f_i] += shifted;
-                }
-            } else if to_call >= bb * 3 && pf_tier >= 6 {
-                reasons.push("PF_DISCIPLINE_GUARD");
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        shifted += probs[i];
-                        probs[i] = 0.0;
-                    }
-                }
-                if pot_odds > 0.28 && !is_extreme_shove_bot {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                            shifted += probs[c_i];
-                            probs[c_i] = 0.0;
-                        }
-                        probs[f_i] = (probs[f_i] + shifted).max(0.95);
-                    }
-                } else if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+            }
+        }
+    }
+
+    fn apply_preflop_facing_raise_discipline(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        pf_tier: u8,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.to_call > 0 && pf_tier >= 7 {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            let mut shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+            if ctx.pot_odds <= 0.22 || (ctx.pot_odds <= 0.26 && pf_tier <= 7) {
+                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
                 }
-            } else if to_call >= bb * 6
-                && pot_odds > 0.36
-                && (pf_tier >= 4 || active_opponents >= 2)
-            {
-                let nash_shove_call_ok =
-                    (is_allin_call || !can_raise) && to_call <= max_nash_bb * bb;
-                if !nash_shove_call_ok && pf_tier >= 4 {
-                    reasons.push("PF_DISCIPLINE_GUARD");
-                    let mut shifted = 0.0f64;
-                    for (i, &a) in legal_actions.iter().enumerate() {
-                        if a >= RAISE_MIN {
-                            shifted += probs[i];
-                            probs[i] = 0.0;
-                        }
+            } else if ctx.to_call > ctx.bb / 2 && (pf_tier == 8 || ctx.pot_odds > 0.28) {
+                if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                        shifted += probs[c_i];
+                        probs[c_i] = 0.0;
                     }
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                            shifted += probs[c_i];
-                            probs[c_i] = 0.0;
-                        }
-                        probs[f_i] = (probs[f_i] + shifted).max(0.95);
-                    }
+                    probs[f_i] = (probs[f_i] + shifted).max(0.98);
                 }
+            } else if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                probs[f_i] += shifted;
             }
-            /* Small/mid pocket pairs (66..22, buckets 8..=12) facing an open raise (>= 1 BB to call):
-             * forbid bloated 33%/50%/all-in 3-bets and cap min-3bet frequency; prefer flat-calling to set-mine. */
-            if to_call >= bb && (8..=12).contains(&bucket) {
+        } else if ctx.to_call >= ctx.bb * 3 && pf_tier >= 6 {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            let mut shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+            if ctx.pot_odds > 0.28 && !ctx.is_extreme_shove_bot {
+                if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                        shifted += probs[c_i];
+                        probs[c_i] = 0.0;
+                    }
+                    probs[f_i] = (probs[f_i] + shifted).max(0.95);
+                }
+            } else if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                probs[c_i] += shifted;
+            }
+        } else if ctx.to_call >= ctx.bb * 6
+            && ctx.pot_odds > 0.36
+            && (pf_tier >= 4 || ctx.active_opponents >= 2)
+        {
+            let is_multiway = ctx.active_opponents >= 2 && ctx.pot > ctx.to_call + ctx.bb * 3;
+            let raw_nash = nash_call_shove_max_bb(
+                ctx.bucket,
+                ctx.active_opponents,
+                ctx.is_known_maniac || ctx.is_extreme_shove_bot,
+            );
+            let max_nash_bb = if is_multiway {
+                (raw_nash * 2) / 3
+            } else {
+                raw_nash
+            };
+            let nash_ok =
+                (ctx.is_allin_call || !ctx.can_raise) && ctx.to_call <= max_nash_bb * ctx.bb;
+            if !nash_ok && pf_tier >= 4 {
                 reasons.push("PF_DISCIPLINE_GUARD");
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_THIRD_POT {
-                        shifted += probs[i];
-                        probs[i] = 0.0;
-                    } else if a == RAISE_MIN && probs[i] > 0.05 {
-                        shifted += probs[i] - 0.05;
-                        probs[i] = 0.05;
+                let mut shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+                if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                        shifted += probs[c_i];
+                        probs[c_i] = 0.0;
                     }
-                }
-                if shifted > 0.0 {
-                    if pot_odds <= 0.36 && to_call <= bb * 5 {
-                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                            probs[c_i] += shifted;
-                        }
-                    } else if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        probs[f_i] += shifted;
-                    }
+                    probs[f_i] = (probs[f_i] + shifted).max(0.95);
                 }
             }
-            if eff_stack_bb > 20
-                && (to_call <= bb || (to_call <= bb * 4 && (bucket >= 3 || active_opponents >= 2)))
-            {
-                if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                    let s = probs[ai_i];
-                    if s > 0.0 {
-                        probs[ai_i] = 0.0;
-                        if let Some(t_i) = legal_actions
-                            .iter()
-                            .position(|&a| a == RAISE_THIRD_POT)
-                            .or_else(|| legal_actions.iter().position(|&a| a == RAISE_MIN))
-                            .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
-                        {
-                            probs[t_i] += s;
-                        }
-                    }
+        }
+    }
+
+    fn apply_preflop_pair_and_jam_caps(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        pf_tier: u8,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        self.apply_preflop_pair_setmine_guard(probs, ctx, reasons);
+        self.apply_preflop_open_jam_cap(probs, ctx, pf_tier);
+        self.apply_preflop_deep_3bet_caps(probs, ctx, pf_tier, reasons);
+    }
+
+    fn apply_preflop_pair_setmine_guard(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        /* Small/mid pocket pairs (66..22) facing an open raise: forbid bloated 3-bets; set-mine */
+        if !(ctx.to_call >= ctx.bb && (8..=12).contains(&ctx.bucket)) {
+            return;
+        }
+        reasons.push("PF_DISCIPLINE_GUARD");
+        let mut shifted = 0.0f64;
+        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+            if a >= RAISE_THIRD_POT {
+                shifted += probs[i];
+                probs[i] = 0.0;
+            } else if a == RAISE_MIN && probs[i] > 0.05 {
+                shifted += probs[i] - 0.05;
+                probs[i] = 0.05;
+            }
+        }
+        if shifted > 0.0 {
+            let target = if ctx.pot_odds <= 0.36 && ctx.to_call <= ctx.bb * 5 {
+                CALL_CHECK
+            } else {
+                FOLD
+            };
+            if let Some(t_i) = action_idx(ctx.legal_actions, target) {
+                probs[t_i] += shifted;
+            }
+        }
+        if ctx.active_opponents == 1 && ctx.to_call <= ctx.bb * 3 && ctx.pot_odds <= 0.40 {
+            if let (Some(f_i), Some(c_i)) = (
+                action_idx(ctx.legal_actions, FOLD),
+                action_idx(ctx.legal_actions, CALL_CHECK),
+            ) {
+                if probs[f_i] > 0.0 {
+                    probs[c_i] += probs[f_i];
+                    probs[f_i] = 0.0;
                 }
             }
-            /* At > 20 BB (e.g. 30 BB S30| blueprint), prevent 3-bet/4-bet ALL_IN bluff-jams with
-             * non-premium hands (Tier 4+, or Tier 3 vs non-folding maniacs): shift ALL_IN weight
-             * to CALL_CHECK (if priced in) or FOLD rather than punting 30 BB stacks preflop. */
-            if eff_stack_bb > 20
-                && !is_allin_call
-                && (pf_tier >= 4 || (pf_tier >= 3 && (is_known_maniac || is_extreme_shove_bot)))
-            {
-                if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                    let s = probs[ai_i];
-                    if s > 0.0 {
-                        probs[ai_i] = 0.0;
-                        let target_act = if pot_odds <= 0.34 && pf_tier <= 4 {
-                            CALL_CHECK
-                        } else {
-                            FOLD
-                        };
-                        if let Some(t_i) = legal_actions
-                            .iter()
-                            .position(|&a| a == target_act)
-                            .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
-                        {
-                            probs[t_i] += s;
-                        }
+        }
+    }
+
+    fn apply_preflop_open_jam_cap(&self, probs: &mut [f64], ctx: &GuardContext<'_>, pf_tier: u8) {
+        if ctx.eff_stack_bb > 20
+            && (ctx.to_call <= ctx.bb
+                || (ctx.to_call <= ctx.bb * 4 && (ctx.bucket >= 3 || ctx.active_opponents >= 2)))
+        {
+            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
+                let s = probs[ai_i];
+                if s > 0.0 {
+                    probs[ai_i] = 0.0;
+                    if let Some(t_i) = first_action_idx(
+                        ctx.legal_actions,
+                        &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                    ) {
+                        probs[t_i] += s;
                     }
                 }
             }
         }
-
-        let is_substantial_bet = to_call >= bb * 4;
-        let is_stack_commit_draw_bet = (round == 2 || round == 3)
-            && my_chips > 0
-            && to_call >= bb * 4
-            && pot_odds >= 0.34
-            && (to_call * 5 >= my_chips * 2 || (my_chips - to_call) * 3 <= (pot + to_call) * 2);
-        let is_shove_faced = pot_odds > 0.18
-            && ((is_allin_call && to_call >= bb * 5 && pot_odds >= 0.28)
-                || (is_stack_commit_draw_bet && (15..=23).contains(&bucket))
-                || (is_substantial_bet
-                    && (to_call >= eff_allin_threshold
-                        || (!can_raise && to_call >= bb * 5 && pot_odds >= 0.28)
-                        || (round == 1 && to_call >= bb * 10)
-                        || (round == 4 && to_call >= bb * 12 && pot_odds >= 0.38)
-                        || (round == 3 && to_call >= bb * 15 && pot_odds >= 0.34)
-                        || (round == 2 && to_call >= bb * 20))));
-
-        if is_shove_faced && self.is_guard_enabled("SHOVE_DEFENSE_FOLD") {
-            let is_multiway_cold_3bet_shove =
-                is_preflop && active_opponents >= 2 && pot > to_call + bb * 3;
-            if is_preflop {
-                let pf_tier = preflop_strength_tier(bucket);
-                let raw_max_nash_bb = nash_call_shove_max_bb(
-                    bucket,
-                    active_opponents,
-                    is_known_maniac || is_extreme_shove_bot,
-                );
-                let max_nash_bb = if is_multiway_cold_3bet_shove {
-                    (raw_max_nash_bb * 2) / 3
-                } else {
-                    raw_max_nash_bb
-                };
-                let within_nash_rescue = to_call <= max_nash_bb * bb
-                    && to_call < bb * 40
-                    && (pf_tier <= 4 || is_known_maniac || is_extreme_shove_bot);
-                if to_call >= bb * 40 {
-                    /* Facing massive cold shove (>= 40 BB): AA and KK (bucket <= 1) never fold;
-                     * against a known maniac / shove-bot, Tiers 1..=2 (AA-99, AK, AQ, AJs, KQs) never fold! */
-                    if bucket <= 1 || (is_known_maniac && pf_tier <= 2) {
-                        if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                            let f_w = probs[f_i];
-                            probs[f_i] = 0.0;
-                            if let Some(c_i) = legal_actions
-                                .iter()
-                                .position(|&a| a == CALL_CHECK)
-                                .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                            {
-                                probs[c_i] += f_w;
-                            }
-                        }
-                    }
-                } else if (pf_tier <= 1
-                    || within_nash_rescue
-                    || (is_extreme_shove_bot
-                        && pf_tier <= 6
-                        && pot_odds <= 0.46
-                        && to_call < bb * 15))
-                    && to_call < eff_allin_threshold * 2
-                {
-                    if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                        let f_w = probs[f_i];
-                        probs[f_i] = 0.0;
-                        if let Some(c_i) = legal_actions
-                            .iter()
-                            .position(|&a| a == CALL_CHECK)
-                            .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                        {
-                            probs[c_i] += f_w;
-                        }
+        if ctx.eff_stack_bb > 20
+            && !ctx.is_allin_call
+            && (pf_tier >= 4 || (pf_tier >= 3 && (ctx.is_known_maniac || ctx.is_extreme_shove_bot)))
+        {
+            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
+                let s = probs[ai_i];
+                if s > 0.0 {
+                    probs[ai_i] = 0.0;
+                    let target = if ctx.pot_odds <= 0.34 && pf_tier <= 4 {
+                        CALL_CHECK
+                    } else {
+                        FOLD
+                    };
+                    if let Some(t_i) = first_action_idx(ctx.legal_actions, &[target, CALL_CHECK]) {
+                        probs[t_i] += s;
                     }
                 }
             }
+        }
+    }
 
-            let is_trash = if is_preflop {
-                let pf_tier = preflop_strength_tier(bucket);
-                let raw_max_call_bb = nash_call_shove_max_bb(
-                    bucket,
-                    active_opponents,
-                    is_known_maniac || is_extreme_shove_bot,
-                );
-                let max_call_bb = if is_multiway_cold_3bet_shove {
-                    (raw_max_call_bb * 2) / 3
-                } else {
-                    raw_max_call_bb
-                };
-                if pot_odds <= 0.22 || (pot_odds <= 0.26 && pf_tier <= 7) {
-                    false
-                } else if to_call >= bb * 40 {
-                    if is_known_maniac {
-                        pf_tier > 2
-                    } else if active_opponents >= 2 {
-                        bucket > 1
-                    } else {
-                        !(bucket <= 2 || bucket == 13)
+    fn apply_preflop_deep_3bet_caps(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        pf_tier: u8,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.eff_stack_bb > 40
+            && !ctx.is_allin_call
+            && ctx.to_call >= ctx.bb * 6
+            && pf_tier == 2
+            && ctx.bucket >= 4
+        {
+            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
+                let s = probs[ai_i];
+                if s > 0.0 {
+                    reasons.push("PF_DISCIPLINE_GUARD");
+                    probs[ai_i] = 0.0;
+                    match (
+                        action_idx(ctx.legal_actions, RAISE_THIRD_POT),
+                        action_idx(ctx.legal_actions, CALL_CHECK),
+                    ) {
+                        (Some(ri), Some(ci)) => {
+                            probs[ri] += s * 0.50;
+                            probs[ci] += s * 0.50;
+                        }
+                        (Some(ri), None) => probs[ri] += s,
+                        (None, Some(ci)) => probs[ci] += s,
+                        (None, None) => {}
                     }
-                } else if to_call >= eff_allin_threshold {
-                    if is_known_maniac {
-                        pf_tier > 2
-                    } else if active_opponents == 1 {
-                        pf_tier > 1 && bucket != 3 && bucket != 14
-                    } else {
-                        pf_tier > 1
-                    }
-                } else if to_call >= bb * 12 {
-                    to_call > max_call_bb * bb
-                } else if is_extreme_shove_bot && pot_odds <= 0.46 {
-                    pf_tier > 6
-                } else if is_known_maniac {
-                    pf_tier > 5
-                } else {
-                    pf_tier >= 5
                 }
-            } else if round == 4 {
-                /* Equity-first River shove defense: only hard-fold clear board-danger disasters
-                 * (4-flush / 4-straight) or weak hands (< 46) / equity-negative calls via range_eq below! */
-                let is_four_flush = board.map(is_four_flush_board).unwrap_or(false);
-                let is_four_straight = board.map(is_four_straight_board).unwrap_or(false);
-                let is_paired_river = board
-                    .map(|b| detect_board_texture(b).is_paired)
-                    .unwrap_or(false);
-                let min_river_shove_bucket = if is_known_maniac {
-                    40 /* Against a maniac, let blueprint + equity decide on all Top Pairs+ */
-                } else if hole.is_some() && board.is_some() {
-                    44 /* When exact hole+board are available, let range_equity handle medium/top pairs */
-                } else {
-                    52
-                };
-                bucket < min_river_shove_bucket
-                    || (to_call >= bb * 25
-                        && pot_odds >= 0.35
-                        && !is_known_maniac
-                        && (is_paired_river || is_three_flush)
-                        && bucket <= 66)
-                    || (is_four_flush && bucket <= 79)
-                    || (is_four_straight && bucket < 73)
+            }
+        }
+        if !ctx.is_allin_call
+            && ctx.eff_stack_bb >= 25
+            && ctx.bucket == 6
+            && ctx.to_call >= ctx.bb * 9
+            && ctx.my_chips > 0
+            && ctx.to_call * 10 >= ctx.my_chips * 3
+            && ctx.pot_odds >= 0.35
+            && !ctx.is_known_maniac
+        {
+            if let (Some(c_i), Some(f_i)) = (
+                action_idx(ctx.legal_actions, CALL_CHECK),
+                action_idx(ctx.legal_actions, FOLD),
+            ) {
+                if probs[c_i] > 0.0 {
+                    reasons.push("PF_DISCIPLINE_GUARD");
+                    probs[f_i] += probs[c_i];
+                    probs[c_i] = 0.0;
+                }
+            }
+        }
+    }
+
+    fn detect_shove_faced(&self, ctx: &GuardContext<'_>) -> (bool, bool) {
+        let is_substantial_bet = ctx.to_call >= ctx.bb * 4;
+        let is_stack_commit_draw_bet = (ctx.round == 2 || ctx.round == 3)
+            && ctx.my_chips > 0
+            && ctx.to_call >= ctx.bb * 4
+            && ctx.pot_odds >= 0.34
+            && (ctx.to_call * 5 >= ctx.my_chips * 2
+                || (ctx.my_chips - ctx.to_call) * 3 <= (ctx.pot + ctx.to_call) * 2);
+        let is_shove_faced = ctx.pot_odds > 0.18
+            && ((ctx.is_allin_call && ctx.to_call >= ctx.bb * 5 && ctx.pot_odds >= 0.28)
+                || (is_stack_commit_draw_bet && (15..=23).contains(&ctx.bucket))
+                || (is_substantial_bet
+                    && (ctx.to_call >= ctx.eff_allin_threshold
+                        || (!ctx.can_raise && ctx.to_call >= ctx.bb * 5 && ctx.pot_odds >= 0.28)
+                        || (ctx.round == 1 && ctx.to_call >= ctx.bb * 10)
+                        || (ctx.round == 4
+                            && ctx.to_call >= ctx.bb * 12
+                            && ctx.pot_odds >= 0.38)
+                        || (ctx.round == 3
+                            && ctx.to_call >= ctx.bb * 15
+                            && ctx.pot_odds >= 0.34)
+                        || (ctx.round == 2 && ctx.to_call >= ctx.bb * 20))));
+        (is_shove_faced, is_stack_commit_draw_bet)
+    }
+
+    fn apply_shove_defense_fold(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        is_stack_commit_draw_bet: bool,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.is_preflop {
+            self.apply_preflop_shove_rescue(probs, ctx);
+        }
+
+        let mut is_trash = if ctx.is_preflop {
+            self.is_preflop_shove_trash(ctx)
+        } else if ctx.round == 4 {
+            self.is_river_shove_trash(ctx)
+        } else {
+            self.is_turn_flop_shove_trash(ctx, is_stack_commit_draw_bet)
+        };
+
+        if !ctx.is_preflop && !is_trash && self.is_guard_enabled("RANGE_EQUITY_SHOVE_FOLD") {
+            is_trash = self.is_range_equity_shove_trash(ctx, reasons);
+        }
+
+        if is_trash && force_action(probs, ctx.legal_actions, FOLD) {
+            reasons.push("SHOVE_DEFENSE_FOLD");
+        }
+    }
+
+    fn apply_preflop_shove_rescue(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
+        let is_multiway = ctx.active_opponents >= 2 && ctx.pot > ctx.to_call + ctx.bb * 3;
+        let pf_tier = preflop_strength_tier(ctx.bucket);
+        let raw_max_nash_bb = nash_call_shove_max_bb(
+            ctx.bucket,
+            ctx.active_opponents,
+            ctx.is_known_maniac || ctx.is_extreme_shove_bot,
+        );
+        let max_nash_bb = if is_multiway {
+            (raw_max_nash_bb * 2) / 3
+        } else {
+            raw_max_nash_bb
+        };
+        let within_nash_rescue = ctx.to_call <= max_nash_bb * ctx.bb
+            && ctx.to_call < ctx.bb * 40
+            && (pf_tier <= 4 || ctx.is_known_maniac || ctx.is_extreme_shove_bot);
+
+        let should_rescue = if ctx.to_call >= ctx.bb * 40 {
+            ctx.bucket <= 1 || (ctx.is_known_maniac && pf_tier <= 2)
+        } else {
+            (pf_tier <= 1
+                || within_nash_rescue
+                || (ctx.is_extreme_shove_bot
+                    && pf_tier <= 6
+                    && ctx.pot_odds <= 0.46
+                    && ctx.to_call < ctx.bb * 15))
+                && ctx.to_call < ctx.eff_allin_threshold * 2
+        };
+        if should_rescue {
+            if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                let f_w = probs[f_i];
+                probs[f_i] = 0.0;
+                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
+                    probs[c_i] += f_w;
+                }
+            }
+        }
+    }
+
+    fn is_preflop_shove_trash(&self, ctx: &GuardContext<'_>) -> bool {
+        let is_multiway = ctx.active_opponents >= 2 && ctx.pot > ctx.to_call + ctx.bb * 3;
+        let pf_tier = preflop_strength_tier(ctx.bucket);
+        let raw_max_call_bb = nash_call_shove_max_bb(
+            ctx.bucket,
+            ctx.active_opponents,
+            ctx.is_known_maniac || ctx.is_extreme_shove_bot,
+        );
+        let max_call_bb = if is_multiway {
+            (raw_max_call_bb * 2) / 3
+        } else {
+            raw_max_call_bb
+        };
+        if ctx.pot_odds <= 0.22 || (ctx.pot_odds <= 0.26 && pf_tier <= 7) {
+            false
+        } else if ctx.to_call >= ctx.bb * 40 {
+            if ctx.is_known_maniac {
+                pf_tier > 2
+            } else if ctx.active_opponents >= 2 {
+                ctx.bucket > 1
             } else {
-                let is_wet = board.map(is_dangerous_board).unwrap_or(false);
-                let is_paired = board
-                    .map(|b| detect_board_texture(b).is_paired)
-                    .unwrap_or(false);
-                let is_strong_draw = (15..=27).contains(&bucket);
-                let draw_can_call_shove = is_strong_draw
-                    && if is_stack_commit_draw_bet {
-                        ((22..=27).contains(&bucket) && pot_odds <= 0.34)
-                            || ((25..=27).contains(&bucket) && pot_odds <= 0.38)
-                    } else if round == 3 {
-                        ((24..=27).contains(&bucket) && pot_odds <= 0.31 && !is_three_flush)
-                            || ((bucket == 26 || bucket == 27) && pot_odds <= 0.40)
-                            || ((bucket == 22 || bucket == 23) && pot_odds <= 0.22)
-                    } else {
-                        let simple_draw_odds_ok = pot_odds <= 0.30 || to_call < bb * 15;
-                        let premium_draw = bucket >= 22;
-                        (!is_three_flush
-                            && (premium_draw || simple_draw_odds_ok)
-                            && pot_odds <= 0.35)
-                            || ((bucket == 22 || bucket == 23 || bucket >= 25) && pot_odds <= 0.35)
-                    };
+                !(ctx.bucket <= 2 || ctx.bucket == 13)
+            }
+        } else if ctx.to_call >= ctx.eff_allin_threshold {
+            if ctx.is_known_maniac {
+                pf_tier > 2
+            } else if ctx.active_opponents == 1 {
+                pf_tier > 1 && ctx.bucket != 3 && ctx.bucket != 14
+            } else {
+                pf_tier > 1
+            }
+        } else if ctx.to_call >= ctx.bb * 12 {
+            ctx.to_call > max_call_bb * ctx.bb
+        } else if ctx.is_extreme_shove_bot && ctx.pot_odds <= 0.46 {
+            pf_tier > 6
+        } else if ctx.is_known_maniac {
+            pf_tier > 5
+        } else {
+            pf_tier >= 5
+        }
+    }
 
-                if draw_can_call_shove {
-                    false
-                } else if is_known_maniac && !is_three_flush {
-                    /* Against maniacs, only fold pure air/weak pairs (< 38) or unpriced draws */
-                    bucket < 38 || (is_stack_commit_draw_bet && (15..=21).contains(&bucket))
-                } else {
-                    (is_three_flush && bucket <= 50)
-                        || (round == 3 && is_paired && bucket < 52)
-                        || bucket < 40
-                        || (is_stack_commit_draw_bet && (15..=21).contains(&bucket))
-                        || (round == 3 && (40..=45).contains(&bucket) && is_wet && pot_odds >= 0.36)
-                }
+    fn is_river_shove_trash(&self, ctx: &GuardContext<'_>) -> bool {
+        let min_river_shove_bucket = if ctx.is_overbet_bluffer {
+            29
+        } else if ctx.is_known_maniac {
+            40
+        } else if ctx.hole.is_some() && ctx.board.is_some() {
+            44
+        } else {
+            52
+        };
+        ctx.bucket < min_river_shove_bucket
+            || (ctx.to_call >= ctx.bb * 25
+                && ctx.pot_odds >= 0.35
+                && !ctx.is_known_maniac
+                && !ctx.is_overbet_bluffer
+                && (ctx.is_paired_board || ctx.is_three_flush)
+                && ctx.bucket <= 66)
+            || (ctx.is_four_flush_board && ctx.bucket <= 79)
+            || (ctx.is_four_straight_board && ctx.bucket < 73)
+    }
+
+    fn is_turn_flop_shove_trash(
+        &self,
+        ctx: &GuardContext<'_>,
+        is_stack_commit_draw_bet: bool,
+    ) -> bool {
+        let is_strong_draw = (15..=27).contains(&ctx.bucket);
+        let draw_can_call_shove = is_strong_draw
+            && if is_stack_commit_draw_bet {
+                ((22..=27).contains(&ctx.bucket) && ctx.pot_odds <= 0.34)
+                    || ((25..=27).contains(&ctx.bucket) && ctx.pot_odds <= 0.38)
+            } else if ctx.round == 3 {
+                ((24..=27).contains(&ctx.bucket) && ctx.pot_odds <= 0.31 && !ctx.is_three_flush)
+                    || ((ctx.bucket == 26 || ctx.bucket == 27) && ctx.pot_odds <= 0.40)
+                    || ((ctx.bucket == 22 || ctx.bucket == 23) && ctx.pot_odds <= 0.22)
+            } else {
+                let simple_draw_odds_ok = ctx.pot_odds <= 0.30 || ctx.to_call < ctx.bb * 15;
+                let premium_draw = ctx.bucket >= 22;
+                (!ctx.is_three_flush
+                    && (premium_draw || simple_draw_odds_ok)
+                    && ctx.pot_odds <= 0.35)
+                    || ((ctx.bucket == 22 || ctx.bucket == 23 || ctx.bucket >= 25)
+                        && ctx.pot_odds <= 0.35)
             };
 
-            let mut is_trash = is_trash;
-            if !is_preflop && !is_trash && self.is_guard_enabled("RANGE_EQUITY_SHOVE_FOLD") {
-                if let (Some(h), Some(b)) = (hole, board) {
-                    if b.len() >= 3 {
-                        let obs_vpip = if self.total_hands >= 6 {
-                            self.smoothed_vpip()
-                        } else {
-                            0.50
-                        };
-                        let heavy_range =
-                            pot_odds >= 0.36 && to_call >= bb * 12 && !is_known_maniac;
-                        let range_eq =
-                            calculate_range_equity(h, b, obs_vpip, heavy_range, active_opponents);
-                        let eq_margin = if round == 4 { 0.06 } else { 0.08 };
-                        if range_eq + eq_margin < pot_odds && bucket < 65 {
-                            reasons.push("RANGE_EQUITY_SHOVE_FOLD");
-                            is_trash = true;
-                        }
-                    }
-                }
-            }
+        if draw_can_call_shove {
+            false
+        } else if (ctx.is_known_maniac || ctx.is_overbet_bluffer) && !ctx.is_three_flush {
+            let min_b = if ctx.is_overbet_bluffer { 29 } else { 38 };
+            ctx.bucket < min_b || (is_stack_commit_draw_bet && (15..=21).contains(&ctx.bucket))
+        } else {
+            (ctx.is_three_flush && ctx.bucket <= 50)
+                || (ctx.round == 3 && ctx.is_paired_board && ctx.bucket < 52)
+                || ctx.bucket < 40
+                || (is_stack_commit_draw_bet && (15..=21).contains(&ctx.bucket))
+                || (ctx.round == 3
+                    && (40..=45).contains(&ctx.bucket)
+                    && ctx.is_dangerous_board
+                    && ctx.pot_odds >= 0.36)
+        }
+    }
 
-            if is_trash && legal_actions.contains(&FOLD) {
-                reasons.push("SHOVE_DEFENSE_FOLD");
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a == FOLD {
-                        probs[i] = 1.0;
-                    } else {
-                        probs[i] = 0.0;
-                    }
-                }
-            }
+    fn is_range_equity_shove_trash(
+        &self,
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) -> bool {
+        let (Some(h), Some(b)) = (ctx.hole, ctx.board) else {
+            return false;
+        };
+        if b.len() < 3 {
+            return false;
+        }
+        let obs_vpip = if self.total_hands >= 6 {
+            self.smoothed_vpip()
+        } else {
+            0.50
+        };
+        let heavy_range = ctx.pot_odds >= 0.36
+            && ctx.to_call >= ctx.bb * 12
+            && !ctx.is_known_maniac
+            && !ctx.is_overbet_bluffer;
+        let range_eq = calculate_range_equity(h, b, obs_vpip, heavy_range, ctx.active_opponents);
+        let eq_margin = if ctx.round == 4 { 0.06 } else { 0.08 };
+        if range_eq + eq_margin < ctx.pot_odds && ctx.bucket < 65 {
+            reasons.push("RANGE_EQUITY_SHOVE_FOLD");
+            true
+        } else {
+            false
         }
     }
 }

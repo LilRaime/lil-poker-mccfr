@@ -235,12 +235,20 @@ impl LiveRoundTracker {
                         }
                     } else {
                         let bet_amt = snapshot.opp_bet.max(snapshot.to_call);
-                        let bet_act = pseudo_harmonic_action_mapping(
-                            bet_amt,
-                            snapshot.pot,
-                            eff_allin_thresh,
-                            &mut rng,
-                        );
+                        let pre_bet_pot = (snapshot.pot - bet_amt).max(bb);
+                        let bet_act = if round_idx >= 1
+                            && bet_amt >= bb * 10
+                            && (bet_amt as i64) * 10 >= (pre_bet_pot as i64) * 15
+                        {
+                            ALL_IN
+                        } else {
+                            pseudo_harmonic_action_mapping(
+                                bet_amt,
+                                pre_bet_pot,
+                                eff_allin_thresh,
+                                &mut rng,
+                            )
+                        };
                         hist.push(bet_act);
                         if let Some(ref mut tr) = tracker {
                             tr.record_action_street_detailed(
@@ -248,7 +256,7 @@ impl LiveRoundTracker {
                                 (round_idx + 1) as u8,
                                 false,
                                 bet_amt,
-                                snapshot.pot,
+                                pre_bet_pot,
                             );
                         }
                     }
@@ -258,8 +266,15 @@ impl LiveRoundTracker {
             /* Facing a bet or re-raise after bot already acted this round */
             let bot_bet_this_round = hist.iter().any(|&a| a >= RAISE_MIN);
             let opp_diff = (snapshot.opp_bet - self.last_opp_bet).max(snapshot.to_call);
-            let raise_act =
-                pseudo_harmonic_action_mapping(opp_diff, snapshot.pot, eff_allin_thresh, &mut rng);
+            let pre_bet_pot = (snapshot.pot - opp_diff).max(bb);
+            let raise_act = if round_idx >= 1
+                && opp_diff >= bb * 10
+                && (opp_diff as i64) * 10 >= (pre_bet_pot as i64) * 15
+            {
+                ALL_IN
+            } else {
+                pseudo_harmonic_action_mapping(opp_diff, pre_bet_pot, eff_allin_thresh, &mut rng)
+            };
             hist.push(raise_act);
             let facing_cbet = round_idx == 1 && bot_bet_this_round;
             if let Some(ref mut tr) = tracker {
@@ -268,7 +283,7 @@ impl LiveRoundTracker {
                     (round_idx + 1) as u8,
                     facing_cbet,
                     opp_diff,
-                    snapshot.pot,
+                    pre_bet_pot,
                 );
                 if round_idx == 0 && bot_bet_this_round {
                     tr.record_preflop_positional(snapshot.opp_is_sb, true, true);

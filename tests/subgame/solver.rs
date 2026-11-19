@@ -272,3 +272,35 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
         probs
     );
 }
+
+#[test]
+fn test_subgame_filters_extreme_overbet_allin() {
+    let hole_flush = [
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Diamonds),
+    ];
+    let board_flush = [
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Diamonds),
+    ];
+    let history = [
+        vec![RAISE_MIN, CALL_CHECK],
+        vec![CALL_CHECK, CALL_CHECK],
+        vec![CALL_CHECK],
+        vec![],
+    ];
+    let solver = SubgameSolver::new(200).with_stack_size(10000);
+    let probs = solver.solve_with_state(&hole_flush, &board_flush, 3, &history, 0, [200, 200], 0);
+    assert!(
+        probs[ALL_IN as usize] < 1e-6,
+        "SubgameSolver must filter extreme >3x pot ALL_IN shoves from tree/root: {:?}",
+        probs
+    );
+    assert!(
+        probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.30,
+        "Turn flush should value-bet with standard sizing instead of checking/shoving: {:?}",
+        probs
+    );
+}

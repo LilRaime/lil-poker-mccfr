@@ -481,37 +481,7 @@ impl LiveSession {
             return Ok(());
         }
 
-        let msg_hand_id = state
-            .get("hand_number")
-            .or_else(|| state.get("hand_id"))
-            .or_else(|| state.get("hand_count"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        if msg_hand_id > 0 {
-            self.last_seen_hand_id = msg_hand_id;
-        } else if !phase.is_empty() {
-            /* Track active hand even if server sends hand_id == 0 */
-            self.last_seen_hand_id = self.last_seen_hand_id.max(1);
-        }
-
-        /* Detect hand transitions across all table updates (including non-Hero turns at 6-max) */
-        if self.hand_active
-            && msg_hand_id > 0
-            && msg_hand_id != self.table_tracker.hand_id
-            && self.table_tracker.hand_id > 0
-        {
-            if self.table_tracker.last_player_count <= 2 && !self.hero_folded_this_hand {
-                self.record_hu_opp_fold_if_unshown(false);
-            }
-            self.finalize_and_save_hand();
-            self.round_tracker.reset_hand(msg_hand_id);
-            self.table_tracker.reset_hand(msg_hand_id);
-            self.hand_active = false;
-            self.hero_folded_this_hand = false;
-        } else if msg_hand_id > 0 && self.table_tracker.hand_id == 0 {
-            self.table_tracker.hand_id = msg_hand_id;
-        }
-
+        let msg_hand_id = self.update_hand_id_and_transition(state, phase);
         /* Observe every table broadcast so all 6-max opponents are tracked individually */
         let table_players = self.table_tracker.observe_state(
             state,
@@ -530,15 +500,105 @@ impl LiveSession {
         let Some(snapshot) = parse_live_state_with_hint(state, &self.player_id, bb_hint) else {
             return Ok(());
         };
-
         self.ensure_current_opponent_cached(&snapshot.opp_name);
-
-        /* Prevent duplicate action execution on identical state updates */
         if snapshot.action_seq_key == self.last_action_key {
             return Ok(());
         }
 
-        /* Detect hand or street transitions for round history (works even when server hand_id == 0) */
+        let tracker_clone = self.sync_snapshot_hand_and_tracker(state, &snapshot, table_players);
+        let (engine_contributions, raises_this_round) = self
+            .round_tracker
+            .compute_scaled_subgame_contributions(&snapshot);
+        let eff_chips = if snapshot.my_chips > 0 {
+            snapshot.my_chips
+        } else {
+            self.round_tracker.estimated_my_chips
+        };
+
+        let (raw_action, raw_amount, trace) = self
+            .compute_live_decision(
+                &snapshot,
+                tracker_clone,
+                engine_contributions,
+                raises_this_round,
+                eff_chips,
+            )
+            .await?;
+
+        let (chosen_action, amount) =
+            apply_live_commit_guards(raw_action, raw_amount, &snapshot, eff_chips);
+        let (hole_str, board_str) = format_hand_cards(&snapshot.hole, &snapshot.board);
+
+        println!(
+            "-> Action: {:<5} (amt: {:>2}) | Hole: {:<7} | Board: {:<15} | Phase: {}",
+            chosen_action.to_uppercase(),
+            amount,
+            hole_str,
+            board_str,
+            snapshot.phase
+        );
+        println!(
+            "   [trace] round={} bucket={} pot_odds={:.1}% raw_act={} -> final_act={} reasons={:?}",
+            trace.round,
+            trace.bucket,
+            trace.pot_odds_bps as f64 / 10.0,
+            trace.raw_top_action,
+            trace.final_action,
+            trace.guard_reasons
+        );
+
+        self.last_action_key = snapshot.action_seq_key.clone();
+        self.submit_action_with_fallback(
+            &snapshot,
+            &chosen_action,
+            amount,
+            engine_contributions,
+            raises_this_round,
+            eff_chips,
+        )
+        .await;
+        Ok(())
+    }
+
+    fn update_hand_id_and_transition(&mut self, state: &Value, phase: &str) -> u64 {
+        let msg_hand_id = state
+            .get("hand_number")
+            .or_else(|| state.get("hand_id"))
+            .or_else(|| state.get("hand_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if msg_hand_id > 0 {
+            self.last_seen_hand_id = msg_hand_id;
+        } else if !phase.is_empty() {
+            /* Track active hand even if server sends hand_id == 0 */
+            self.last_seen_hand_id = self.last_seen_hand_id.max(1);
+        }
+
+        if self.hand_active
+            && msg_hand_id > 0
+            && msg_hand_id != self.table_tracker.hand_id
+            && self.table_tracker.hand_id > 0
+        {
+            if self.table_tracker.last_player_count <= 2 && !self.hero_folded_this_hand {
+                self.record_hu_opp_fold_if_unshown(false);
+            }
+            self.finalize_and_save_hand();
+            self.round_tracker.reset_hand(msg_hand_id);
+            self.table_tracker.reset_hand(msg_hand_id);
+            self.hand_active = false;
+            self.hero_folded_this_hand = false;
+        } else if msg_hand_id > 0 && self.table_tracker.hand_id == 0 {
+            self.table_tracker.hand_id = msg_hand_id;
+        }
+        msg_hand_id
+    }
+
+    fn sync_snapshot_hand_and_tracker(
+        &mut self,
+        state: &Value,
+        snapshot: &LiveSnapshot,
+        table_players: usize,
+    ) -> OpponentTracker {
         let is_new_hand = snapshot.hand_id != self.round_tracker.current_hand_id
             || (self.last_hole.is_some() && self.last_hole != Some(snapshot.hole))
             || snapshot.board.len() < self.last_board_len;
@@ -574,28 +634,29 @@ impl LiveSession {
              * keep round_tracker synced for live_history without cross-contaminating trackers. */
             self.round_tracker
                 .update_street_with_tracker(snapshot.board.len(), None);
-            self.round_tracker.infer_opponent_history_only(&snapshot);
+            self.round_tracker.infer_opponent_history_only(snapshot);
         } else {
             self.round_tracker
                 .update_street_with_tracker(snapshot.board.len(), Some(active_tracker));
             self.round_tracker
-                .infer_and_record_opponent_action(&snapshot, active_tracker);
+                .infer_and_record_opponent_action(snapshot, active_tracker);
         }
+        active_tracker.clone()
+    }
 
-        let (engine_contributions, raises_this_round) = self
-            .round_tracker
-            .compute_scaled_subgame_contributions(&snapshot);
-
-        let eff_chips = if snapshot.my_chips > 0 {
-            snapshot.my_chips
-        } else {
-            self.round_tracker.estimated_my_chips
-        };
+    async fn compute_live_decision(
+        &self,
+        snapshot: &LiveSnapshot,
+        tracker_clone: OpponentTracker,
+        engine_contributions: [i32; 2],
+        raises_this_round: u8,
+        eff_chips: i32,
+    ) -> Result<(String, i32, crate::cfr::opponent_model::DecisionTrace), tokio::task::JoinError>
+    {
         let strat_clone = Arc::clone(&self.strategy_arc);
         let index_clone = Arc::clone(&self.strategy_index);
         let solver_arc = Arc::clone(&self.subgame_solver);
         let subgame = self.subgame_search;
-        let tracker_clone = active_tracker.clone();
         let board_cards_clone = snapshot.board.clone();
         let history_clone = self.round_tracker.live_history;
         let hole = snapshot.hole;
@@ -607,7 +668,7 @@ impl LiveSession {
         let big_blind = snapshot.big_blind;
         let current_bet_now = snapshot.current_bet;
 
-        let (raw_action, raw_amount, trace) = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
             decide_action_traced_with_bet(
                 &hole,
@@ -631,41 +692,7 @@ impl LiveSession {
                 current_bet_now,
             )
         })
-        .await?;
-
-        let (chosen_action, amount) =
-            apply_live_commit_guards(raw_action, raw_amount, &snapshot, eff_chips);
-        let (hole_str, board_str) = format_hand_cards(&hole, &snapshot.board);
-
-        println!(
-            "-> Action: {:<5} (amt: {:>2}) | Hole: {:<7} | Board: {:<15} | Phase: {}",
-            chosen_action.to_uppercase(),
-            amount,
-            hole_str,
-            board_str,
-            snapshot.phase
-        );
-        println!(
-            "   [trace] round={} bucket={} pot_odds={:.1}% raw_act={} -> final_act={} reasons={:?}",
-            trace.round,
-            trace.bucket,
-            trace.pot_odds_bps as f64 / 10.0,
-            trace.raw_top_action,
-            trace.final_action,
-            trace.guard_reasons
-        );
-
-        self.last_action_key = snapshot.action_seq_key.clone();
-        self.submit_action_with_fallback(
-            &snapshot,
-            &chosen_action,
-            amount,
-            engine_contributions,
-            raises_this_round,
-            eff_chips,
-        )
-        .await;
-        Ok(())
+        .await
     }
 
     async fn submit_action_with_fallback(
@@ -702,16 +729,7 @@ impl LiveSession {
         };
 
         if r.status().is_success() {
-            /* Record bot's own action into live history only after server accepts it */
-            self.round_tracker.record_bot_action_with_bet(
-                chosen_action,
-                amount,
-                snapshot.pot,
-                snapshot.my_bet,
-            );
-            if chosen_action == "fold" && self.hand_active {
-                self.hero_folded_this_hand = true;
-            }
+            self.record_accepted_bot_action(chosen_action, amount, snapshot);
             return;
         }
 
@@ -723,82 +741,14 @@ impl LiveSession {
         );
         self.last_action_key.clear();
 
-        /* Automatic fallback retry if server rejected 'check' in favor of 'call',
-         * if server rejected 'all_in'/'allin' (fall back to 'call' or total 'raise'),
-         * or if server rejected 'raise'/'bet' (re-evaluate non-raise call vs fold instead of blind call!) */
-        let has_legal = |tok: &str| {
-            snapshot
-                .legal_actions
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(tok))
-        };
-        let fallback_act: Option<(String, i32)> = if chosen_action == "check"
-            && (err_text.contains("cannot check") || err_text.contains("call"))
-        {
-            Some(("call".to_string(), 0))
-        } else if chosen_action == "all_in" || chosen_action == "allin" {
-            if snapshot.to_call > 0 && snapshot.to_call >= my_chips && has_legal("call") {
-                Some(("call".to_string(), 0))
-            } else if my_chips > 0 && has_legal("raise") {
-                Some(("raise".to_string(), my_chips + snapshot.my_bet))
-            } else if my_chips > 0 && has_legal("bet") {
-                Some(("bet".to_string(), my_chips + snapshot.my_bet))
-            } else if snapshot.to_call > 0 && has_legal("call") {
-                Some(("call".to_string(), 0))
-            } else {
-                None
-            }
-        } else if chosen_action == "raise" || chosen_action == "bet" {
-            if snapshot.to_call == 0 {
-                Some(("check".to_string(), 0))
-            } else {
-                let non_raise_legal: Vec<String> = snapshot
-                    .legal_actions
-                    .iter()
-                    .filter(|a| {
-                        a.eq_ignore_ascii_case("fold")
-                            || a.eq_ignore_ascii_case("call")
-                            || a.eq_ignore_ascii_case("check")
-                    })
-                    .cloned()
-                    .collect();
-                if non_raise_legal.is_empty() {
-                    None
-                } else {
-                    let fb_tracker = self
-                        .trackers
-                        .get(&self.current_opp_name)
-                        .cloned()
-                        .unwrap_or_default();
-                    let (fb_act, fb_amt, _) = decide_action_traced_with_bet(
-                        &snapshot.hole,
-                        &snapshot.board,
-                        &non_raise_legal,
-                        snapshot.to_call,
-                        snapshot.pot,
-                        &self.strategy_arc,
-                        false,
-                        &fb_tracker,
-                        &self.round_tracker.live_history,
-                        snapshot.my_player,
-                        engine_contributions,
-                        raises_this_round,
-                        Some(&self.strategy_index),
-                        None,
-                        None,
-                        snapshot.active_opponents,
-                        snapshot.big_blind,
-                        my_chips,
-                        snapshot.current_bet,
-                    );
-                    Some((fb_act, fb_amt))
-                }
-            }
-        } else {
-            None
-        };
-
-        if let Some((fb, fb_amt)) = fallback_act {
+        if let Some((fb, fb_amt)) = self.choose_rejected_action_fallback(
+            snapshot,
+            chosen_action,
+            &err_text,
+            engine_contributions,
+            raises_this_round,
+            my_chips,
+        ) {
             println!(
                 "-> Auto-fallback: Retrying action {} (amt: {})",
                 fb.to_uppercase(),
@@ -816,17 +766,102 @@ impl LiveSession {
                 .await
             {
                 if r_retry.status().is_success() {
-                    self.round_tracker.record_bot_action_with_bet(
-                        &fb,
-                        fb_amt,
-                        snapshot.pot,
-                        snapshot.my_bet,
-                    );
-                    if fb == "fold" && self.hand_active {
-                        self.hero_folded_this_hand = true;
-                    }
+                    self.record_accepted_bot_action(&fb, fb_amt, snapshot);
                 }
             }
+        }
+    }
+
+    fn record_accepted_bot_action(&mut self, action: &str, amount: i32, snapshot: &LiveSnapshot) {
+        /* Record bot's own action into live history only after server accepts it */
+        self.round_tracker.record_bot_action_with_bet(
+            action,
+            amount,
+            snapshot.pot,
+            snapshot.my_bet,
+        );
+        if action == "fold" && self.hand_active {
+            self.hero_folded_this_hand = true;
+        }
+    }
+
+    fn choose_rejected_action_fallback(
+        &self,
+        snapshot: &LiveSnapshot,
+        chosen_action: &str,
+        err_text: &str,
+        engine_contributions: [i32; 2],
+        raises_this_round: u8,
+        my_chips: i32,
+    ) -> Option<(String, i32)> {
+        let has_legal = |tok: &str| {
+            snapshot
+                .legal_actions
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(tok))
+        };
+        if chosen_action == "check"
+            && (err_text.contains("cannot check") || err_text.contains("call"))
+        {
+            Some(("call".to_string(), 0))
+        } else if chosen_action == "all_in" || chosen_action == "allin" {
+            if snapshot.to_call > 0 && snapshot.to_call >= my_chips && has_legal("call") {
+                Some(("call".to_string(), 0))
+            } else if my_chips > 0 && has_legal("raise") {
+                Some(("raise".to_string(), my_chips + snapshot.my_bet))
+            } else if my_chips > 0 && has_legal("bet") {
+                Some(("bet".to_string(), my_chips + snapshot.my_bet))
+            } else if snapshot.to_call > 0 && has_legal("call") {
+                Some(("call".to_string(), 0))
+            } else {
+                None
+            }
+        } else if chosen_action == "raise" || chosen_action == "bet" {
+            if snapshot.to_call == 0 {
+                return Some(("check".to_string(), 0));
+            }
+            let non_raise_legal: Vec<String> = snapshot
+                .legal_actions
+                .iter()
+                .filter(|a| {
+                    a.eq_ignore_ascii_case("fold")
+                        || a.eq_ignore_ascii_case("call")
+                        || a.eq_ignore_ascii_case("check")
+                })
+                .cloned()
+                .collect();
+            if non_raise_legal.is_empty() {
+                return None;
+            }
+            let fb_tracker = self
+                .trackers
+                .get(&self.current_opp_name)
+                .cloned()
+                .unwrap_or_default();
+            let (fb_act, fb_amt, _) = decide_action_traced_with_bet(
+                &snapshot.hole,
+                &snapshot.board,
+                &non_raise_legal,
+                snapshot.to_call,
+                snapshot.pot,
+                &self.strategy_arc,
+                false,
+                &fb_tracker,
+                &self.round_tracker.live_history,
+                snapshot.my_player,
+                engine_contributions,
+                raises_this_round,
+                Some(&self.strategy_index),
+                None,
+                None,
+                snapshot.active_opponents,
+                snapshot.big_blind,
+                my_chips,
+                snapshot.current_bet,
+            );
+            Some((fb_act, fb_amt))
+        } else {
+            None
         }
     }
 }

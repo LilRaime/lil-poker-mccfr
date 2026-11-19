@@ -147,207 +147,261 @@ pub fn map_action_index_full(
     my_chips: i32,
     current_bet: i32,
 ) -> Option<(String, i32)> {
-    let has = |a: &str| legal.iter().any(|l| l.eq_ignore_ascii_case(a));
     let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
-    let raise_min_amt = bb;
-    let raise_third_pot_floor = bb;
-    let raise_half_pot_floor_dry = bb;
-    let raise_half_pot_floor_wet = (bb * 3 / 2).max(bb);
-    let raise_half_pot_floor_turn = (bb * 2).max(bb);
-    let raise_half_pot_floor_river = (bb * 5 / 2).max(bb);
-    let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
+    let ctx = ActionMapCtx {
+        legal,
+        to_call,
+        pot,
+        is_wet,
+        round,
+        bb,
+        my_chips,
+        current_bet,
+    };
 
     match idx as u8 {
-        FOLD => {
-            if to_call == 0 {
-                if has("check") {
-                    Some(("check".to_string(), 0))
-                } else if has("fold") {
-                    Some(("fold".to_string(), 0))
-                } else {
-                    None
-                }
-            } else if has("fold") {
-                Some(("fold".to_string(), 0))
-            } else if has("check") {
-                Some(("check".to_string(), 0))
-            } else {
-                None
-            }
-        }
-        CALL_CHECK => {
-            if to_call > 0 {
-                if has("call") {
-                    Some(("call".to_string(), 0))
-                } else if has("all_in") {
-                    /* Action Bridge: when calling puts bot all-in and server only lists "all_in" */
-                    Some(("all_in".to_string(), 0))
-                } else if has("allin") {
-                    Some(("allin".to_string(), 0))
-                } else if has("check") {
-                    Some(("check".to_string(), 0))
-                } else {
-                    None
-                }
-            } else if has("check") {
-                Some(("check".to_string(), 0))
-            } else if has("call") {
-                Some(("call".to_string(), 0))
-            } else {
-                None
-            }
-        }
-        RAISE_MIN..=RAISE_HALF_POT => {
-            let is_unopened_or_limped_pf = round == 1
-                && if current_bet > 0 {
-                    current_bet <= bb
-                } else {
-                    to_call <= bb && pot <= bb * 2 + bb / 2
-                };
-            let opp_bet_pf = if current_bet > 0 {
-                current_bet.max(to_call)
-            } else {
-                ((pot + to_call) / 2).max(to_call + bb / 2)
-            };
-            let min_raise = if round == 1 {
-                if is_unopened_or_limped_pf {
-                    preflop_open_min_total
-                } else if to_call > 0 {
-                    (opp_bet_pf + to_call.max(bb)).max(preflop_open_min_total)
-                } else {
-                    (bb * 2).max(preflop_open_min_total)
-                }
-            } else if to_call > 0 {
-                (opp_bet_pf + to_call.max(bb)).max(to_call * 2)
-            } else {
-                bb
-            };
-            let base_bet = if round == 1 && to_call == 0 {
-                bb
-            } else if current_bet > 0 {
-                current_bet.max(to_call)
-            } else {
-                to_call
-            };
-            let my_posted_bet = current_bet.saturating_sub(to_call);
-            let amt = match idx as u8 {
-                RAISE_THIRD_POT => {
-                    if is_unopened_or_limped_pf {
-                        (bb * 3).max(preflop_open_min_total)
-                    } else if round == 1 && to_call > 0 {
-                        /* Preflop 3-bet / 4-bet: ~2.75x opponent's bet */
-                        (opp_bet_pf * 11 / 4).max(min_raise)
-                    } else {
-                        let s = (pot / 3).max(raise_third_pot_floor);
-                        if base_bet > 0 {
-                            (base_bet + s).max(min_raise)
-                        } else {
-                            s.max(min_raise)
-                        }
-                    }
-                }
-                RAISE_HALF_POT => {
-                    if is_unopened_or_limped_pf {
-                        (bb * 7 / 2).max(preflop_open_min_total)
-                    } else if round == 1 && to_call > 0 {
-                        /* Preflop polarized 3-bet / 4-bet: 3.0x opponent's bet (aligned with MCCFR 50% pot) */
-                        (opp_bet_pf * 3)
-                            .min(opp_bet_pf + pot)
-                            .max(opp_bet_pf * 11 / 4)
-                            .max(min_raise)
-                    } else {
-                        let s = if round == 4 {
-                            /* River: Polarized 125% pot overbet */
-                            (pot * 5 / 4).max(raise_half_pot_floor_river)
-                        } else if round == 3 {
-                            /* Turn: 75% pot bet */
-                            (pot * 3 / 4).max(raise_half_pot_floor_turn)
-                        } else if is_wet {
-                            (pot * 3 / 4).max(raise_half_pot_floor_wet)
-                        } else {
-                            (pot / 2).max(raise_half_pot_floor_dry)
-                        };
-                        if base_bet > 0 {
-                            (base_bet + s).max(min_raise)
-                        } else {
-                            s.max(min_raise)
-                        }
-                    }
-                }
-                _ => {
-                    if is_unopened_or_limped_pf {
-                        /* Preflop initial open-raise (HU SB or Multi-way UTG/MP/CO/BTN) or BB ISO vs limp: 2.5x BB */
-                        preflop_open_min_total
-                    } else if round == 1 && to_call > 0 {
-                        /* Preflop small/value 3-bet: 2.5x opponent's bet (or min_raise) */
-                        (opp_bet_pf * 5 / 2).max(min_raise)
-                    } else if round == 1 {
-                        (base_bet + raise_min_amt).max(min_raise)
-                    } else if to_call > 0 {
-                        let s = ((pot + to_call) / 4).max(raise_min_amt);
-                        (to_call + s).max(min_raise)
-                    } else {
-                        /* Postflop small probe bet: 25% pot floored at bb */
-                        (pot / 4).max(min_raise)
-                    }
-                }
-            };
-            if round == 1
-                && my_chips > 0
-                && to_call > 0
-                && (amt * 20 >= my_chips * 11 || my_chips - amt <= bb * 3)
-            {
-                /* If a preflop 3-bet/4-bet commits >= 55% of remaining stack or leaves <= 3 BB behind, jam all-in! */
-                if has("all_in") {
-                    return Some(("all_in".to_string(), 0));
-                } else if has("allin") {
-                    return Some(("allin".to_string(), 0));
-                } else if has("raise") {
-                    return Some(("raise".to_string(), my_chips + my_posted_bet));
-                }
-            }
-            if has("raise") {
-                Some(("raise".to_string(), amt))
-            } else if has("bet") {
-                Some(("bet".to_string(), amt))
-            } else if has("all_in") {
-                Some(("all_in".to_string(), 0))
-            } else if has("allin") {
-                Some(("allin".to_string(), 0))
-            } else if to_call > 0 && has("call") {
-                Some(("call".to_string(), 0))
-            } else if has("check") {
-                Some(("check".to_string(), 0))
-            } else {
-                None
-            }
-        }
-        ALL_IN => {
-            let my_posted_bet = current_bet.saturating_sub(to_call);
-            let allin_amt = if my_chips > 0 {
-                my_chips + my_posted_bet
-            } else {
-                (pot * 2).max(raise_min_amt * 2)
-            };
-            if to_call > 0 && my_chips > 0 && to_call >= my_chips && has("call") {
-                Some(("call".to_string(), 0))
-            } else if has("all_in") {
-                Some(("all_in".to_string(), 0))
-            } else if has("allin") {
-                Some(("allin".to_string(), 0))
-            } else if has("raise") {
-                Some(("raise".to_string(), allin_amt))
-            } else if has("bet") {
-                Some(("bet".to_string(), allin_amt))
-            } else if to_call > 0 && has("call") {
-                Some(("call".to_string(), 0))
-            } else if has("check") {
-                Some(("check".to_string(), 0))
-            } else {
-                None
-            }
-        }
+        FOLD => map_fold_action(&ctx),
+        CALL_CHECK => map_call_check_action(&ctx),
+        RAISE_MIN..=RAISE_HALF_POT => map_raise_action(idx as u8, &ctx),
+        ALL_IN => map_allin_action(&ctx),
         _ => None,
+    }
+}
+
+struct ActionMapCtx<'a> {
+    legal: &'a [String],
+    to_call: i32,
+    pot: i32,
+    is_wet: bool,
+    round: u8,
+    bb: i32,
+    my_chips: i32,
+    current_bet: i32,
+}
+
+impl ActionMapCtx<'_> {
+    fn has(&self, a: &str) -> bool {
+        self.legal.iter().any(|l| l.eq_ignore_ascii_case(a))
+    }
+}
+
+fn map_fold_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+    if c.to_call == 0 {
+        if c.has("check") {
+            Some(("check".to_string(), 0))
+        } else if c.has("fold") {
+            Some(("fold".to_string(), 0))
+        } else {
+            None
+        }
+    } else if c.has("fold") {
+        Some(("fold".to_string(), 0))
+    } else if c.has("check") {
+        Some(("check".to_string(), 0))
+    } else {
+        None
+    }
+}
+
+fn map_call_check_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+    if c.to_call > 0 {
+        if c.has("call") {
+            Some(("call".to_string(), 0))
+        } else if c.has("all_in") {
+            /* Action Bridge: when calling puts bot all-in and server only lists "all_in" */
+            Some(("all_in".to_string(), 0))
+        } else if c.has("allin") {
+            Some(("allin".to_string(), 0))
+        } else if c.has("check") {
+            Some(("check".to_string(), 0))
+        } else {
+            None
+        }
+    } else if c.has("check") {
+        Some(("check".to_string(), 0))
+    } else if c.has("call") {
+        Some(("call".to_string(), 0))
+    } else {
+        None
+    }
+}
+
+fn compute_half_pot_raise(
+    c: &ActionMapCtx<'_>,
+    is_unopened_or_limped_pf: bool,
+    is_preflop_4bet_plus: bool,
+    opp_bet_pf: i32,
+    min_raise: i32,
+    base_bet: i32,
+) -> i32 {
+    let bb = c.bb;
+    let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
+    if is_unopened_or_limped_pf {
+        (bb * 7 / 2).max(preflop_open_min_total)
+    } else if is_preflop_4bet_plus {
+        (opp_bet_pf * 23 / 10).max(min_raise)
+    } else if c.round == 1 && c.to_call > 0 {
+        (opp_bet_pf * 3)
+            .min(opp_bet_pf + c.pot)
+            .max(opp_bet_pf * 11 / 4)
+            .max(min_raise)
+    } else {
+        let s = if c.round == 4 {
+            (c.pot * 5 / 4).max((bb * 5 / 2).max(bb))
+        } else if c.round == 3 {
+            (c.pot * 3 / 4).max((bb * 2).max(bb))
+        } else if c.is_wet {
+            (c.pot * 3 / 4).max((bb * 3 / 2).max(bb))
+        } else {
+            (c.pot / 2).max(bb)
+        };
+        if base_bet > 0 {
+            (base_bet + s).max(min_raise)
+        } else {
+            s.max(min_raise)
+        }
+    }
+}
+
+fn compute_raise_amount(idx: u8, c: &ActionMapCtx<'_>) -> (i32, i32) {
+    let bb = c.bb;
+    let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
+
+    let is_unopened_or_limped_pf = c.round == 1
+        && if c.current_bet > 0 {
+            c.current_bet <= bb
+        } else {
+            c.to_call <= bb && c.pot <= bb * 2 + bb / 2
+        };
+    let opp_bet_pf = if c.current_bet > 0 {
+        c.current_bet.max(c.to_call)
+    } else {
+        ((c.pot + c.to_call) / 2).max(c.to_call + bb / 2)
+    };
+    let min_raise = if c.round == 1 {
+        if is_unopened_or_limped_pf {
+            preflop_open_min_total
+        } else if c.to_call > 0 {
+            (opp_bet_pf + c.to_call.max(bb)).max(preflop_open_min_total)
+        } else {
+            (bb * 2).max(preflop_open_min_total)
+        }
+    } else if c.to_call > 0 {
+        (opp_bet_pf + c.to_call.max(bb)).max(c.to_call * 2)
+    } else {
+        bb
+    };
+    let base_bet = if c.round == 1 && c.to_call == 0 {
+        bb
+    } else if c.current_bet > 0 {
+        c.current_bet.max(c.to_call)
+    } else {
+        c.to_call
+    };
+    let my_posted_bet = c.current_bet.saturating_sub(c.to_call);
+    let is_preflop_4bet_plus = c.round == 1 && !is_unopened_or_limped_pf && opp_bet_pf > bb * 5;
+
+    let amt = match idx {
+        RAISE_THIRD_POT => {
+            if is_unopened_or_limped_pf {
+                (bb * 3).max(preflop_open_min_total)
+            } else if is_preflop_4bet_plus {
+                (opp_bet_pf * 11 / 5).max(min_raise)
+            } else if c.round == 1 && c.to_call > 0 {
+                (opp_bet_pf * 11 / 4).max(min_raise)
+            } else {
+                let s = (c.pot / 3).max(bb);
+                if base_bet > 0 {
+                    (base_bet + s).max(min_raise)
+                } else {
+                    s.max(min_raise)
+                }
+            }
+        }
+        RAISE_HALF_POT => compute_half_pot_raise(
+            c,
+            is_unopened_or_limped_pf,
+            is_preflop_4bet_plus,
+            opp_bet_pf,
+            min_raise,
+            base_bet,
+        ),
+        _ => {
+            if is_unopened_or_limped_pf {
+                preflop_open_min_total
+            } else if is_preflop_4bet_plus {
+                (opp_bet_pf * 21 / 10).max(min_raise)
+            } else if c.round == 1 && c.to_call > 0 {
+                (opp_bet_pf * 5 / 2).max(min_raise)
+            } else if c.round == 1 {
+                (base_bet + bb).max(min_raise)
+            } else if c.to_call > 0 {
+                let s = ((c.pot + c.to_call) / 4).max(bb);
+                (c.to_call + s).max(min_raise)
+            } else {
+                (c.pot / 4).max(min_raise)
+            }
+        }
+    };
+    (amt, my_posted_bet)
+}
+
+fn map_raise_action(idx: u8, c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+    let (amt, my_posted_bet) = compute_raise_amount(idx, c);
+    if c.round == 1
+        && c.my_chips > 0
+        && c.to_call > 0
+        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.bb * 3)
+    {
+        /* If a preflop 3-bet/4-bet commits >= 55% of remaining stack or leaves <= 3 BB behind, jam all-in! */
+        if c.has("all_in") {
+            return Some(("all_in".to_string(), 0));
+        } else if c.has("allin") {
+            return Some(("allin".to_string(), 0));
+        } else if c.has("raise") {
+            return Some(("raise".to_string(), c.my_chips + my_posted_bet));
+        }
+    }
+    if c.has("raise") {
+        Some(("raise".to_string(), amt))
+    } else if c.has("bet") {
+        Some(("bet".to_string(), amt))
+    } else if c.has("all_in") {
+        Some(("all_in".to_string(), 0))
+    } else if c.has("allin") {
+        Some(("allin".to_string(), 0))
+    } else if c.to_call > 0 && c.has("call") {
+        Some(("call".to_string(), 0))
+    } else if c.has("check") {
+        Some(("check".to_string(), 0))
+    } else {
+        None
+    }
+}
+
+fn map_allin_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+    let my_posted_bet = c.current_bet.saturating_sub(c.to_call);
+    let allin_amt = if c.my_chips > 0 {
+        c.my_chips + my_posted_bet
+    } else {
+        (c.pot * 2).max(c.bb * 2)
+    };
+    if c.to_call > 0 && c.my_chips > 0 && c.to_call >= c.my_chips && c.has("call") {
+        Some(("call".to_string(), 0))
+    } else if c.has("all_in") {
+        Some(("all_in".to_string(), 0))
+    } else if c.has("allin") {
+        Some(("allin".to_string(), 0))
+    } else if c.has("raise") {
+        Some(("raise".to_string(), allin_amt))
+    } else if c.has("bet") {
+        Some(("bet".to_string(), allin_amt))
+    } else if c.to_call > 0 && c.has("call") {
+        Some(("call".to_string(), 0))
+    } else if c.has("check") {
+        Some(("check".to_string(), 0))
+    } else {
+        None
     }
 }
 

@@ -1107,3 +1107,454 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
         adj
     );
 }
+
+#[test]
+fn test_subgame_postflop_safety_invariants() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+    use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20261119);
+    let tracker = OpponentTracker::new();
+    let legal_full = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let legal_open = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+
+    /* 1. Ah 4c on 9h 5s As 9d paired Turn facing 2x overbet (2209 into 3309) must NOT check-raise jam */
+    let hole_a4o = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let board_paired_turn = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Diamonds),
+    ];
+    let b_a4o = postflop_equity_bucket(&hole_a4o, &board_paired_turn);
+    let jam_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.25, 0.0, 0.10, 0.10, 0.50];
+    for _ in 0..30 {
+        let (act, _) = tracker.select_action_purified_traced_with_stack_ex(
+            &jam_heavy,
+            &legal_full,
+            b_a4o,
+            3,
+            2209,
+            3309,
+            Some(&hole_a4o),
+            Some(&board_paired_turn),
+            1,
+            100,
+            8413,
+            true,
+            &mut rng,
+        );
+        assert!(
+            act < RAISE_MIN,
+            "Weak Top Pair A4o on paired turn vs 2x overbet must never raise/jam, got {}",
+            act
+        );
+    }
+
+    /* 2. Js Ts on 5s Jc 8d 9s 5d paired connected River facing 5625 into 13125
+     * - Neutral tracker: never jams (act < RAISE_MIN)
+     * - Ultra-nit tracker: folds one pair facing triple barrel */
+    let mut ultra_nit = OpponentTracker::new();
+    for i in 0..15 {
+        if i == 0 {
+            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 300, 150);
+        } else if i < 3 {
+            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 150, 150);
+        } else {
+            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 300);
+        }
+        ultra_nit.end_hand();
+    }
+    let hole_jt = [
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Spades),
+    ];
+    let board_paired_danger_river = [
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Five, Suit::Diamonds),
+    ];
+    let b_jt = postflop_equity_bucket(&hole_jt, &board_paired_danger_river);
+    let (act_paired_river_neutral, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &jam_heavy,
+        &legal_full,
+        b_jt,
+        4,
+        5625,
+        13125,
+        Some(&hole_jt),
+        Some(&board_paired_danger_river),
+        1,
+        300,
+        6359,
+        true,
+        &mut rng,
+    );
+    assert!(
+        act_paired_river_neutral < RAISE_MIN,
+        "Js Ts on paired dangerous river must never jam/raise, got {}",
+        act_paired_river_neutral
+    );
+    let (act_paired_river_nit, _) = ultra_nit.select_action_purified_traced_with_stack_ex(
+        &jam_heavy,
+        &legal_full,
+        b_jt,
+        4,
+        5625,
+        13125,
+        Some(&hole_jt),
+        Some(&board_paired_danger_river),
+        1,
+        300,
+        6359,
+        true,
+        &mut rng,
+    );
+    assert_eq!(
+        act_paired_river_nit, FOLD,
+        "Js Ts vs ultra-nit triple barrel on paired dangerous river must FOLD"
+    );
+
+    /* 3. Qc Jc (no diamond) on 4-diamond river Qd Kd 6d 4d 5s facing 375 into 1125 -> FOLD */
+    let hole_qcjc = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
+    let board_four_flush = [
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Spades),
+    ];
+    let b_four_flush = postflop_equity_bucket(&hole_qcjc, &board_four_flush);
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+    let (act_four_flush, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &call_heavy,
+        &legal_full,
+        b_four_flush,
+        4,
+        375,
+        1125,
+        Some(&hole_qcjc),
+        Some(&board_four_flush),
+        1,
+        150,
+        6256,
+        true,
+        &mut rng,
+    );
+    assert_eq!(
+        act_four_flush, FOLD,
+        "Qc Jc without diamond on 4-diamond river must fold"
+    );
+
+    /* 4. Qh Js (3rd pair) on 3c Kh Qc 3s Ac river facing 3750 into 11250 vs ultra-nit -> FOLD */
+    let hole_qj = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let board_paired_ace_river = [
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::Ace, Suit::Clubs),
+    ];
+    let b_qj = postflop_equity_bucket(&hole_qj, &board_paired_ace_river);
+    let (act_third_pair_nit, _) = ultra_nit.select_action_purified_traced_with_stack_ex(
+        &call_heavy,
+        &legal_full,
+        b_qj,
+        4,
+        3750,
+        11250,
+        Some(&hole_qj),
+        Some(&board_paired_ace_river),
+        1,
+        600,
+        8586,
+        true,
+        &mut rng,
+    );
+    assert_eq!(
+        act_third_pair_nit, FOLD,
+        "3rd pair Qh Js vs ultra-nit 3rd barrel must fold"
+    );
+
+    /* 5. > 3x pot ALL_IN capped even from subgame with ALL_IN=0.90 on Turn flush and River straight */
+    let hole_4dtd = [
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Diamonds),
+    ];
+    let board_turn_flush = [
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Diamonds),
+    ];
+    let b_turn_flush = postflop_equity_bucket(&hole_4dtd, &board_turn_flush);
+    let raw_allin: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.05, 0.0, 0.05, 0.0, 0.90];
+    let (act_turn_flush, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &raw_allin,
+        &legal_open,
+        b_turn_flush,
+        3,
+        0,
+        400,
+        Some(&hole_4dtd),
+        Some(&board_turn_flush),
+        1,
+        100,
+        9300,
+        true,
+        &mut rng,
+    );
+    assert_ne!(
+        act_turn_flush, ALL_IN,
+        "Extreme >20x pot Turn flush ALL_IN must be capped into standard value sizing"
+    );
+
+    let hole_3s4s = [
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+    ];
+    let board_river_straight = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Five, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let b_river_straight = postflop_equity_bucket(&hole_3s4s, &board_river_straight);
+    let (act_river_straight, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &raw_allin,
+        &legal_open,
+        b_river_straight,
+        4,
+        0,
+        300,
+        Some(&hole_3s4s),
+        Some(&board_river_straight),
+        1,
+        150,
+        8900,
+        true,
+        &mut rng,
+    );
+    assert_ne!(
+        act_river_straight, ALL_IN,
+        "Extreme >30x pot River straight ALL_IN must be capped into standard value sizing"
+    );
+
+    /* 6. King-high showdown value & paired-river 25% air check back */
+    let hole_k5 = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Five, Suit::Hearts),
+    ];
+    let board_paired_khigh = [
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_khigh = postflop_equity_bucket(&hole_k5, &board_paired_khigh);
+    let overbet_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.0, 0.0, 0.90, 0.0];
+    let (act_khigh, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &overbet_raw,
+        &legal_open,
+        b_khigh,
+        4,
+        0,
+        500,
+        Some(&hole_k5),
+        Some(&board_paired_khigh),
+        1,
+        100,
+        12253,
+        true,
+        &mut rng,
+    );
+    assert_eq!(
+        act_khigh, CALL_CHECK,
+        "King-high showdown value must check back instead of 125% overbet bluff"
+    );
+
+    let hole_q9c = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let board_paired_air_river = [
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Hearts),
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Spades),
+    ];
+    let b_paired_air = postflop_equity_bucket(&hole_q9c, &board_paired_air_river);
+    let min_bluff_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.85, 0.0, 0.0, 0.0];
+    let (act_paired_air, _) = tracker.select_action_purified_traced_with_stack_ex(
+        &min_bluff_raw,
+        &legal_open,
+        b_paired_air,
+        4,
+        0,
+        1250,
+        Some(&hole_q9c),
+        Some(&board_paired_air_river),
+        1,
+        100,
+        9663,
+        true,
+        &mut rng,
+    );
+    assert_eq!(
+        act_paired_air, CALL_CHECK,
+        "Pure air must check back instead of 25% micro-bluff into paired river"
+    );
+
+    /* 7. Kd 8c Nut Straight on 2h 5s 4h 7c 6d must value-bet instead of checking */
+    let hole_kd8c = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let board_four_straight_nut = [
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Diamonds),
+    ];
+    let b_nut_straight = postflop_equity_bucket(&hole_kd8c, &board_four_straight_nut);
+    let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.85, 0.0, 0.15, 0.0, 0.0];
+    let mut nut_straight_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_purified_traced_with_stack_ex(
+            &passive_check,
+            &legal_open,
+            b_nut_straight,
+            4,
+            0,
+            400,
+            Some(&hole_kd8c),
+            Some(&board_four_straight_nut),
+            1,
+            200,
+            5189,
+            true,
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            nut_straight_bets += 1;
+        }
+    }
+    assert!(
+        nut_straight_bets >= 45,
+        "Nut Straight must value-bet majority of the time, got {}/80",
+        nut_straight_bets
+    );
+
+    /* 8. Jh Js Top Set on wet 5c 3d Jc flop must value-bet majority */
+    let hole_jj = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let board_wet_set_flop = [
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
+    let b_wet_set = postflop_equity_bucket(&hole_jj, &board_wet_set_flop);
+    let mut wet_set_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_purified_traced_with_stack_ex(
+            &passive_check,
+            &legal_open,
+            b_wet_set,
+            2,
+            0,
+            1000,
+            Some(&hole_jj),
+            Some(&board_wet_set_flop),
+            1,
+            200,
+            5331,
+            false,
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            wet_set_bets += 1;
+        }
+    }
+    assert!(
+        wet_set_bets >= 45,
+        "Top Set on wet flop must value-bet majority of the time, got {}/80",
+        wet_set_bets
+    );
+
+    /* 9. Overbet-bluffer tracker catches Ks 7d middle pair bluff-catcher vs 1.5x river overbet */
+    let mut overbet_villain = OpponentTracker::new();
+    for _ in 0..5 {
+        overbet_villain.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
+        overbet_villain.end_hand();
+    }
+    assert!(overbet_villain.is_overbet_bluffer());
+    let hole_k7 = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+    ];
+    let board_paired_overbet_river = [
+        Card::new(Rank::Three, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Hearts),
+    ];
+    let b_bluff_catch = postflop_equity_bucket(&hole_k7, &board_paired_overbet_river);
+    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
+    let mut bluff_catch_calls = 0usize;
+    for _ in 0..100 {
+        let (act, _) = overbet_villain.select_action_purified_traced_with_stack_ex(
+            &fold_heavy,
+            &legal_full,
+            b_bluff_catch,
+            4,
+            4500,
+            7500,
+            Some(&hole_k7),
+            Some(&board_paired_overbet_river),
+            1,
+            150,
+            5400,
+            true,
+            &mut rng,
+        );
+        if act == CALL_CHECK {
+            bluff_catch_calls += 1;
+        }
+    }
+    assert!(
+        bluff_catch_calls >= 45,
+        "Ks 7d bluff-catcher vs overbet spammer must call frequently, got {}/100",
+        bluff_catch_calls
+    );
+}

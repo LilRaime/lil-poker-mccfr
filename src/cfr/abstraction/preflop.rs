@@ -149,27 +149,31 @@ pub fn preflop_strength_tier(idx: usize) -> u8 {
 
 /* Nash-calibrated maximum effective stack (in BB) for open-pushing from SB / late position in an unopened pot */
 pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
-    let tier = preflop_strength_tier(idx);
     let hu_max = match idx {
         0..=9 | 13..=28 | 36..=37 | 46 | 91..=95 | 103..=105 | 114 => 15,
         10..=12
-        | 29..=32
-        | 38..=39
+        | 29..=35
+        | 38..=45
         | 47..=48
         | 55..=56
         | 63
         | 70
         | 96..=99
-        | 106
-        | 115
+        | 106..=110
+        | 115..=117
         | 124
         | 133 => 12,
-        100..=102 => 10,
-        /* Suited connectors & one-gappers (97s, 86s, 76s, 65s, 54s) prefer min-raising over open-shoving at 10-12 BB */
-        64 | 71 | 76 | 81 | 85 => 9,
-        _ if tier == 6 => 8,
-        _ if tier == 7 && idx < 91 => 4,
-        _ => 0,
+        49..=54 | 57..=62 | 100..=102 | 111..=113 | 118..=120 | 125..=126 => 10,
+        /* Suited connectors/gappers & remaining suited hands (97s, 76s, 93s, 42s, 32s): 9 BB */
+        64..=69 | 71..=90 => 9,
+        /* Q4o-Q2o, J7o-J4o, T8o-T6o, and Tier 6 offsuit connectors (98o, 87o, 76o, 65o, 54o) */
+        121..=123 | 127..=130 | 134..=136 | 141..=142 | 148..=149 | 154 | 159 | 163 => 8,
+        /* J3o-J2o, T5o-T2o, 96o-95o, 85o, 75o, 64o, 53o, 43o */
+        131..=132 | 137..=140 | 143..=144 | 150 | 155 | 160 | 164 | 166 => 6,
+        /* Absolute bottom offsuit trash (83o, 82o, 73o, 72o) stays 0 BB */
+        152 | 153 | 157 | 158 => 0,
+        /* Remaining low offsuit hands (94o-92o, 84o, 74o, 63o, 62o, 52o, 42o, 32o): 5 BB */
+        _ => 5,
     };
     if active_opponents <= 1 {
         hu_max

@@ -211,4 +211,23 @@ fn test_protocol_6max_limp_pot_and_multiway_3bet_sizing() {
         mw_3bet_amt, 3600,
         "Multiway 3-bet vs 1200 open must scale off current_bet=1200 (3600), not inflated pot"
     );
+
+    /* 3. Compact 2.2x preflop 4-bet sizing when opp_bet_pf > 5 BB (1400 -> 3080, not 3850) */
+    let (_, four_bet_amt) = map_action_index_full(
+        lil_poker_mccfr::game::holdem::RAISE_THIRD_POT as usize,
+        &legal,
+        1150,
+        1650,
+        false,
+        1,
+        100,
+        10600,
+        1400,
+    )
+    .expect("map 4-bet");
+    assert_eq!(
+        four_bet_amt, 3080,
+        "Preflop 4-bet vs 1400 (14 BB) must size compactly at 2.2x (3080), got {}",
+        four_bet_amt
+    );
 }
