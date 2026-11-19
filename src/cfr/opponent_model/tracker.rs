@@ -18,6 +18,8 @@ pub struct OpponentTracker {
     /* Street-specific action counters [fold, call, raise] */
     pub preflop_actions: [u64; 3],
     pub flop_actions: [u64; 3],
+    #[serde(default)]
+    pub flop_checks: u64,
     pub turn_actions: [u64; 3],
     pub river_actions: [u64; 3],
 
@@ -90,6 +92,7 @@ impl OpponentTracker {
             raise_count: 0,
             preflop_actions: [0; 3],
             flop_actions: [0; 3],
+            flop_checks: 0,
             turn_actions: [0; 3],
             river_actions: [0; 3],
             flop_cbet_faced: 0,
@@ -205,6 +208,9 @@ impl OpponentTracker {
                     self.hand_saw_flop_recorded = true;
                 }
                 self.flop_actions[act_cat] += 1;
+                if action == CALL_CHECK && !facing_bet {
+                    self.flop_checks += 1;
+                }
                 if action >= RAISE_MIN {
                     self.hand_post_raises = self.hand_post_raises.saturating_add(1);
                 }
@@ -310,18 +316,20 @@ impl OpponentTracker {
     }
 
     pub fn vpip_ratio(&self) -> f64 {
-        if self.total_hands == 0 {
+        if self.total_hands == 0 && self.vpip_hands == 0 {
             0.50
         } else {
-            self.vpip_hands as f64 / self.total_hands as f64
+            let denom = self.total_hands.max(self.vpip_hands).max(1);
+            (self.vpip_hands as f64 / denom as f64).min(1.0)
         }
     }
 
     pub fn pfr_ratio(&self) -> f64 {
-        if self.total_hands == 0 {
+        if self.total_hands == 0 && self.pfr_hands == 0 {
             0.25
         } else {
-            self.pfr_hands as f64 / self.total_hands as f64
+            let denom = self.total_hands.max(self.pfr_hands).max(1);
+            (self.pfr_hands as f64 / denom as f64).min(1.0)
         }
     }
 
@@ -399,12 +407,75 @@ impl OpponentTracker {
     }
 
     pub fn flop_check_ratio(&self) -> f64 {
-        let total = self.flop_actions[1] + self.flop_actions[2];
+        let checks = if self.flop_checks > 0 || self.flop_cbet_faced > 0 {
+            self.flop_checks
+        } else {
+            self.flop_actions[1]
+        };
+        let total = checks + self.flop_actions[2];
         if total == 0 {
             0.50
         } else {
-            self.flop_actions[1] as f64 / total as f64
+            checks as f64 / total as f64
         }
+    }
+
+    /* Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)
+     * to prevent abrupt archetype flips on small samples (5–20 hands). */
+    pub fn smoothed_vpip(&self) -> f64 {
+        let k = 8.0;
+        let prior = 0.55;
+        let n = self.total_hands.max(self.vpip_hands) as f64;
+        ((self.vpip_hands as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_pfr(&self) -> f64 {
+        let k = 8.0;
+        let prior = 0.32;
+        let n = self.total_hands.max(self.pfr_hands) as f64;
+        ((self.pfr_hands as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_fold_ratio(&self) -> f64 {
+        let k = 12.0;
+        let prior = 0.33;
+        let n = self.total_actions() as f64;
+        ((self.fold_count as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_call_ratio(&self) -> f64 {
+        let k = 12.0;
+        let prior = 0.42;
+        let n = self.total_actions() as f64;
+        ((self.call_count as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_raise_ratio(&self) -> f64 {
+        let k = 12.0;
+        let prior = 0.25;
+        let n = self.total_actions() as f64;
+        ((self.raise_count as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_flop_fold_to_cbet(&self) -> f64 {
+        let k = 5.0;
+        let prior = 0.42;
+        let n = self.flop_cbet_faced as f64;
+        ((self.flop_fold_to_cbet as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_turn_fold_to_cbet(&self) -> f64 {
+        let k = 5.0;
+        let prior = 0.40;
+        let n = self.turn_cbet_faced as f64;
+        ((self.turn_fold_to_cbet as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
+    }
+
+    pub fn smoothed_river_fold_to_bet(&self) -> f64 {
+        let k = 5.0;
+        let prior = 0.38;
+        let n = self.river_bet_faced as f64;
+        ((self.river_fold_to_bet as f64 + prior * k) / (n + k)).clamp(0.0, 1.0)
     }
 
     pub fn record_preflop_positional(&mut self, is_sb: bool, is_vpip: bool, is_pfr: bool) {
@@ -532,17 +603,17 @@ impl OpponentTracker {
 
         let conf = (self.total_hands as f64 / (self.total_hands as f64 + 7.0)).min(0.95);
 
-        if vpip > 0.60 && pfr < 0.20 && fold < 0.28 {
-            (OpponentStyle::CallingStation, conf)
-        } else if pfr > 0.38 && raise > 0.35 {
+        if pfr > 0.38 && raise > 0.35 {
             (OpponentStyle::Maniac, conf)
+        } else if vpip > 0.60 && pfr < 0.20 && fold < 0.28 {
+            (OpponentStyle::CallingStation, conf)
         } else if vpip < 0.22 && fold > 0.45 {
             (OpponentStyle::Rock, conf)
         } else if (0.18..=0.35).contains(&vpip) && (pfr >= 0.14 || raise >= 0.15) {
             (OpponentStyle::Tag, conf)
         } else if vpip <= 0.35 && fold >= 0.40 {
             (OpponentStyle::Rock, conf * 0.85)
-        } else if (0.35..=0.65).contains(&vpip) {
+        } else if (0.35..=0.65).contains(&vpip) || (vpip > 0.65 && pfr >= 0.25) {
             (OpponentStyle::Lag, conf)
         } else {
             (OpponentStyle::CallingStation, conf * 0.7)
@@ -565,6 +636,7 @@ impl OpponentTracker {
         for a in &mut self.flop_actions {
             scale(a);
         }
+        scale(&mut self.flop_checks);
         for a in &mut self.turn_actions {
             scale(a);
         }

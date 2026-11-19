@@ -55,6 +55,22 @@ struct Args {
     /* Save lossless raw solver state (.ckpt) alongside the strategy file for resuming */
     #[arg(long, default_value_t = false)]
     save_raw_ckpt: bool,
+
+    /* Effective starting stack depth in Big Blinds (e.g. 15, 30, 100) when --multi-stack is false */
+    #[arg(long, default_value_t = 100)]
+    stack_bb: u32,
+
+    /* Train unified single-file multi-stack blueprint (15 BB + 30 BB + 100 BB in one model) */
+    #[arg(long, default_value_t = false)]
+    multi_stack: bool,
+
+    /* Include compact 4-state board texture (d/w/p/m) in postflop infoset keys (v2 model) */
+    #[arg(long, default_value_t = false)]
+    board_texture: bool,
+
+    /* Train only 15 BB (S15|) and 30 BB (S30|) episodes while keeping 100 BB nodes frozen */
+    #[arg(long, default_value_t = false)]
+    short_stacks_only: bool,
 }
 
 fn get_checkpoint_path(save_path: &str, done: u64) -> String {
@@ -127,13 +143,33 @@ fn main() {
         1_000_000
     };
     let shards = if args.threads >= 8 { 16384 } else { 2048 };
+    let stack_chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+    if args.short_stacks_only {
+        std::env::set_var("LIL_REPAIR_SHORT_STACKS", "1");
+        println!(
+            "Stack mode:       Short-Stacks Only [15 BB (S15|) + 30 BB (S30|)] (100 BB frozen)"
+        );
+    } else if args.multi_stack {
+        println!(
+            "Stack mode:       Unified Multi-Stack [15 BB (S15|), 30 BB (S30|), 100 BB] in 1 model"
+        );
+    } else {
+        println!(
+            "Stack depth:      {} BB ({} chips)",
+            args.stack_bb, stack_chips
+        );
+    }
+    println!("Board texture:    {}", args.board_texture);
     let solver = HoldemMCCFRSolver::with_options(
         args.rich_history,
         args.pruning,
         args.dcfr,
         capacity,
         shards,
-    );
+    )
+    .with_stack_size(stack_chips)
+    .with_multi_stack(args.multi_stack)
+    .with_board_texture(args.board_texture);
     if let Some(ref resume_path) = args.resume {
         match solver.warm_start_from_file(resume_path) {
             Ok(loaded) => println!(

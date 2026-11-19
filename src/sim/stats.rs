@@ -65,8 +65,8 @@ impl SimStats {
             return 0.0;
         }
         let n = self.hands as f64;
-        let mean = self.avg_chips();
-        let var = (self.sq_chips / n) - (mean * mean);
-        (var.max(0.0) / n).sqrt()
+        let ss = self.sq_chips - (self.total_chips * self.total_chips) / n;
+        let sample_var = (ss / (n - 1.0)).max(0.0);
+        (sample_var / n).sqrt()
     }
 }

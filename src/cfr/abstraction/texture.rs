@@ -88,6 +88,25 @@ pub fn board_texture_code(board: &[Card]) -> &'static str {
     }
 }
 
+/* Compact 4-state postflop board texture char for v2 blueprint infoset keys:
+ * 'm' = monotone (3+ same suit), 'p' = paired, 'w' = wet (two-tone & connected), 'd' = dry. */
+#[inline(always)]
+pub fn compact_board_texture_char(board: &[Card]) -> char {
+    if board.is_empty() {
+        return 'd';
+    }
+    let tex = detect_board_texture(board);
+    if tex.flush_texture == BoardFlushTexture::Monotone {
+        'm'
+    } else if tex.is_paired {
+        'p'
+    } else if tex.flush_texture == BoardFlushTexture::TwoTone && tex.is_connected {
+        'w'
+    } else {
+        'd'
+    }
+}
+
 #[inline(always)]
 pub fn board_texture_byte(board: &[Card]) -> u8 {
     if board.is_empty() {

@@ -42,31 +42,32 @@ pub fn parse_json_i32(v: Option<&Value>) -> i32 {
 /* Parse Card from server string format ("As", "Ah", "A♠", "10c", etc.) */
 pub fn parse_card_str(s: &str) -> Option<Card> {
     let s = s.trim_matches('\'').trim();
-    if s.len() < 2 {
-        return None;
-    }
-
-    let (rank_str, suit_char) = if s.starts_with("10") {
-        ("10", s.chars().nth(2)?)
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    let (rank, suit_char) = if first == '1' {
+        let second = chars.next()?;
+        if second != '0' {
+            return None;
+        }
+        (Rank::Ten, chars.next()?)
     } else {
-        (&s[0..1], s.chars().nth(1)?)
-    };
-
-    let rank = match rank_str {
-        "2" => Rank::Two,
-        "3" => Rank::Three,
-        "4" => Rank::Four,
-        "5" => Rank::Five,
-        "6" => Rank::Six,
-        "7" => Rank::Seven,
-        "8" => Rank::Eight,
-        "9" => Rank::Nine,
-        "10" | "T" => Rank::Ten,
-        "J" => Rank::Jack,
-        "Q" => Rank::Queen,
-        "K" => Rank::King,
-        "A" => Rank::Ace,
-        _ => return None,
+        let r = match first.to_ascii_uppercase() {
+            '2' => Rank::Two,
+            '3' => Rank::Three,
+            '4' => Rank::Four,
+            '5' => Rank::Five,
+            '6' => Rank::Six,
+            '7' => Rank::Seven,
+            '8' => Rank::Eight,
+            '9' => Rank::Nine,
+            'T' => Rank::Ten,
+            'J' => Rank::Jack,
+            'Q' => Rank::Queen,
+            'K' => Rank::King,
+            'A' => Rank::Ace,
+            _ => return None,
+        };
+        (r, chars.next()?)
     };
 
     let suit = match suit_char {
@@ -223,9 +224,12 @@ pub fn map_action_index_full(
             };
             let base_bet = if round == 1 && to_call == 0 {
                 bb
+            } else if current_bet > 0 {
+                current_bet.max(to_call)
             } else {
                 to_call
             };
+            let my_posted_bet = current_bet.saturating_sub(to_call);
             let amt = match idx as u8 {
                 RAISE_THIRD_POT => {
                     if is_unopened_or_limped_pf {
@@ -299,7 +303,7 @@ pub fn map_action_index_full(
                 } else if has("allin") {
                     return Some(("allin".to_string(), 0));
                 } else if has("raise") {
-                    return Some(("raise".to_string(), my_chips));
+                    return Some(("raise".to_string(), my_chips + my_posted_bet));
                 }
             }
             if has("raise") {
@@ -319,8 +323,9 @@ pub fn map_action_index_full(
             }
         }
         ALL_IN => {
+            let my_posted_bet = current_bet.saturating_sub(to_call);
             let allin_amt = if my_chips > 0 {
-                my_chips
+                my_chips + my_posted_bet
             } else {
                 (pot * 2).max(raise_min_amt * 2)
             };

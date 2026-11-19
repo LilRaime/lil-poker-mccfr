@@ -35,7 +35,7 @@ struct Args {
     opp_strategy: Option<String>,
 
     /* Run in Duplicate Poker mode (each deal played in reverse seats to eliminate card luck) */
-    #[arg(short, long, default_value_t = true)]
+    #[arg(short, long, default_value_t = true, action = clap::ArgAction::Set)]
     duplicate: bool,
 
     /* Enable real-time subgame solving for Turn and River */
@@ -348,13 +348,18 @@ fn main() {
             }
         } else {
             let chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+            let eff_opponent = if args.opp_strategy.is_some() && args.opponent == "tag" {
+                "model"
+            } else {
+                args.opponent.as_str()
+            };
             let _res = lil_poker_mccfr::sim::run_holdem_benchmark_with_stack(
                 &strategy_path,
                 hands,
                 0,
                 args.subgame,
                 "0",
-                &args.opponent,
+                eff_opponent,
                 args.opp_strategy.as_deref(),
                 args.duplicate,
                 args.exploit_factor,

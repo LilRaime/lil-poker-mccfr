@@ -240,6 +240,7 @@ fn apply_bot_seat_action(
     folded: &mut [bool; 6],
     contribs: &mut [i32; 6],
     current_bet: &mut i32,
+    street_start_bet: i32,
     raises_this_round: &mut u8,
     history: &mut [RoundHistory; 4],
 ) {
@@ -261,6 +262,12 @@ fn apply_bot_seat_action(
     };
     let my_pos = if bot_seat >= 4 { 0 } else { 1 };
     let opp_contrib = contribs[primary_opp];
+    let engine_contribs = if my_pos == 0 {
+        [contribs[bot_seat], opp_contrib]
+    } else {
+        [opp_contrib, contribs[bot_seat]]
+    };
+    let street_current_bet = (*current_bet - street_start_bet).max(0);
     let (act_str, amt, _) = decide_action_traced_with_bet(
         &holes[bot_seat],
         board_slice,
@@ -272,7 +279,7 @@ fn apply_bot_seat_action(
         &trackers[primary_opp_idx],
         history,
         my_pos,
-        [contribs[bot_seat], opp_contrib],
+        engine_contribs,
         *raises_this_round,
         Some(strategy_index),
         Some(subgame_solver),
@@ -280,7 +287,7 @@ fn apply_bot_seat_action(
         active_now.saturating_sub(1).max(1),
         BIG_BLIND,
         my_remaining,
-        *current_bet,
+        street_current_bet,
     );
 
     match act_str.as_str() {
@@ -300,7 +307,9 @@ fn apply_bot_seat_action(
             history[(round - 1) as usize].push(ALL_IN);
         }
         "raise" | "bet" => {
-            let target = amt.max(*current_bet + BIG_BLIND).min(stack_size);
+            let target = (street_start_bet + amt)
+                .max(*current_bet + BIG_BLIND)
+                .min(stack_size);
             let bet_delta = (target - contribs[bot_seat]).max(0);
             contribs[bot_seat] = target;
             if target > *current_bet {
@@ -367,6 +376,7 @@ fn simulate_multiway_6max_hand(
             3 => &full_board[0..4],
             _ => &full_board[0..5],
         };
+        let street_start_bet = if round == 1 { 0 } else { current_bet };
         let mut raises_this_round = 0u8;
         let mut needs_action = [false; 6];
         for seat in 0..6 {
@@ -414,6 +424,7 @@ fn simulate_multiway_6max_hand(
                     &mut folded,
                     &mut contribs,
                     &mut current_bet,
+                    street_start_bet,
                     &mut raises_this_round,
                     &mut history,
                 );

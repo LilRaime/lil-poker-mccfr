@@ -188,6 +188,9 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         .max()
         .unwrap_or(0);
 
+    let flop_street_had_bet = history.actions_in_round(1).iter().any(|&a| a >= 2);
+    let turn_street_had_bet = history.actions_in_round(2).iter().any(|&a| a >= 2);
+
     ReachContext {
         opp_raised_pf,
         opp_called_pf,
@@ -195,18 +198,18 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         opp_limped_pf,
         max_opp_raise_flop,
         opp_raised_flop: max_opp_raise_flop >= 2,
-        opp_called_flop: flop_actions.contains(&1),
+        opp_called_flop: flop_street_had_bet && flop_actions.contains(&1),
         max_opp_raise_turn,
         opp_raised_turn: max_opp_raise_turn >= 2,
-        opp_called_turn: turn_actions.contains(&1),
+        opp_called_turn: turn_street_had_bet && turn_actions.contains(&1),
         max_opp_raise_river,
         opp_raised_river: max_opp_raise_river >= 2,
         flop_board_paired: is_prefix_paired(board, 3),
         turn_board_paired: is_prefix_paired(board, 4),
         river_board_paired: is_prefix_paired(board, 5),
         monotone_suit: find_monotone_suit(board),
-        has_flop_actions: !history.actions_in_round(1).is_empty(),
-        has_turn_actions: !history.actions_in_round(2).is_empty(),
+        has_flop_actions: !flop_actions.is_empty(),
+        has_turn_actions: !turn_actions.is_empty(),
     }
 }
 

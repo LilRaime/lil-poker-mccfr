@@ -36,7 +36,7 @@ impl InfosetNode {
         let n = self.num_actions;
         let mut total = 0.0f64;
         for (i, item) in out.iter_mut().enumerate().take(n) {
-            let r = (self.regret_sum[i].load(Ordering::Relaxed) as f64 / SCALE).max(0.0);
+            let r = self.regret_sum[i].load(Ordering::Relaxed).max(0) as f64;
             *item = r;
             total += r;
         }
@@ -48,6 +48,30 @@ impl InfosetNode {
         } else {
             let uniform = 1.0 / n as f64;
             for item in out.iter_mut().take(n) {
+                *item = uniform;
+            }
+        }
+    }
+
+    /* Single-pass legal action strategy via regret matching (avoids double normalization). */
+    #[inline(always)]
+    pub fn get_legal_strategy_buf(&self, legal_actions: &[u8], out_probs: &mut [f64; MAX_ACTIONS]) {
+        let n = legal_actions.len();
+        let mut total = 0.0f64;
+        for i in 0..n {
+            let act_idx = legal_actions[i] as usize;
+            let r = self.regret_sum[act_idx].load(Ordering::Relaxed).max(0) as f64;
+            out_probs[i] = r;
+            total += r;
+        }
+        if total > 0.0 {
+            let inv_total = 1.0 / total;
+            for item in out_probs.iter_mut().take(n) {
+                *item *= inv_total;
+            }
+        } else {
+            let uniform = 1.0 / n as f64;
+            for item in out_probs.iter_mut().take(n) {
                 *item = uniform;
             }
         }

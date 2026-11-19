@@ -53,28 +53,31 @@ impl OpponentTracker {
                 || never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_EARLY")
         {
-            reasons.push("POT_COMMIT_EARLY");
             if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                 let f_prob = probs[f_i];
-                probs[f_i] = 0.0;
-                if let Some(c_i) = legal_actions
-                    .iter()
-                    .position(|&a| a == CALL_CHECK)
-                    .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
-                {
-                    probs[c_i] += f_prob.max(0.50);
+                if f_prob > 0.0 {
+                    reasons.push("POT_COMMIT_EARLY");
+                    probs[f_i] = 0.0;
+                    if let Some(c_i) = legal_actions
+                        .iter()
+                        .position(|&a| a == CALL_CHECK)
+                        .or_else(|| legal_actions.iter().position(|&a| a == ALL_IN))
+                    {
+                        probs[c_i] += f_prob;
+                    }
                 }
             }
         }
 
         /* Preflop Button Steal & Anti-Shove-Bot SB Limp Trap (Tier 1 Soft Shift):
          * - Against normal/passive opponents in Heads-Up, Button opens ~80% of hands profitably (tiers 1..=6).
-         * - Against a proven hyper-aggressive 3-bet/shove opponent (total_hands >= 8, raise_ratio > 0.42),
+         * - Against a proven hyper-aggressive 3-bet/shove opponent (total_hands >= 12, raise_ratio > 0.45),
          *   do NOT open-raise speculative steal hands (tiers 4..=6) into a 3-bet shove! Instead, limp-call
          *   tiers 4..=5 to see a cheap flop and only open-raise tiers 1..=3.
          */
-        let is_hyper_aggressor =
-            self.total_hands >= 8 && (self.raise_ratio() > 0.42 || self.pfr_ratio() > 0.45);
+        let is_hyper_aggressor = self.total_hands >= 12
+            && (self.raise_ratio() > 0.45
+                || (self.pfr_ratio() > 0.58 && self.raise_ratio() > 0.35));
         let max_steal_tier = if is_hyper_aggressor {
             3
         } else if active_opponents == 1 {
@@ -115,7 +118,8 @@ impl OpponentTracker {
                 probs[ai_i] += shifted;
             }
         } else if is_preflop
-            && eff_stack_bb > 20
+            && (21..=40).contains(&eff_stack_bb)
+            && to_call > 0
             && to_call <= steal_max_call
             && is_hyper_aggressor
             && (4..=5).contains(&pf_tier_now)
@@ -145,47 +149,55 @@ impl OpponentTracker {
             let raise_idx = legal_actions
                 .iter()
                 .position(|&a| a == RAISE_MIN || a == RAISE_THIRD_POT);
+            /* Only intervene when the raw strategy is overly passive (e.g. fallback or weak node);
+             * let well-trained GTO blueprint open frequencies stand untouched when already raising >= 35%. */
+            let passive_mass = fold_idx.map(|i| probs[i]).unwrap_or(0.0)
+                + call_idx.map(|i| probs[i]).unwrap_or(0.0);
             if let Some(r_i) = raise_idx {
-                reasons.push("PF_BUTTON_STEAL");
-                if let Some(f_i) = fold_idx {
-                    if probs[f_i] > 0.05 {
-                        probs[r_i] += probs[f_i] * 0.85;
-                        probs[f_i] *= 0.15;
-                    }
-                }
-                if to_call > 0 {
-                    if let Some(c_i) = call_idx {
-                        let limp_shift = if pf_tier_now <= 4 {
-                            0.75
-                        } else if eff_stack_bb > 15 {
-                            0.80
-                        } else {
-                            0.55
-                        };
-                        let shifted = probs[c_i] * limp_shift;
-                        probs[r_i] += shifted;
-                        probs[c_i] -= shifted;
-                    }
-                    /* At 10–19 BB short stack, convert a share of opens with Nash-shovable hands
-                     * directly into ALL_IN (excluding bucket <= 3 premiums that gain more by inducing). */
-                    if (10..=19).contains(&eff_stack_bb)
-                        && bucket >= 4
-                        && nash_open_push_max_bb(bucket, active_opponents) >= eff_stack_bb
-                    {
-                        if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                            let s = probs[r_i] * 0.55;
-                            probs[r_i] -= s;
-                            probs[ai_i] += s;
+                if passive_mass > 0.65 || is_passive_station {
+                    reasons.push("PF_BUTTON_STEAL");
+                    if let Some(f_i) = fold_idx {
+                        if probs[f_i] > 0.05 {
+                            probs[r_i] += probs[f_i] * 0.85;
+                            probs[f_i] *= 0.15;
                         }
                     }
-                } else if pf_tier_now <= 3
-                    || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5)
-                {
-                    if let Some(c_i) = call_idx {
-                        let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
-                        let shifted = probs[c_i] * limp_shift;
-                        probs[r_i] += shifted;
-                        probs[c_i] -= shifted;
+                    if to_call > 0 {
+                        if let Some(c_i) = call_idx {
+                            let limp_shift = if pf_tier_now <= 2 {
+                                0.90
+                            } else if pf_tier_now <= 4 {
+                                0.75
+                            } else if eff_stack_bb > 15 {
+                                0.80
+                            } else {
+                                0.55
+                            };
+                            let shifted = probs[c_i] * limp_shift;
+                            probs[r_i] += shifted;
+                            probs[c_i] -= shifted;
+                        }
+                        if (10..=19).contains(&eff_stack_bb)
+                            && bucket >= 4
+                            && nash_open_push_max_bb(bucket, active_opponents) >= eff_stack_bb
+                        {
+                            if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
+                                let s = probs[r_i] * 0.55;
+                                probs[r_i] -= s;
+                                probs[ai_i] += s;
+                            }
+                        }
+                    } else if pf_tier_now <= 3
+                        || (self.sb_total_hands >= 4
+                            && self.sb_limp_ratio() > 0.25
+                            && pf_tier_now <= 5)
+                    {
+                        if let Some(c_i) = call_idx {
+                            let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
+                            let shifted = probs[c_i] * limp_shift;
+                            probs[r_i] += shifted;
+                            probs[c_i] -= shifted;
+                        }
                     }
                 }
             }

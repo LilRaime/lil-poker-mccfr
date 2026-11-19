@@ -26,6 +26,12 @@ pub struct TexasHoldemGame {
 }
 
 impl TexasHoldemGame {
+    pub fn new_random_with_stack<R: Rng>(rng: &mut R, stack_size: i32) -> Self {
+        let mut g = Self::new_random(rng);
+        g.stack_size = stack_size.max(BIG_BLIND * 2);
+        g
+    }
+
     pub fn new_random<R: Rng>(rng: &mut R) -> Self {
         let mut deck = ALL_52_CARDS;
         const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;

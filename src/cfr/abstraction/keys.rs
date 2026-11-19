@@ -25,6 +25,46 @@ impl HistoryActions for [Vec<u8>; 4] {
 }
 
 #[inline(always)]
+pub fn stack_depth_prefix(stack_bb: i32) -> &'static str {
+    if stack_bb > 0 && stack_bb <= 20 {
+        "S15|"
+    } else if stack_bb > 0 && stack_bb <= 45 {
+        "S30|"
+    } else {
+        ""
+    }
+}
+
+#[inline(always)]
+pub fn mix_stack_prefix_hash(mut base_hash: u64, stack_prefix: &str) -> u64 {
+    if stack_prefix.is_empty() {
+        return base_hash;
+    }
+    for &b in stack_prefix.as_bytes() {
+        base_hash = fnv1a_combine(base_hash, b);
+    }
+    base_hash
+}
+
+#[inline(always)]
+pub fn mix_texture_hash(base_hash: u64, tex: char) -> u64 {
+    fnv1a_combine(base_hash, tex as u8)
+}
+
+#[inline]
+pub fn append_texture_to_key(key: &str, tex: char) -> String {
+    if let Some(slash_idx) = key.find('/') {
+        let mut out = String::with_capacity(key.len() + 1);
+        out.push_str(&key[..slash_idx]);
+        out.push(tex);
+        out.push_str(&key[slash_idx..]);
+        out
+    } else {
+        key.to_string()
+    }
+}
+
+#[inline(always)]
 pub fn action_to_char(a: u8) -> char {
     match a {
         0 => 'f',
@@ -494,6 +534,95 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     h
 }
 
+/* Ultra-fast precomputed-bucket FNV-1a hashes (where round 1 `bucket` is already `preflop_bucket.0 as u8`). */
+#[inline(always)]
+pub fn hash_holdem_infoset_key_fast<H: HistoryActions + ?Sized>(
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    h = fnv1a_combine(h, round);
+    h = fnv1a_combine(h, b':');
+    if round == 1 {
+        h = fnv1a_combine(h, bucket);
+        h = fnv1a_combine(h, 0);
+    } else {
+        h = fnv1a_combine(h, bucket);
+    }
+    h = fnv1a_combine(h, b'/');
+    let r_idx = (round.saturating_sub(1)) as usize;
+    for &a in history.actions_in_round(r_idx) {
+        h = fnv1a_combine(h, a);
+    }
+    h
+}
+
+#[inline(always)]
+pub fn hash_holdem_infoset_key_rich_fast<H: HistoryActions + ?Sized>(
+    bucket: u8,
+    round: u8,
+    history: &H,
+) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    if round == 1 {
+        h = fnv1a_combine(h, 1);
+        h = fnv1a_combine(h, b':');
+        h = fnv1a_combine(h, bucket);
+        h = fnv1a_combine(h, 0);
+        h = fnv1a_combine(h, b'/');
+        for &a in history.actions_in_round(0) {
+            h = fnv1a_combine(h, a);
+        }
+    } else if round == 4 {
+        h = fnv1a_combine(h, 4);
+        h = fnv1a_combine(h, b':');
+        h = fnv1a_combine(h, bucket);
+        h = fnv1a_combine(h, b'/');
+        for &a in history.actions_in_round(3) {
+            h = fnv1a_combine(h, a);
+        }
+    } else {
+        let pf_actions = history.actions_in_round(0);
+        if !pf_actions.is_empty() {
+            h = fnv1a_combine(h, b'P');
+            for &a in pf_actions {
+                let byte = match a {
+                    0 => b'f',
+                    1 => b'c',
+                    _ => b'r',
+                };
+                h = fnv1a_combine(h, byte);
+            }
+            h = fnv1a_combine(h, b'|');
+        }
+        if round >= 3 {
+            let f_actions = history.actions_in_round(1);
+            if !f_actions.is_empty() {
+                h = fnv1a_combine(h, b'F');
+                for &a in f_actions {
+                    let byte = match a {
+                        0 => b'f',
+                        1 => b'c',
+                        _ => b'r',
+                    };
+                    h = fnv1a_combine(h, byte);
+                }
+                h = fnv1a_combine(h, b'|');
+            }
+        }
+        h = fnv1a_combine(h, round);
+        h = fnv1a_combine(h, b':');
+        h = fnv1a_combine(h, bucket);
+        h = fnv1a_combine(h, b'/');
+        let r_idx = (round.saturating_sub(1)) as usize;
+        for &a in history.actions_in_round(r_idx) {
+            h = fnv1a_combine(h, a);
+        }
+    }
+    h
+}
+
 #[inline(always)]
 pub fn char_to_action(c: u8) -> Option<u8> {
     match c {
@@ -513,11 +642,19 @@ pub fn char_to_action(c: u8) -> Option<u8> {
 pub fn hash_from_infoset_key_str(key: &str) -> u64 {
     use super::preflop::preflop_bucket_from_name;
 
+    let (stack_prefix, rest) = if let Some(r) = key.strip_prefix("S15|") {
+        ("S15|", r)
+    } else if let Some(r) = key.strip_prefix("S30|") {
+        ("S30|", r)
+    } else {
+        ("", key)
+    };
+
     let mut h = FNV_OFFSET_BASIS;
-    let parts: Vec<&str> = key.split('|').collect();
+    let parts: Vec<&str> = rest.split('|').collect();
     let main_part = match parts.last() {
         Some(&s) => s,
-        None => return h,
+        None => return mix_stack_prefix_hash(h, stack_prefix),
     };
 
     for &prefix in &parts[..parts.len().saturating_sub(1)] {
@@ -541,6 +678,7 @@ pub fn hash_from_infoset_key_str(key: &str) -> u64 {
         None => return h,
     };
 
+    let mut tex_char: Option<char> = None;
     if let Some(pf_name) = head.strip_prefix("P:") {
         h = fnv1a_combine(h, 1);
         h = fnv1a_combine(h, b':');
@@ -559,7 +697,17 @@ pub fn hash_from_infoset_key_str(key: &str) -> u64 {
         };
         h = fnv1a_combine(h, round);
         h = fnv1a_combine(h, b':');
-        let b_str = head.split(":B").nth(1).unwrap_or("0");
+        let b_raw = head.split(":B").nth(1).unwrap_or("0");
+        let b_str = if let Some(last_c) = b_raw.chars().last() {
+            if matches!(last_c, 'd' | 'w' | 'p' | 'm') {
+                tex_char = Some(last_c);
+                &b_raw[..b_raw.len() - 1]
+            } else {
+                b_raw
+            }
+        } else {
+            b_raw
+        };
         let bucket = b_str.parse::<u8>().unwrap_or(0);
         h = fnv1a_combine(h, bucket);
     }
@@ -570,5 +718,8 @@ pub fn hash_from_infoset_key_str(key: &str) -> u64 {
             h = fnv1a_combine(h, a);
         }
     }
-    h
+    if let Some(tc) = tex_char {
+        h = mix_texture_hash(h, tc);
+    }
+    mix_stack_prefix_hash(h, stack_prefix)
 }

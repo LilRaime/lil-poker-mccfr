@@ -973,3 +973,137 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
         blocker_bluffs
     );
 }
+
+#[test]
+fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+    let mut rng = SmallRng::seed_from_u64(4242);
+    let legal_full = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+
+    /* 1. Monster (bucket 85 Full House) with 0% fold must keep value-raising (POT_COMMIT must not crush raise into call) */
+    let tracker = OpponentTracker::new();
+    let raise_heavy = [0.0, 0.05, 0.0, 0.0, 0.95, 0.0];
+    let mut raises = 0usize;
+    for _ in 0..50 {
+        let act = tracker.select_action_purified_context_full(
+            &raise_heavy,
+            &legal_full,
+            85,
+            4,
+            500,
+            2000,
+            None,
+            None,
+            1,
+            100,
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            raises += 1;
+        }
+    }
+    assert!(
+        raises >= 40,
+        "Monster bucket 85 with 95% raise must keep value-raising instead of being dragged to call (got {}/50)",
+        raises
+    );
+
+    /* 2. Standard 5 BB half-pot River bet with Top Pair (bucket 47) must NOT be hard-folded by is_shove_faced */
+    let board_dry_river = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let call_heavy = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
+    let act_tp_river = tracker.select_action_purified_context_full(
+        &call_heavy,
+        &legal_full,
+        47,
+        4,
+        500,
+        1500,
+        None,
+        Some(&board_dry_river),
+        1,
+        100,
+        &mut rng,
+    );
+    assert_eq!(
+        act_tp_river, CALL_CHECK,
+        "Top Pair must call a standard 5 BB half-pot river bet"
+    );
+
+    /* 3. Flop stack-committing overbet (>= 40% stack, pot_odds >= 35%) with bare flush draw (bucket 21) must fold instead of call-folding half stack */
+    let board_fd_flop = [
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let hole_k5c = [
+        Card::new(Rank::King, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Clubs),
+    ];
+    let (act_fd_commit, _) = tracker.select_action_purified_traced_with_stack(
+        &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+        &legal_full,
+        21,
+        2,
+        2250,
+        3750,
+        Some(&hole_k5c),
+        Some(&board_fd_flop),
+        1,
+        300,
+        4712,
+        &mut rng,
+    );
+    assert_eq!(
+        act_fd_commit, FOLD,
+        "Bare flush draw facing 1.5x pot flop overbet committing 48% of stack must not flat-call"
+    );
+
+    /* 4. Multiway cold 3-bet shove (~19.4 BB over CO open) with KQs (bucket 15) must fold on Hand 1 */
+    let (act_kqs_mw, _) = tracker.select_action_purified_traced_with_stack(
+        &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+        &[FOLD, CALL_CHECK],
+        15,
+        1,
+        15490,
+        22160,
+        None,
+        None,
+        2,
+        800,
+        15490,
+        &mut rng,
+    );
+    assert_eq!(
+        act_kqs_mw, FOLD,
+        "KQs must fold to a 19.4 BB multiway cold 3-bet squeeze shove with no reads"
+    );
+
+    /* 5. High-VPIP Maniac must trigger Maniac branch (not Calling Station) in adjust_strategy_context */
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..12 {
+        maniac.record_action_street_detailed(RAISE_HALF_POT, 1, false, 300, 450);
+        maniac.record_action_street_detailed(RAISE_HALF_POT, 2, false, 600, 1200);
+        maniac.end_hand();
+    }
+    let bp = [0.20, 0.50, 0.15, 0.15, 0.0, 0.0];
+    let adj = maniac.adjust_strategy_context(&bp, &legal_full, 45, 3, 400, 100);
+    assert!(
+        adj[CALL_CHECK as usize] > bp[CALL_CHECK as usize] && adj[FOLD as usize] < bp[FOLD as usize],
+        "High-VPIP maniac must activate Maniac bluff-catching adjustment, not Calling Station: {:?}",
+        adj
+    );
+}

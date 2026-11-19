@@ -146,17 +146,28 @@ impl StrategyLookupIndex {
                         }
                     }
                 }
-            } else if key.starts_with("P:") && !key.contains('|') {
-                if let Some(slash_idx) = key.find('/') {
-                    let hand_name = &key[2..slash_idx];
-                    let sum_entry = preflop_sums
-                        .entry(hand_name.to_string())
-                        .or_insert([0.0; HOLDEM_NUM_ACTIONS]);
-                    for i in 0..HOLDEM_NUM_ACTIONS {
-                        sum_entry[i] += vals[i];
+            } else {
+                let base_key = key
+                    .strip_prefix("S15|")
+                    .or_else(|| key.strip_prefix("S30|"))
+                    .unwrap_or(key);
+                if base_key.starts_with("P:") && !base_key.contains('|') {
+                    if let Some(slash_idx) = base_key.find('/') {
+                        let hist_part = &base_key[slash_idx + 1..];
+                        let num_raises = hist_part.chars().filter(|&c| c != 'c').count();
+                        if num_raises <= 1 {
+                            let hand_name = &base_key[2..slash_idx];
+                            let sum_entry = preflop_sums
+                                .entry(hand_name.to_string())
+                                .or_insert([0.0; HOLDEM_NUM_ACTIONS]);
+                            for i in 0..HOLDEM_NUM_ACTIONS {
+                                sum_entry[i] += vals[i];
+                            }
+                            let count_entry =
+                                preflop_counts.entry(hand_name.to_string()).or_insert(0);
+                            *count_entry += 1;
+                        }
                     }
-                    let count_entry = preflop_counts.entry(hand_name.to_string()).or_insert(0);
-                    *count_entry += 1;
                 }
             }
         }

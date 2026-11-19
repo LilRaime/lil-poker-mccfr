@@ -424,6 +424,7 @@ impl<'a> IntoIterator for &'a RoundHistory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeckRemaining {
     cards: [Card; NUM_COMMUNITY_CARDS],
+    len: u8,
     ptr: u8,
 }
 
@@ -433,7 +434,11 @@ impl DeckRemaining {
         let mut arr = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
         let n = cards.len().min(NUM_COMMUNITY_CARDS);
         arr[..n].copy_from_slice(&cards[..n]);
-        DeckRemaining { cards: arr, ptr: 0 }
+        DeckRemaining {
+            cards: arr,
+            len: n as u8,
+            ptr: 0,
+        }
     }
 
     #[inline(always)]
@@ -443,19 +448,21 @@ impl DeckRemaining {
 
     #[inline(always)]
     pub fn deal_one(&mut self) -> Card {
-        let c = self.cards[self.ptr as usize];
-        self.ptr += 1;
+        debug_assert!(self.ptr < self.len, "DeckRemaining exhausted");
+        let idx = (self.ptr as usize).min(NUM_COMMUNITY_CARDS - 1);
+        let c = self.cards[idx];
+        self.ptr = self.ptr.saturating_add(1);
         c
     }
 
     #[inline(always)]
     pub fn len(&self) -> usize {
-        NUM_COMMUNITY_CARDS.saturating_sub(self.ptr as usize)
+        (self.len as usize).saturating_sub(self.ptr as usize)
     }
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.ptr as usize >= NUM_COMMUNITY_CARDS
+        self.ptr >= self.len
     }
 }
 
@@ -463,6 +470,10 @@ impl Default for DeckRemaining {
     fn default() -> Self {
         let mut arr = [ALL_52_CARDS[0]; NUM_COMMUNITY_CARDS];
         arr.copy_from_slice(&ALL_52_CARDS[..NUM_COMMUNITY_CARDS]);
-        DeckRemaining { cards: arr, ptr: 0 }
+        DeckRemaining {
+            cards: arr,
+            len: NUM_COMMUNITY_CARDS as u8,
+            ptr: 0,
+        }
     }
 }

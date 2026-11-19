@@ -255,12 +255,9 @@ impl OpponentTracker {
                     probs[f_i] = 1.0;
                 }
             }
-            if round == 2 && to_call >= bb * 3 {
-                let weak_flop_pair = (28..=32).contains(&bucket) || bucket == 34 || bucket == 35;
-                let should_fold_flop = (weak_flop_pair
-                    && (pot_odds >= 0.27 || (to_call >= bb * 5 && pot_odds >= 0.25)))
-                    || (bucket == 36 && to_call >= bb * 5 && pot_odds >= 0.35);
-                if should_fold_flop {
+            if round == 2 && to_call >= bb * 4 {
+                let bare_bottom_pair = (28..=30).contains(&bucket);
+                if bare_bottom_pair && pot_odds >= 0.28 {
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         reasons.push("POST_BARREL_FOLD");
                         for p in probs.iter_mut() {
@@ -271,17 +268,10 @@ impl OpponentTracker {
                 }
             }
 
-            if round >= 3 && to_call >= bb * 2 {
-                let should_fold_weak_pair = ((28..=36).contains(&bucket)
-                    && bucket != 33
-                    && pot_odds >= 0.24
-                    && (round == 4 || pot_odds >= 0.25 || to_call >= bb * 4))
-                    || ((37..=38).contains(&bucket) && to_call >= bb * 5 && pot_odds >= 0.30)
-                    || ((39..=42).contains(&bucket) && to_call >= bb * 4 && pot_odds >= 0.44);
-                let should_fold_three_flush_tp = is_three_flush
-                    && (28..=42).contains(&bucket)
-                    && to_call >= bb * 4
-                    && pot_odds >= 0.26;
+            if round >= 3 && to_call >= bb * 5 {
+                let should_fold_weak_pair = (28..=30).contains(&bucket) && pot_odds >= 0.33;
+                let should_fold_three_flush_tp =
+                    is_three_flush && (28..=42).contains(&bucket) && pot_odds >= 0.28;
                 if should_fold_weak_pair || should_fold_three_flush_tp {
                     if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
                         reasons.push("POST_BARREL_FOLD");
@@ -305,16 +295,16 @@ impl OpponentTracker {
             && self.is_guard_enabled("POT_COMMIT_TERMINAL")
         {
             if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
-                if probs[f_i] > 0.0 {
-                    reasons.push("POT_COMMIT_TERMINAL");
-                }
                 let f_prob = probs[f_i];
-                probs[f_i] = 0.0;
-                if let Some(c_i) = legal_actions
-                    .iter()
-                    .position(|&a| a == CALL_CHECK || a == ALL_IN)
-                {
-                    probs[c_i] = (probs[c_i] + f_prob).max(0.95);
+                if f_prob > 0.0 {
+                    reasons.push("POT_COMMIT_TERMINAL");
+                    probs[f_i] = 0.0;
+                    if let Some(c_i) = legal_actions
+                        .iter()
+                        .position(|&a| a == CALL_CHECK || a == ALL_IN)
+                    {
+                        probs[c_i] += f_prob;
+                    }
                 }
             }
         }

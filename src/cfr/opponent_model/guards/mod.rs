@@ -34,6 +34,7 @@ impl OpponentTracker {
         eff_allin_threshold: i32,
         pot_odds: f64,
         is_three_flush: bool,
+        from_subgame: bool,
         reasons: &mut Vec<&'static str>,
     ) {
         let is_preflop = round == 1;
@@ -74,6 +75,50 @@ impl OpponentTracker {
             reasons,
         );
 
+        /* When raw_probs come from online SubgameSolver on Turn/River (round >= 3), trust the
+         * solver's game-theoretic equilibrium: only apply catastrophic air-allin cap and
+         * terminal pot-commitment rescue instead of overriding it with heuristic Tier 2/3 caps. */
+        if from_subgame && round >= 3 {
+            if bucket < 15 && self.is_guard_enabled("POST_ALLIN_BLUFF_CAP") {
+                if let Some(ai_i) = legal_actions
+                    .iter()
+                    .position(|&a| a == crate::game::config::ALL_IN)
+                {
+                    let removed = probs[ai_i];
+                    if removed > 0.0 {
+                        probs[ai_i] = 0.0;
+                        if let Some(c_i) = legal_actions
+                            .iter()
+                            .position(|&a| a == crate::game::config::CALL_CHECK)
+                        {
+                            probs[c_i] += removed;
+                        }
+                    }
+                }
+            }
+            if to_call > 0
+                && (pot_odds <= 0.12 || never_fold_postflop)
+                && self.is_guard_enabled("POT_COMMIT_TERMINAL")
+            {
+                if let Some(f_i) = legal_actions
+                    .iter()
+                    .position(|&a| a == crate::game::config::FOLD)
+                {
+                    let f_prob = probs[f_i];
+                    if f_prob > 0.0 {
+                        reasons.push("POT_COMMIT_TERMINAL");
+                        probs[f_i] = 0.0;
+                        if let Some(c_i) = legal_actions.iter().position(|&a| {
+                            a == crate::game::config::CALL_CHECK || a == crate::game::config::ALL_IN
+                        }) {
+                            probs[c_i] += f_prob;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         /* Priority Tier 2A: Preflop Discipline & All-In / Heavy-Bet Shove Defense */
         self.apply_tier2_preflop_and_shove_defense(
             probs,
@@ -111,6 +156,24 @@ impl OpponentTracker {
             is_passive_station,
             reasons,
         );
+
+        /* Multi-Way Table Adaptation (3 to 6 players active) — runs BEFORE Tier 3 so terminal
+         * pot-commitment rescues cannot be overwritten by multi-way folds */
+        if active_opponents >= 2 {
+            reasons.push("MULTIWAY_ADAPT");
+            self.apply_multiway_adaptation(
+                probs,
+                legal_actions,
+                bucket,
+                round,
+                to_call,
+                board,
+                active_opponents,
+                bb,
+                pot_odds,
+                is_three_flush,
+            );
+        }
 
         /* Priority Tier 3: Terminal Barrel Defense & Unconditional Pot-Commitment */
         self.apply_postflop_barrel_and_pot_commitment_guards(

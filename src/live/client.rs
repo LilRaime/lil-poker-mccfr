@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::cookie::CookieStore;
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE};
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::decision::decide_action_traced_with_bet;
@@ -84,6 +86,7 @@ struct LiveSession {
     last_hole: Option<[crate::game::holdem::Card; 2]>,
     last_board_len: usize,
     hand_active: bool,
+    hero_folded_this_hand: bool,
     last_seen_hand_id: u64,
     round_tracker: LiveRoundTracker,
     table_tracker: LiveTableTracker,
@@ -92,12 +95,44 @@ struct LiveSession {
     strategy_arc: Arc<HashMap<String, Vec<f64>>>,
 }
 
+async fn open_ws_stream(
+    url: &str,
+    room: &str,
+    jar: &reqwest::cookie::Jar,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, Box<dyn std::error::Error>> {
+    let ws_scheme = if url.starts_with("https://") {
+        "wss"
+    } else {
+        "ws"
+    };
+    let domain = url
+        .split("://")
+        .nth(1)
+        .unwrap_or("localhost:8090")
+        .trim_end_matches('/');
+    let ws_url = format!("{}://{}/api/game/ws?room={}", ws_scheme, domain, room);
+
+    let mut request = ws_url.into_client_request()?;
+    let cookies_url = reqwest::Url::parse(url)?;
+    if let Some(cookie_header) = jar.cookies(&cookies_url) {
+        if let Ok(val) = HeaderValue::from_bytes(cookie_header.as_bytes()) {
+            let headers: &mut HeaderMap = request.headers_mut();
+            headers.insert(COOKIE, val);
+        }
+    }
+
+    let (ws_stream, _) = connect_async(request).await?;
+    println!("WebSocket connected successfully! Listening for hand events...");
+    Ok(ws_stream)
+}
+
 async fn connect_live_ws(
     url: &str,
     room: &str,
     name: &str,
 ) -> Result<
     Option<(
+        Arc<reqwest::cookie::Jar>,
         reqwest::Client,
         String,
         WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -107,6 +142,8 @@ async fn connect_live_ws(
     let jar = Arc::new(reqwest::cookie::Jar::default());
     let client = reqwest::Client::builder()
         .cookie_provider(Arc::clone(&jar))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
         .build()?;
 
     let base_url = url.trim_end_matches('/');
@@ -146,30 +183,8 @@ async fn connect_live_ws(
     let start_url = format!("{}/api/game/start?room={}", base_url, room);
     let _ = client.post(&start_url).send().await;
 
-    let ws_scheme = if url.starts_with("https://") {
-        "wss"
-    } else {
-        "ws"
-    };
-    let domain = url
-        .split("://")
-        .nth(1)
-        .unwrap_or("localhost:8090")
-        .trim_end_matches('/');
-    let ws_url = format!("{}://{}/api/game/ws?room={}", ws_scheme, domain, room);
-
-    let mut request = ws_url.into_client_request()?;
-    let cookies_url = reqwest::Url::parse(url)?;
-    if let Some(cookie_header) = jar.cookies(&cookies_url) {
-        if let Ok(val) = HeaderValue::from_bytes(cookie_header.as_bytes()) {
-            let headers: &mut HeaderMap = request.headers_mut();
-            headers.insert(COOKIE, val);
-        }
-    }
-
-    let (ws_stream, _) = connect_async(request).await?;
-    println!("WebSocket connected successfully! Listening for hand events...");
-    Ok(Some((client, player_id, ws_stream)))
+    let ws_stream = open_ws_stream(url, room, &jar).await?;
+    Ok(Some((jar, client, player_id, ws_stream)))
 }
 
 fn prefer_all_in_action(
@@ -232,7 +247,19 @@ fn apply_live_commit_guards(
                     || snapshot.to_call * 6 <= snapshot.pot
                     || eff_chips <= snapshot.big_blind
                 {
-                    ("call".to_string(), 0)
+                    if snapshot
+                        .legal_actions
+                        .iter()
+                        .any(|l| l.eq_ignore_ascii_case("call"))
+                    {
+                        ("call".to_string(), 0)
+                    } else if snapshot.legal_actions.iter().any(|l| {
+                        l.eq_ignore_ascii_case("all_in") || l.eq_ignore_ascii_case("allin")
+                    }) {
+                        prefer_all_in_action(&snapshot.legal_actions, "call".to_string(), 0)
+                    } else {
+                        ("fold".to_string(), 0)
+                    }
                 } else {
                     ("fold".to_string(), 0)
                 }
@@ -264,6 +291,7 @@ fn apply_live_commit_guards(
         && eff_chips > snapshot.to_call
         && snapshot.to_call > 0
         && !snapshot.board.is_empty()
+        && snapshot.board.len() < 5
     {
         /* Postflop Call Stack-Commit Guard:
          * If calling a Flop/Turn raise with a strong hand (bucket >= 45)
@@ -372,7 +400,7 @@ impl LiveSession {
                     &self.round_tracker.live_history[3],
                     self.round_tracker.last_opp_bet,
                 );
-            } else if self.table_tracker.last_player_count <= 2 {
+            } else if self.table_tracker.last_player_count <= 2 && !self.hero_folded_this_hand {
                 /* HU hand ended without Showdown after bot bet/raise -> opponent folded */
                 self.record_hu_opp_fold_if_unshown(true);
             }
@@ -383,6 +411,7 @@ impl LiveSession {
             self.last_hole = None;
             self.last_board_len = 0;
             self.hand_active = false;
+            self.hero_folded_this_hand = false;
             self.last_seen_hand_id = 0;
         } else if phase.eq_ignore_ascii_case("Waiting") && self.last_seen_hand_id != 0 {
             /* Hand started and ended before Hero ever had an active turn (e.g. walk on BB when SB folds HU) */
@@ -471,13 +500,14 @@ impl LiveSession {
             && msg_hand_id != self.table_tracker.hand_id
             && self.table_tracker.hand_id > 0
         {
-            if self.table_tracker.last_player_count <= 2 {
+            if self.table_tracker.last_player_count <= 2 && !self.hero_folded_this_hand {
                 self.record_hu_opp_fold_if_unshown(false);
             }
             self.finalize_and_save_hand();
             self.round_tracker.reset_hand(msg_hand_id);
             self.table_tracker.reset_hand(msg_hand_id);
             self.hand_active = false;
+            self.hero_folded_this_hand = false;
         } else if msg_hand_id > 0 && self.table_tracker.hand_id == 0 {
             self.table_tracker.hand_id = msg_hand_id;
         }
@@ -515,7 +545,7 @@ impl LiveSession {
 
         if is_new_hand {
             if self.hand_active {
-                if table_players <= 2 {
+                if table_players <= 2 && !self.hero_folded_this_hand {
                     self.record_hu_opp_fold_if_unshown(false);
                 }
                 self.finalize_and_save_hand();
@@ -528,6 +558,7 @@ impl LiveSession {
                 );
             }
             self.round_tracker.reset_hand(snapshot.hand_id);
+            self.hero_folded_this_hand = false;
         }
         self.last_hole = Some(snapshot.hole);
         self.last_board_len = snapshot.board.len();
@@ -618,7 +649,7 @@ impl LiveSession {
             "   [trace] round={} bucket={} pot_odds={:.1}% raw_act={} -> final_act={} reasons={:?}",
             trace.round,
             trace.bucket,
-            trace.pot_odds_bps as f64 / 100.0,
+            trace.pot_odds_bps as f64 / 10.0,
             trace.raw_top_action,
             trace.final_action,
             trace.guard_reasons
@@ -672,11 +703,14 @@ impl LiveSession {
 
         if r.status().is_success() {
             /* Record bot's own action into live history only after server accepts it */
-            self.round_tracker
-                .record_bot_action(chosen_action, amount, snapshot.pot);
+            self.round_tracker.record_bot_action_with_bet(
+                chosen_action,
+                amount,
+                snapshot.pot,
+                snapshot.my_bet,
+            );
             if chosen_action == "fold" && self.hand_active {
-                self.finalize_and_save_hand();
-                self.hand_active = false;
+                self.hero_folded_this_hand = true;
             }
             return;
         }
@@ -782,8 +816,15 @@ impl LiveSession {
                 .await
             {
                 if r_retry.status().is_success() {
-                    self.round_tracker
-                        .record_bot_action(&fb, fb_amt, snapshot.pot);
+                    self.round_tracker.record_bot_action_with_bet(
+                        &fb,
+                        fb_amt,
+                        snapshot.pot,
+                        snapshot.my_bet,
+                    );
+                    if fb == "fold" && self.hand_active {
+                        self.hero_folded_this_hand = true;
+                    }
                 }
             }
         }
@@ -811,11 +852,10 @@ pub async fn run_live_bot(
         ram_mb
     );
 
-    /* 2-4. Login, join room & connect WebSocket */
-    let Some((client, player_id, ws_stream)) = connect_live_ws(url, room, name).await? else {
+    /* 2-4. Login, join room & connect initial WebSocket */
+    let Some((jar, client, player_id, initial_ws)) = connect_live_ws(url, room, name).await? else {
         return Ok(());
     };
-    let (_, mut read) = ws_stream.split();
 
     let strategy_index = Arc::new(StrategyLookupIndex::build_from_map(&strategy_map));
     let mut session = LiveSession {
@@ -831,6 +871,7 @@ pub async fn run_live_bot(
         last_hole: None,
         last_board_len: 0,
         hand_active: false,
+        hero_folded_this_hand: false,
         last_seen_hand_id: 0,
         round_tracker: LiveRoundTracker::new(),
         table_tracker: LiveTableTracker::new(),
@@ -839,27 +880,67 @@ pub async fn run_live_bot(
         strategy_arc: Arc::new(strategy_map),
     };
 
-    /* 5. Main Game Loop */
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("WebSocket error: {}", e);
-                break;
+    /* 5. Reconnect-resilient WebSocket session loop preserving cookie jar, player_id, and active hand state */
+    let mut current_ws = Some(initial_ws);
+    let mut backoff_secs = 2u64;
+    loop {
+        let ws_stream = if let Some(ws) = current_ws.take() {
+            backoff_secs = 2;
+            ws
+        } else {
+            match open_ws_stream(url, room, &jar).await {
+                Ok(ws) => {
+                    backoff_secs = 2;
+                    ws
+                }
+                Err(e) => {
+                    eprintln!(
+                        "WebSocket reconnect failed ({}). Retrying in {}s...",
+                        e, backoff_secs
+                    );
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(30);
+                    continue;
+                }
             }
         };
-        if !msg.is_text() {
-            continue;
-        }
-        let text = msg.to_text()?;
-        let Ok(state) = serde_json::from_str::<Value>(text) else {
-            continue;
-        };
-        session.decide_and_submit(&state).await?;
-    }
+        let (mut write, mut read) = ws_stream.split();
 
-    if session.hand_active {
-        session.finalize_and_save_hand();
+        while let Some(msg) = read.next().await {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("WebSocket error: {}", e);
+                    break;
+                }
+            };
+            match msg {
+                Message::Ping(payload) => {
+                    let _ = write.send(Message::Pong(payload)).await;
+                    continue;
+                }
+                Message::Close(_) => {
+                    println!("WebSocket closed by server.");
+                    break;
+                }
+                Message::Text(text) => {
+                    let Ok(state) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    if let Err(e) = session.decide_and_submit(&state).await {
+                        eprintln!("Decision/submit error: {}", e);
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        session.save_all_profiles();
+        eprintln!(
+            "WebSocket disconnected. Reconnecting in {}s...",
+            backoff_secs
+        );
+        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        backoff_secs = (backoff_secs * 2).min(30);
     }
-    Ok(())
 }

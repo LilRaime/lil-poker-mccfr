@@ -4,6 +4,19 @@ use crate::cfr::abstraction::{is_four_flush_board, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::Card;
 
+/* 6-Max Positional Preflop Open-Raise Chart:
+ * Maps seat_position (0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB) to maximum playable open tier. */
+pub fn max_open_tier_6max(seat_pos: u8) -> u8 {
+    match seat_pos {
+        0 => 3, /* UTG: ~15% VPIP (premiums, medium/high pairs, strong suited broadways) */
+        1 => 4, /* MP:  ~20% VPIP */
+        2 => 5, /* CO:  ~28% VPIP */
+        3 => 6, /* BTN: ~42% VPIP */
+        4 => 5, /* SB:  ~32% VPIP */
+        _ => 5, /* BB:  defend/iso */
+    }
+}
+
 impl OpponentTracker {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_multiway_adaptation(
@@ -31,8 +44,25 @@ impl OpponentTracker {
         if is_preflop {
             let pf_tier = preflop_strength_tier(bucket);
             let is_offsuit = bucket >= 91;
+            /* Infer approximate 6-max seat tightness from active_opponents count:
+             * 5 active opps ~ UTG (pos 0), 4 ~ MP (1), 3 ~ CO (2), 2 ~ BTN/SB (3/4). */
+            let approx_seat_pos: u8 = match active_opponents {
+                5.. => 0,
+                4 => 1,
+                3 => 2,
+                _ => 3,
+            };
+            let pos_max_tier = max_open_tier_6max(approx_seat_pos);
 
-            if pf_tier >= 6 || (pf_tier == 5 && is_offsuit && active_opponents >= 2) {
+            if pf_tier > pos_max_tier && to_call <= bb && pot_odds > 0.20 {
+                /* Tight positional preflop discipline in early/middle 6-max seats: fold below chart */
+                if let Some(f_i) = fold_idx {
+                    for p in probs.iter_mut() {
+                        *p = 0.0;
+                    }
+                    probs[f_i] = 1.0;
+                }
+            } else if pf_tier >= 6 || (pf_tier == 5 && is_offsuit && active_opponents >= 2) {
                 /* Pure trash, steal-tier, or weak offsuit in multi-way pot:
                  * never raise and never open-limp; fold to any bet unless priced in from BB (pot_odds <= 0.22)! */
                 let mut removed_raise = 0.0f64;
@@ -93,9 +123,16 @@ impl OpponentTracker {
                 }
             } else if (pf_tier == 3 || pf_tier == 4) && to_call >= bb * 4 {
                 /* Tier 3-4 facing heavy multi-way action: suppress 4-bet shoves, fold offsuit hands */
+                let mut shifted_raise = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a >= RAISE_HALF_POT {
+                        shifted_raise += probs[i];
                         probs[i] = 0.0;
+                    }
+                }
+                if shifted_raise > 0.0 {
+                    if let Some(c_i) = call_idx {
+                        probs[c_i] += shifted_raise;
                     }
                 }
                 if is_offsuit && active_opponents >= 3 && pot_odds > 0.26 {

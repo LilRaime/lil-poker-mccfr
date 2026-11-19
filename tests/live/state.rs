@@ -557,3 +557,59 @@ fn test_6max_unopened_history_and_blind_inference_without_flags() {
         "Same-hand hint should preserve 400 big blind on Flop"
     );
 }
+
+#[test]
+fn test_hu_min_raise_and_6max_btn_postflop_position() {
+    use lil_poker_mccfr::game::config::RAISE_MIN;
+    /* 1. HU 2x BB min-raise (opp_bet = 200 at 50/100) must be classified as RAISE_MIN, not CALL_CHECK */
+    let hu_min_raise = json!({
+        "hand_id": 5001,
+        "phase": "Preflop",
+        "pot": 300,
+        "current_bet": 200,
+        "big_blind": 100,
+        "small_blind": 50,
+        "active_player_id": "hero",
+        "board": [],
+        "players": [
+            { "id": "hero", "name": "Hero", "chips": 9900, "bet": 100, "is_big_blind": true, "hole": ["As", "Kd"] },
+            { "id": "opp", "name": "Opp", "chips": 9800, "bet": 200, "is_small_blind": true }
+        ]
+    });
+    let snap = parse_live_state(&hu_min_raise, "hero").expect("valid HU snapshot");
+    let mut rt = LiveRoundTracker::new();
+    let mut tracker = OpponentTracker::new();
+    rt.infer_and_record_opponent_action(&snap, &mut tracker);
+    assert_eq!(
+        rt.live_history[0].as_slice(),
+        &[RAISE_MIN],
+        "HU 2x BB min-raise must be recorded as RAISE_MIN, not CALL_CHECK"
+    );
+    assert_eq!(
+        tracker.pfr_hands, 1,
+        "HU 2x BB min-raise must increment PFR"
+    );
+
+    /* 2. 6-Max Hero on BTN postflop vs SB must be IP (my_player == 0), not OOP */
+    let sixmax_btn_flop = json!({
+        "hand_id": 5002,
+        "phase": "Flop",
+        "pot": 600,
+        "current_bet": 0,
+        "big_blind": 100,
+        "small_blind": 50,
+        "active_player_id": "hero",
+        "board": ["As", "7d", "2c"],
+        "players": [
+            { "id": "hero", "name": "Hero", "chips": 9700, "bet": 0, "folded": false, "hole": ["Kh", "Qh"] },
+            { "id": "sb", "name": "SB", "chips": 9700, "bet": 0, "is_small_blind": true, "folded": false },
+            { "id": "bb", "name": "BB", "chips": 9900, "bet": 0, "is_big_blind": true, "folded": true },
+            { "id": "utg", "name": "UTG", "chips": 10000, "bet": 0, "folded": true }
+        ]
+    });
+    let snap6 = parse_live_state(&sixmax_btn_flop, "hero").expect("valid 6-max snapshot");
+    assert_eq!(
+        snap6.my_player, 0,
+        "Hero on BTN postflop vs SB in 6-max must be IP (my_player == 0)"
+    );
+}

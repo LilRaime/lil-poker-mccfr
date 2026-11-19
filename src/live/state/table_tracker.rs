@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::{
     extract_blind_flags, extract_player_bet, extract_player_chips, extract_player_id,
-    extract_player_name, is_player_folded, parse_cards_array, parse_raw_blinds,
+    extract_player_name, is_player_folded, parse_cards_array, resolve_blinds,
 };
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::game::config::{BIG_BLIND, SMALL_BLIND};
@@ -29,7 +29,8 @@ pub fn process_showdown_multiway(
     if b_cards.len() < 3 {
         return;
     }
-    let opp_raised_river =
+    let is_hu = players.len() <= 2;
+    let hu_opp_raised_river =
         last_opp_bet > 0 || (river_history.len() == 1 && river_history[0] >= RAISE_MIN);
     let pot_showdown = parse_json_i32(state.get("pot"));
 
@@ -49,12 +50,18 @@ pub fn process_showdown_multiway(
         };
         let p_name = extract_player_name(p, fallback_id);
         if !p_name.is_empty() {
+            let p_bet = extract_player_bet(p);
+            let (p_raised_river, p_last_bet) = if is_hu {
+                (hu_opp_raised_river, last_opp_bet.max(p_bet))
+            } else {
+                (p_bet > 0, p_bet)
+            };
             let tracker = trackers.entry(p_name.to_string()).or_default();
             tracker.record_showdown_hand_detailed(
                 [opp_hole[0], opp_hole[1]],
                 &b_cards,
-                opp_raised_river,
-                last_opp_bet,
+                p_raised_river,
+                p_last_bet,
                 pot_showdown,
             );
         }
@@ -204,12 +211,20 @@ impl LiveTableTracker {
                 }
                 record_facing_3bet_once(tracker, st, self.round_idx, self.pf_raise_count, true);
                 st.is_folded = true;
-            } else if self.round_idx == 0 && !st.is_allin && st.last_bet < self.street_max_bet {
+            } else if !st.is_allin && st.last_bet < self.street_max_bet {
                 let delta = self.street_max_bet - st.last_bet;
-                st.acted_pf = true;
-                st.pf_vpip = true;
-                record_facing_3bet_once(tracker, st, self.round_idx, self.pf_raise_count, false);
-                tracker.record_action_street_detailed(CALL_CHECK, 1, true, delta, pot);
+                if self.round_idx == 0 {
+                    st.acted_pf = true;
+                    st.pf_vpip = true;
+                    record_facing_3bet_once(
+                        tracker,
+                        st,
+                        self.round_idx,
+                        self.pf_raise_count,
+                        false,
+                    );
+                }
+                tracker.record_action_street_detailed(CALL_CHECK, prev_round_num, true, delta, pot);
             }
         }
         if players.len() > 2 && self.round_idx >= 1 && self.street_max_bet == 0 {
@@ -402,12 +417,36 @@ impl LiveTableTracker {
             _ => 3,
         };
         let pot = parse_json_i32(state.get("pot"));
-        let (parsed_bb, parsed_sb) = parse_raw_blinds(state);
-        if parsed_bb > 0 {
-            self.big_blind = parsed_bb;
+        let mut sb_posted = 0i32;
+        let mut bb_posted = 0i32;
+        let mut nonzero_bets = Vec::new();
+        for p in players {
+            let bet = extract_player_bet(p);
+            if bet > 0 {
+                nonzero_bets.push(bet);
+            }
+            let (is_sb, is_bb) = extract_blind_flags(p);
+            if is_sb && bet > 0 {
+                sb_posted = bet;
+            }
+            if is_bb && bet > 0 {
+                bb_posted = bet;
+            }
         }
-        self.small_blind = if parsed_sb > 0 {
-            parsed_sb
+        let (resolved_bb, resolved_sb) = resolve_blinds(
+            state,
+            board_len == 0,
+            sb_posted,
+            bb_posted,
+            &nonzero_bets,
+            pot,
+            self.big_blind,
+        );
+        if resolved_bb > 0 {
+            self.big_blind = resolved_bb;
+        }
+        self.small_blind = if resolved_sb > 0 {
+            resolved_sb
         } else {
             (self.big_blind / 2).max(1)
         };

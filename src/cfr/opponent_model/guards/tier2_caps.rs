@@ -44,15 +44,23 @@ impl OpponentTracker {
                 .map(|(h, b)| detect_river_nut_blocker(h, b))
                 .unwrap_or(false);
 
-        /* All postflop streets: block all-in pushes for air, draws (except flop monster combo draws),
-         * one-pair, overpair, and two-pair hands (< 65) */
-        if bucket < 65
-            && !(round == 2 && (25..=27).contains(&bucket))
+        /* Catastrophic air all-in cap: block all-in pushes for pure air (< 15) and non-combo draws (< 25) */
+        if bucket < 25
+            && !(round == 2 && (22..=27).contains(&bucket))
             && self.is_guard_enabled("POST_ALLIN_BLUFF_CAP")
         {
             if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                if probs[ai_i] > 0.0 {
+                let removed = probs[ai_i];
+                if removed > 0.0 {
                     probs[ai_i] = 0.0;
+                    if let Some(t_i) = legal_actions
+                        .iter()
+                        .position(|&a| a == RAISE_HALF_POT)
+                        .or_else(|| legal_actions.iter().position(|&a| a == RAISE_THIRD_POT))
+                        .or_else(|| legal_actions.iter().position(|&a| a == CALL_CHECK))
+                    {
+                        probs[t_i] += removed;
+                    }
                 }
             }
         }
@@ -64,8 +72,10 @@ impl OpponentTracker {
                 probs[ai_i] = 0.0;
             }
             if to_call > 0 && (bucket < 15 || bucket == 28) {
+                let mut shifted_raise = 0.0f64;
                 for (i, &a) in legal_actions.iter().enumerate() {
                     if a >= RAISE_MIN {
+                        shifted_raise += probs[i];
                         probs[i] = 0.0;
                     }
                 }
@@ -83,6 +93,14 @@ impl OpponentTracker {
                             *p = 0.0;
                         }
                         probs[f_i] = 1.0;
+                    }
+                } else if shifted_raise > 0.0 {
+                    if pot_odds <= 0.16 {
+                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                            probs[c_i] += shifted_raise;
+                        }
+                    } else if let Some(f_i) = legal_actions.iter().position(|&a| a == FOLD) {
+                        probs[f_i] += shifted_raise;
                     }
                 }
             }
@@ -259,9 +277,16 @@ impl OpponentTracker {
         /* Turn facing a bet: never probe-raise or check-raise with weak or marginal hands (bucket < 61) */
         if round == 3 && to_call > 0 && bucket < 61 && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
+            let mut shifted = 0.0f64;
             for (i, &a) in legal_actions.iter().enumerate() {
                 if a >= RAISE_MIN {
+                    shifted += probs[i];
                     probs[i] = 0.0;
+                }
+            }
+            if shifted > 0.0 {
+                if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                    probs[c_i] += shifted;
                 }
             }
         }
@@ -351,55 +376,33 @@ impl OpponentTracker {
             let is_dangerous = board.map(is_dangerous_board).unwrap_or(false)
                 || is_three_flush
                 || is_three_straight;
-            if to_call > 0
-                && (bucket < 61
-                    || (bucket <= 66 && (to_call >= bb * 4 || is_dangerous))
-                    || (to_call >= bb * 4 && is_dangerous))
-            {
-                let mut shifted_raise = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a >= RAISE_MIN {
-                        shifted_raise += probs[i];
-                        probs[i] = 0.0;
+            /* Only cap river overbets/shoves on genuinely dangerous boards (3-flush/3-straight/paired),
+             * letting GTO/subgame value-bet and value-raise freely on clean rivers! */
+            if is_dangerous {
+                if to_call > 0 && (bucket < 61 || to_call >= bb * 4) {
+                    let mut shifted_raise = 0.0f64;
+                    for (i, &a) in legal_actions.iter().enumerate() {
+                        if a >= RAISE_MIN {
+                            shifted_raise += probs[i];
+                            probs[i] = 0.0;
+                        }
                     }
-                }
-                if shifted_raise > 0.0 {
-                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                        probs[c_i] += shifted_raise;
+                    if shifted_raise > 0.0 {
+                        if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
+                            probs[c_i] += shifted_raise;
+                        }
                     }
-                }
-            } else if bucket < 61 && is_passive_station && !is_dangerous && bucket >= 45 {
-                let mut shifted = 0.0f64;
-                if let Some(ai_i) = legal_actions.iter().position(|&a| a == ALL_IN) {
-                    shifted += probs[ai_i];
-                    probs[ai_i] = 0.0;
-                }
-                if let Some(r_hp) = legal_actions.iter().position(|&a| a == RAISE_HALF_POT) {
-                    probs[r_hp] += shifted * 0.70;
-                } else if let Some(r_t) = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT) {
-                    probs[r_t] += shifted;
-                }
-            } else if bucket < 61 || is_dangerous {
-                let mut shifted = 0.0f64;
-                for (i, &a) in legal_actions.iter().enumerate() {
-                    if a == RAISE_HALF_POT || a == ALL_IN {
-                        shifted += probs[i];
-                        probs[i] = 0.0;
+                } else if to_call == 0 && bucket < 67 {
+                    let mut shifted = 0.0f64;
+                    for (i, &a) in legal_actions.iter().enumerate() {
+                        if a == RAISE_HALF_POT || a == ALL_IN {
+                            shifted += probs[i];
+                            probs[i] = 0.0;
+                        }
                     }
-                }
-                if is_dangerous && bucket < 67 {
                     if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
                         probs[c_i] = (probs[c_i] + shifted).max(0.60);
                     }
-                } else if bucket >= 46 {
-                    if let Some(r_t) = legal_actions.iter().position(|&a| a == RAISE_THIRD_POT) {
-                        probs[r_t] += shifted * 0.60;
-                    }
-                    if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                        probs[c_i] += shifted * 0.40;
-                    }
-                } else if let Some(c_i) = legal_actions.iter().position(|&a| a == CALL_CHECK) {
-                    probs[c_i] += shifted;
                 }
             }
         } else if round >= 3

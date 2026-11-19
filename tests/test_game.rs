@@ -189,9 +189,9 @@ fn test_preflop_2_5bb_open_raise() {
     assert_eq!(g1.contributions[0], PREFLOP_OPEN_MIN_TOTAL);
     assert_eq!(g1.contributions[0], 250);
 
-    /* P1 faces 250 chips (diff = 150). P1 3-bets with RAISE_MIN -> 100 + 150 + 400 = 650 chips */
+    /* P1 faces 250 chips (diff = 150). P1 3-bets with RAISE_MIN -> 100 + 150 + 200 = 450 chips */
     let g2 = g1.apply_action(RAISE_MIN);
-    assert_eq!(g2.contributions[1], 650);
+    assert_eq!(g2.contributions[1], 250 + RAISE_MIN_AMT);
 }
 
 #[test]

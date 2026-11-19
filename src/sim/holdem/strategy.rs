@@ -11,17 +11,10 @@ pub type HoldemStrategy = HashMap<String, [f64; HOLDEM_NUM_ACTIONS]>;
 
 /* Hold'em Strategy Loader (supports both legacy 4-action, modern 6-action JSON, and .bin/.bincode formats) */
 pub fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut prefix = [0u8; 1];
-    let n = file.read(&mut prefix).ok()?;
-    if n == 0 {
-        return None;
-    }
-    let is_json_content =
-        prefix[0] == b'{' || prefix[0] == b'[' || prefix[0] == b' ' || prefix[0] == b'\n';
+    let prefer_json =
+        path.ends_with(".json") || path.contains(".json.") || path.contains(".tmp.json");
 
-    if !is_json_content && (path.ends_with(".bin") || path.ends_with(".bincode")) {
+    if !prefer_json {
         let file_bincode = std::fs::File::open(path).ok()?;
         let mut reader = std::io::BufReader::new(file_bincode);
         if let Ok(raw_f32) =
@@ -62,30 +55,29 @@ pub fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
                     .collect(),
             );
         }
-        None
-    } else {
-        let file_json = std::fs::File::open(path).ok()?;
-        let reader_json = std::io::BufReader::new(file_json);
-        let raw: HashMap<String, Vec<f64>> = serde_json::from_reader(reader_json).ok()?;
-        Some(
-            raw.into_iter()
-                .map(|(k, v)| {
-                    let strat = if v.len() >= 6 {
-                        [v[0], v[1], v[2], v[3], v[4], v[5]]
-                    } else if v.len() == 4 {
-                        [v[0], v[1], v[2], 0.0, v[3], 0.0]
-                    } else {
-                        let mut arr = [0.0; HOLDEM_NUM_ACTIONS];
-                        for (i, &val) in v.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
-                            arr[i] = val;
-                        }
-                        arr
-                    };
-                    (k, strat)
-                })
-                .collect(),
-        )
     }
+
+    let file_json = std::fs::File::open(path).ok()?;
+    let reader_json = std::io::BufReader::new(file_json);
+    let raw: HashMap<String, Vec<f64>> = serde_json::from_reader(reader_json).ok()?;
+    Some(
+        raw.into_iter()
+            .map(|(k, v)| {
+                let strat = if v.len() >= 6 {
+                    [v[0], v[1], v[2], v[3], v[4], v[5]]
+                } else if v.len() == 4 {
+                    [v[0], v[1], v[2], 0.0, v[3], 0.0]
+                } else {
+                    let mut arr = [0.0; HOLDEM_NUM_ACTIONS];
+                    for (i, &val) in v.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
+                        arr[i] = val;
+                    }
+                    arr
+                };
+                (k, strat)
+            })
+            .collect(),
+    )
 }
 
 pub fn find_strategy_or_fallback(

@@ -69,8 +69,8 @@ pub const SUBGAME_POT_XS: i32 = BIG_BLIND * 6; // 6 BB (small pot)
 /// To-call amount above which subgame solver gets extra budget (≈ 10× BB).
 pub const SUBGAME_BET_PRESSURE: i32 = BIG_BLIND * 10;
 
-/// Pot threshold to activate flop subgame search (≈ 12× BB).
-pub const SUBGAME_FLOP_TRIGGER_POT: i32 = BIG_BLIND * 12;
+/// Pot threshold to activate flop subgame search (≈ 8× BB, aligned with live play).
+pub const SUBGAME_FLOP_TRIGGER_POT: i32 = BIG_BLIND * 8;
 
 /* ── Action Recognition Thresholds (play_live) ───────────── */
 

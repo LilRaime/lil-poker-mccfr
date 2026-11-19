@@ -2,7 +2,7 @@ use clap::Parser;
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -37,7 +37,14 @@ struct Args {
 }
 
 #[inline(always)]
+fn strip_stack_prefix(key: &str) -> &str {
+    key.strip_prefix("S15|")
+        .or_else(|| key.strip_prefix("S30|"))
+        .unwrap_or(key)
+}
+
 fn get_street(key: &str) -> u8 {
+    let key = strip_stack_prefix(key);
     if key.starts_with("R:B") || key.contains("|R:B") {
         4
     } else if key.starts_with("T:B") || key.contains("|T:B") {
@@ -59,9 +66,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Max Turn Actions:   {}", args.max_turn_actions);
 
     let start = Instant::now();
-    let file = File::open(&args.input)?;
-    let mut reader = BufReader::with_capacity(32 * 1024 * 1024, file);
-    let raw: HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> = bincode::deserialize_from(&mut reader)?;
+    let loaded = lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver::load_strategy_from_file(
+        &args.input,
+    )?;
+    let raw: HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> = loaded
+        .into_iter()
+        .map(|(k, v)| {
+            let mut arr = [0.0f32; HOLDEM_NUM_ACTIONS];
+            for (i, &val) in v.iter().enumerate().take(HOLDEM_NUM_ACTIONS) {
+                arr[i] = val as f32;
+            }
+            (k, arr)
+        })
+        .collect();
     let total_in = raw.len();
     println!("Loaded {} infosets in {:.2?}.", total_in, start.elapsed());
 
@@ -83,9 +100,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             2 => {
                 /* 2. Flop: require preflop length <= max_pf_len */
-                if k.starts_with("P:") {
-                    if let Some(end) = k.find('|') {
-                        let pf_len = k[2..end].len();
+                let base_k = strip_stack_prefix(&k);
+                if base_k.starts_with("P:") {
+                    if let Some(end) = base_k.find('|') {
+                        let pf_len = base_k[2..end].len();
                         if pf_len > args.max_pf_len {
                             continue;
                         }

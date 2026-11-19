@@ -103,7 +103,7 @@ fn is_idiot_end_straight(hole: &[Card; NUM_HOLE_CARDS], board: &[Card], st_high:
 
 fn bucket_full_house(score: u64, board: &[Card]) -> usize {
     let trips_rank = ((score >> 16) & 0xF) as usize;
-    let pair_rank = ((score >> 12) & 0xF) as usize;
+    let pair_rank = (score & 0xF) as usize;
     let is_board_fh = if board.len() >= 5 {
         let b_score = evaluate_7cards(&[board[0], board[1]], &board[2..]);
         (b_score >> 32) == 6 && b_score >= score
@@ -322,8 +322,9 @@ fn bucket_two_pair_or_paired_board(
     let hit_bottom =
         (hole[0].rank as usize == bottom_pair) || (hole[1].rank as usize == bottom_pair);
 
-    if !is_pocket_pair && !hit_top && !hit_bottom {
-        /* Both pairs are on board: preserve draws on Flop/Turn, otherwise pure high card kicker (0..=10) */
+    if !hit_top && !hit_bottom {
+        /* Both pairs are on board (including counterfeited pocket pairs lower than both board pairs):
+         * preserve draws on Flop/Turn, otherwise pure high card kicker (0..=10) */
         if board.len() < 5 {
             let draw_bucket = bucket_high_card_or_draw(hole, board);
             if draw_bucket >= 11 {

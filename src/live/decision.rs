@@ -307,6 +307,8 @@ pub fn decide_action_traced_with_bet(
             };
             match short_act {
                 ALL_IN => {
+                    let my_posted_bet = current_bet.saturating_sub(to_call);
+                    let allin_total = my_chips + my_posted_bet;
                     if to_call >= my_chips && has("call") {
                         return ("call".to_string(), 0, tr);
                     } else if has("all_in") {
@@ -314,9 +316,9 @@ pub fn decide_action_traced_with_bet(
                     } else if has("allin") {
                         return ("allin".to_string(), 0, tr);
                     } else if has("raise") {
-                        return ("raise".to_string(), my_chips, tr);
+                        return ("raise".to_string(), allin_total, tr);
                     } else if has("bet") {
-                        return ("bet".to_string(), my_chips, tr);
+                        return ("bet".to_string(), allin_total, tr);
                     } else if has("call") {
                         return ("call".to_string(), 0, tr);
                     } else {
@@ -392,13 +394,19 @@ pub fn decide_action_traced_with_bet(
             )
         }
     } else {
-        /* 2. Abstract Strategy Model Lookup with O(1) Pre-Indexed Fallback */
-        if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned(
+        /* 2. Abstract Strategy Model Lookup (single-model multi-stack aware) with O(1) Fallback */
+        let eff_stack_bb = if my_chips > 0 && bb > 0 {
+            my_chips / bb
+        } else {
+            100
+        };
+        if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
             |k| strategy_map.get(k).cloned(),
             hole,
             board,
             round,
             history,
+            eff_stack_bb,
         ) {
             p
         } else if let Some(idx) = strategy_index {
@@ -412,7 +420,7 @@ pub fn decide_action_traced_with_bet(
 
     /* 3. Action Selection via Purified Strategy Sampling with Multi-way, Opponent Exploitation, and All-in Defense */
     let mut rng = rand::thread_rng();
-    let (chosen_u8, mut trace) = tracker.select_action_purified_traced_with_stack(
+    let (chosen_u8, mut trace) = tracker.select_action_purified_traced_with_stack_ex(
         &raw_probs,
         &legal_u8,
         current_bucket,
@@ -424,6 +432,7 @@ pub fn decide_action_traced_with_bet(
         active_opponents,
         bb,
         my_chips,
+        use_subgame,
         &mut rng,
     );
     let mut chosen_idx = chosen_u8 as usize;
@@ -438,12 +447,21 @@ pub fn decide_action_traced_with_bet(
      * - Never call a meaningful postflop bet (to_call > bb, pot_odds > 16.6%) with pure air
      *   or bare gutshot (bucket < 15) if calling leaves < 50% of the new pot behind or commits >= 30% of stack. */
     if round == 4 && to_call == 0 && current_bucket < 65 && chosen_idx >= RAISE_MIN as usize {
-        let turn_raises = history[2]
-            .as_slice()
+        let turn_hist = history[2].as_slice();
+        let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
+        /* On Turn, OOP (my_player == 1) acts on even indices (0, 2, ...), IP (my_player == 0) on odd indices (1, 3, ...).
+         * Only check to the Turn aggressor if the OPPONENT was the last Turn raiser! */
+        let opp_was_last_turn_raiser = turn_hist
             .iter()
-            .filter(|&&a| a >= RAISE_MIN)
-            .count();
-        if turn_raises >= 2 || (my_player == 1 && turn_raises >= 1) {
+            .enumerate()
+            .rev()
+            .find(|&(_, &a)| a >= RAISE_MIN)
+            .map(|(idx, _)| {
+                let is_oop_action = idx % 2 == 0;
+                (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
+            })
+            .unwrap_or(false);
+        if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
             chosen_idx = CALL_CHECK as usize;
             trace.guard_reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
         }

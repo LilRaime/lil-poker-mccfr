@@ -113,10 +113,10 @@ pub fn simulate_holdem_hand_traced(
             let to_call = (game.contributions[opp] - game.contributions[my_player]).max(0);
             let pot = game.contributions[0] + game.contributions[1];
 
+            let used_subgame = enable_subgame_search
+                && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
             /* 1. Get raw Blueprint/Subgame probabilities */
-            let raw_probs = if enable_subgame_search
-                && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT))
-            {
+            let raw_probs = if used_subgame {
                 let obs_vpip = if opp_tracker.total_hands >= 6 {
                     Some(opp_tracker.vpip_ratio())
                 } else {
@@ -152,12 +152,14 @@ pub fn simulate_holdem_hand_traced(
                     obs_pfr,
                 )
             } else if let Some(ref strat) = strategy {
-                if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(
+                let eff_stack_bb = (initial_chips / BIG_BLIND.max(1)).max(1);
+                if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical_with_stack(
                     |k| strat.get(k),
                     &game.hole[my_player],
                     &game.board,
                     game.round,
                     &game.history,
+                    eff_stack_bb,
                 ) {
                     s.to_vec()
                 } else if let Some(idx) = strategy_index {
@@ -215,7 +217,7 @@ pub fn simulate_holdem_hand_traced(
                 } else {
                     None
                 };
-            let (act, trace) = if let Some((short_act, short_reason)) = short_choice {
+            let (mut act, mut trace) = if let Some((short_act, short_reason)) = short_choice {
                 let total_p = (pot + to_call).max(1);
                 let po_bps =
                     ((to_call as f64 / total_p as f64).clamp(0.0, 1.0) * 1000.0).round() as u16;
@@ -231,7 +233,7 @@ pub fn simulate_holdem_hand_traced(
                     },
                 )
             } else {
-                opp_tracker.select_action_purified_traced_with_stack(
+                opp_tracker.select_action_purified_traced_with_stack_ex(
                     &raw_probs,
                     &legal,
                     current_bucket,
@@ -243,9 +245,44 @@ pub fn simulate_holdem_hand_traced(
                     1,
                     BIG_BLIND,
                     cur_my_chips,
+                    used_subgame,
                     rng,
                 )
             };
+            /* Live-parity post-selection guardrails */
+            if game.round == 4 && to_call == 0 && current_bucket < 65 && act >= RAISE_MIN {
+                let turn_hist = game.history[2].as_slice();
+                let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
+                let opp_was_last_turn_raiser = turn_hist
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|&(_, &a)| a >= RAISE_MIN)
+                    .map(|(idx, _)| {
+                        let is_oop_action = idx % 2 == 0;
+                        (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
+                    })
+                    .unwrap_or(false);
+                if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
+                    act = CALL_CHECK;
+                    trace.guard_reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
+                }
+            }
+            if to_call > 0 && act == FOLD && legal.contains(&CALL_CHECK) {
+                let new_pot = (pot + to_call).max(1);
+                let is_postflop_micro_commit = game.round >= 2
+                    && (to_call * 8 <= new_pot
+                        || (to_call * 6 <= new_pot && current_bucket >= 15)
+                        || (cur_my_chips > 0 && cur_my_chips <= BIG_BLIND && pot >= BIG_BLIND * 4));
+                let is_preflop_priced_in = game.round == 1
+                    && (to_call <= BIG_BLIND * 2
+                        || crate::cfr::abstraction::preflop_strength_tier(current_bucket) <= 6)
+                    && to_call * 6 <= new_pot;
+                if is_postflop_micro_commit || is_preflop_priced_in {
+                    act = CALL_CHECK;
+                    trace.guard_reasons.push("POT_COMMIT_DECISION_RESCUE");
+                }
+            }
             for r in trace.guard_reasons {
                 if !hand_guard_reasons.contains(&r) {
                     hand_guard_reasons.push(r);

@@ -29,6 +29,8 @@ pub struct LiveSnapshot {
     pub opp_is_sb: bool,
     pub my_player: usize,
     pub active_opponents: usize,
+    /// 6-max positional index: 0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB
+    pub seat_position: u8,
     pub opp_name: String,
     pub action_seq_key: String,
 }
@@ -162,7 +164,7 @@ fn compute_pot_and_to_call(
     } else {
         single_uncallable
     };
-    let pot = if raw_pot > total_uncallable + to_call {
+    let pot = if total_uncallable > 0 && raw_pot >= total_uncallable + to_call {
         raw_pot - total_uncallable
     } else {
         raw_pot.max(to_call)
@@ -173,7 +175,7 @@ fn compute_pot_and_to_call(
 fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize {
     /* In Heads-Up (total_opps <= 1): player 0 = SB/Button (IP postflop), player 1 = BB (OOP postflop).
      * In Multi-way (total_opps >= 2): blinds (SB/BB) act first postflop (OOP -> player 1),
-     * while non-blind seats act in position (IP -> player 0). */
+     * while non-blind seats (UTG/MP/CO/BTN) act in position relative to blinds (IP -> player 0). */
     if sum.total_opps <= 1 {
         if sum.my_is_sb {
             0
@@ -182,11 +184,13 @@ fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize 
         } else {
             0
         }
-    } else if !board_empty && (sum.my_is_sb || sum.my_is_bb) {
-        1
-    } else if sum.my_is_sb {
-        0
-    } else if sum.opp_is_sb || sum.my_is_bb {
+    } else if !board_empty {
+        if sum.my_is_sb || sum.my_is_bb {
+            1
+        } else {
+            0
+        }
+    } else if sum.my_is_sb || sum.my_is_bb {
         1
     } else {
         0
@@ -296,17 +300,56 @@ pub fn parse_live_state_with_hint(
         .unwrap_or(0);
 
     let action_seq_key = format!(
-        "{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{:?}{:?}",
         hand_id,
         phase,
         board.len(),
         current_bet,
         sum.my_bet,
         pot,
-        hist_len
+        hist_len,
+        hole[0],
+        hole[1]
     );
 
     let my_player = compute_hero_position(board.is_empty(), &sum);
+    let seat_position: u8 = if sum.my_is_sb {
+        4
+    } else if sum.my_is_bb {
+        5
+    } else if sum.total_opps <= 1 {
+        3
+    } else if let Some(arr) = players {
+        let dealer_seat = state
+            .get("dealer_seat")
+            .or_else(|| state.get("button_seat"))
+            .and_then(|v| v.as_i64());
+        let my_idx = arr
+            .iter()
+            .position(|p| extract_player_id(p).eq_ignore_ascii_case(player_id));
+        let btn_idx = dealer_seat.and_then(|ds| {
+            arr.iter()
+                .position(|p| p.get("seat").and_then(|v| v.as_i64()) == Some(ds))
+        });
+        match (my_idx, btn_idx) {
+            (Some(mi), Some(bi)) if !arr.is_empty() => {
+                let n = arr.len();
+                let dist_from_btn = (mi + n - bi) % n;
+                if dist_from_btn == 0 {
+                    3 /* BTN */
+                } else if dist_from_btn == n - 1 {
+                    2 /* CO */
+                } else if dist_from_btn == n.saturating_sub(2) && n >= 5 {
+                    1 /* MP */
+                } else {
+                    0 /* UTG */
+                }
+            }
+            _ => 2, /* Default CO if seat metadata absent */
+        }
+    } else {
+        2
+    };
 
     Some(LiveSnapshot {
         hand_id,
@@ -327,6 +370,7 @@ pub fn parse_live_state_with_hint(
         opp_is_sb: sum.opp_is_sb,
         my_player,
         active_opponents,
+        seat_position,
         opp_name: sum.opp_name,
         action_seq_key,
     })

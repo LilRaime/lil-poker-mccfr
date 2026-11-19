@@ -1,5 +1,5 @@
 /* Opponent Archetype Heuristics and Action Sampling */
-use super::holdem::{find_strategy_or_fallback, HoldemStrategy};
+use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
     detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
@@ -302,15 +302,8 @@ pub fn sample_opponent_action(
                 ) {
                     s.to_vec()
                 } else {
-                    find_strategy_or_fallback(
-                        strat,
-                        hole,
-                        board,
-                        game.round,
-                        opp_to_call,
-                        pot,
-                        &legal,
-                    )
+                    get_holdem_fallback_strategy(hole, board, game.round, opp_to_call, pot, &legal)
+                        .to_vec()
                 };
                 sample_from_probs(&probs, &legal, rng)
             } else {

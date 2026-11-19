@@ -294,3 +294,196 @@ fn test_fallback_high_blinds_and_turn_owned_lookup() {
         "lookup_strategy_hierarchical_owned must fall back to P:rc|F:cc|T:... on Turn"
     );
 }
+
+#[test]
+fn test_tier5_truncation_preserves_facing_bet_parity() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+    use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical_owned;
+    use lil_poker_mccfr::game::config::NUM_ROUNDS;
+    use lil_poker_mccfr::game::holdem::RoundHistory;
+    use std::collections::HashMap;
+    let hole = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Queen, Suit::Hearts),
+    ];
+    let board_flop = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+    /* Flop facing a raise: [RAISE_MIN, RAISE_HALF_POT] -> "rh" */
+    history[1].push(RAISE_MIN);
+    history[1].push(RAISE_HALF_POT);
+
+    let bucket = postflop_equity_bucket(&hole, &board_flop);
+    let check_node_key = format!("P:rc|F:B{}/", bucket);
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    /* Only a check-node (0% fold) exists in the map; Tier-5 truncation must NOT return it for "rh"! */
+    map.insert(check_node_key, vec![0.0, 0.90, 0.10, 0.0, 0.0, 0.0]);
+
+    let found = lookup_strategy_hierarchical_owned(
+        |k| map.get(k).cloned(),
+        &hole,
+        &board_flop,
+        2,
+        &history,
+    );
+    assert!(
+        found.is_none(),
+        "Facing-bet history 'rh' must NEVER truncate to check-node '' with 0% fold"
+    );
+}
+
+#[test]
+fn test_unified_single_model_multi_stack_keys_and_lookup() {
+    use lil_poker_mccfr::cfr::abstraction::{
+        hash_from_infoset_key_str, hash_holdem_infoset_key, mix_stack_prefix_hash,
+        stack_depth_prefix,
+    };
+    use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack;
+    use lil_poker_mccfr::game::config::NUM_ROUNDS;
+    use lil_poker_mccfr::game::holdem::RoundHistory;
+    use std::collections::HashMap;
+
+    let hole = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let history = [RoundHistory::new(); NUM_ROUNDS];
+
+    /* 1. Hash parity between incremental mix and full string parser for S15| / S30| / 100BB */
+    let base_h = hash_holdem_infoset_key(&hole, &[], 1, &history);
+    assert_eq!(
+        mix_stack_prefix_hash(base_h, stack_depth_prefix(15)),
+        hash_from_infoset_key_str("S15|P:AKs/")
+    );
+    assert_eq!(
+        mix_stack_prefix_hash(base_h, stack_depth_prefix(30)),
+        hash_from_infoset_key_str("S30|P:AKs/")
+    );
+    assert_eq!(
+        mix_stack_prefix_hash(base_h, stack_depth_prefix(100)),
+        hash_from_infoset_key_str("P:AKs/")
+    );
+
+    /* 2. Single HashMap serves 15 BB, 30 BB, and 100 BB keys + graceful fallback to 100 BB */
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    map.insert("S15|P:AKs/".to_string(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    map.insert("P:AKs/".to_string(), vec![0.0, 0.1, 0.5, 0.4, 0.0, 0.0]);
+
+    let p15 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| map.get(k).cloned(),
+        &hole,
+        &[],
+        1,
+        &history,
+        15,
+    )
+    .expect("15 BB lookup");
+    assert!((p15[ALL_IN as usize] - 1.0).abs() < 1e-6);
+
+    let p30 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| map.get(k).cloned(),
+        &hole,
+        &[],
+        1,
+        &history,
+        30,
+    )
+    .expect("30 BB falls back to 100 BB when S30| absent");
+    assert!((p30[RAISE_MIN as usize] - 0.5).abs() < 1e-6);
+
+    let p100 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| map.get(k).cloned(),
+        &hole,
+        &[],
+        1,
+        &history,
+        100,
+    )
+    .expect("100 BB lookup");
+    assert!((p100[RAISE_MIN as usize] - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn test_v2_board_texture_keys_hash_parity_and_fallback() {
+    use lil_poker_mccfr::cfr::abstraction::{
+        append_texture_to_key, compact_board_texture_char, get_holdem_infoset_key_rich,
+        hash_from_infoset_key_str, hash_holdem_infoset_key_rich, mix_stack_prefix_hash,
+        mix_texture_hash, postflop_equity_bucket,
+    };
+    use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack;
+    use lil_poker_mccfr::game::config::NUM_ROUNDS;
+    use lil_poker_mccfr::game::holdem::RoundHistory;
+    use std::collections::HashMap;
+
+    let hole = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::King, Suit::Diamonds),
+    ];
+    let mono_board = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+    ];
+    let dry_board = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    assert_eq!(compact_board_texture_char(&mono_board), 'm');
+    assert_eq!(compact_board_texture_char(&dry_board), 'd');
+
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+
+    /* 1. Hash parity for combined S15| + board texture 'm' key */
+    let base_key = get_holdem_infoset_key_rich(&hole, &mono_board, 2, &history);
+    let tex_key = format!("S15|{}", append_texture_to_key(&base_key, 'm'));
+    let base_h = hash_holdem_infoset_key_rich(&hole, &mono_board, 2, &history);
+    let expected_h = mix_stack_prefix_hash(mix_texture_hash(base_h, 'm'), "S15|");
+    assert_eq!(
+        hash_from_infoset_key_str(&tex_key),
+        expected_h,
+        "hash_from_infoset_key_str must match incremental stack+texture hash for {}",
+        tex_key
+    );
+
+    /* 2. Lookup prefers textured key when present and falls back to untextured v1 key when absent */
+    let b_mono = postflop_equity_bucket(&hole, &mono_board);
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    map.insert(
+        format!("S15|P:rc|F:B{:02}m/", b_mono),
+        vec![0.0, 0.80, 0.20, 0.0, 0.0, 0.0],
+    );
+    map.insert(
+        format!("P:rc|F:B{:02}/", b_mono),
+        vec![0.0, 0.10, 0.0, 0.90, 0.0, 0.0],
+    );
+
+    let p_mono_15 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| map.get(k).cloned(),
+        &hole,
+        &mono_board,
+        2,
+        &history,
+        15,
+    )
+    .expect("v2 textured 15 BB lookup");
+    assert!((p_mono_15[CALL_CHECK as usize] - 0.80).abs() < 1e-6);
+
+    let p_mono_100 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| map.get(k).cloned(),
+        &hole,
+        &mono_board,
+        2,
+        &history,
+        100,
+    )
+    .expect("v1 untextured fallback lookup");
+    assert!((p_mono_100[RAISE_THIRD_POT as usize] - 0.90).abs() < 1e-6);
+}

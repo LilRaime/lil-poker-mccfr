@@ -101,7 +101,37 @@ impl StreetStats {
     }
 }
 
+#[inline(always)]
+fn get_stack_idx(key: &str) -> usize {
+    if key.starts_with("S15|") {
+        0
+    } else if key.starts_with("S30|") {
+        1
+    } else {
+        2
+    }
+}
+
+fn stack_label(idx: usize) -> &'static str {
+    match idx {
+        0 => "15 BB (S15|)",
+        1 => "30 BB (S30|)",
+        _ => "100 BB (base)",
+    }
+}
+
+#[derive(Default)]
+struct StackStats {
+    total: usize,
+    pure_count: usize,
+    by_street: [usize; 4],
+}
+
 fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
+    let base_key = key
+        .strip_prefix("S15|")
+        .or_else(|| key.strip_prefix("S30|"))
+        .unwrap_or(key);
     let prefix = match street {
         1 => "P:",
         2 => "F:B",
@@ -110,21 +140,40 @@ fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
         _ => return None,
     };
     if street == 1 {
-        if let Some(rest) = key.strip_prefix("P:") {
+        if let Some(rest) = base_key.strip_prefix("P:") {
             let end = rest.find('/').unwrap_or(rest.len());
             if end > 0 && !rest[..end].contains('|') {
                 return Some(rest[..end].to_string());
             }
         }
         None
-    } else if let Some(pos) = key.find(prefix) {
-        let rest = &key[pos + prefix.len()..];
+    } else if let Some(pos) = base_key.find(prefix) {
+        let rest = &base_key[pos + prefix.len()..];
         let end = rest.find('/').unwrap_or(rest.len());
         if end > 0 {
-            Some(rest[..end].to_string())
+            let tok = &rest[..end];
+            let trimmed = tok.trim_end_matches(['d', 'w', 'p', 'm']);
+            if !trimmed.is_empty() {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
         } else {
             None
         }
+    } else {
+        None
+    }
+}
+
+fn extract_flop_texture(key: &str) -> Option<char> {
+    let pos = key.find("F:B")?;
+    let rest = &key[pos + 3..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    let tok = &rest[..end];
+    let last = tok.chars().last()?;
+    if matches!(last, 'd' | 'w' | 'p' | 'm') {
+        Some(last)
     } else {
         None
     }
@@ -170,19 +219,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let est_ram = (total_infosets * 128) as u64;
     println!("RAM Estimate: {}", format_bytes(est_ram));
 
-    /* Group and compute statistics by street */
+    /* Group and compute statistics by street and stack depth */
     let mut stats = [
         StreetStats::default(),
         StreetStats::default(),
         StreetStats::default(),
         StreetStats::default(),
     ];
+    let mut stack_stats = [
+        StackStats::default(),
+        StackStats::default(),
+        StackStats::default(),
+    ];
+    /* Flop texture counters: [dry 'd', wet 'w', paired 'p', monotone 'm', untextured] */
+    let mut flop_tex_counts = [0usize; 5];
     let mut postflop_buckets = HashSet::new();
 
     let mut matches = Vec::new();
 
     for (key, probs) in &strategy {
         let street = get_street(key);
+        let s_idx = get_stack_idx(key);
         if (1..=4).contains(&street) {
             let bucket_tok = extract_bucket_token(key, street);
             if street >= 2 {
@@ -192,7 +249,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            if street == 2 {
+                match extract_flop_texture(key) {
+                    Some('d') => flop_tex_counts[0] += 1,
+                    Some('w') => flop_tex_counts[1] += 1,
+                    Some('p') => flop_tex_counts[2] += 1,
+                    Some('m') => flop_tex_counts[3] += 1,
+                    _ => flop_tex_counts[4] += 1,
+                }
+            }
             stats[(street - 1) as usize].add(probs, bucket_tok);
+            let ss = &mut stack_stats[s_idx];
+            ss.total += 1;
+            ss.by_street[(street - 1) as usize] += 1;
+            if probs.iter().copied().fold(0.0f64, f64::max) >= 0.95 {
+                ss.pure_count += 1;
+            }
         }
 
         if let Some(ref pat) = args.pattern {
@@ -241,6 +313,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pf_bucket_count, total_infosets
     );
     println!("+---------------+----------+---------------+------------+--------------+\n");
+
+    /* Print Stack Depth Distribution Table */
+    println!("Stack Depth Distribution:");
+    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
+    println!("| Stack Depth   | Preflop |     Flop |     Turn |    River |     Total |  Share % | Pure % |");
+    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
+    for (idx, ss) in stack_stats.iter().enumerate() {
+        if ss.total == 0 {
+            continue;
+        }
+        let share_pct = if total_infosets > 0 {
+            (ss.total as f64 * 100.0) / total_infosets as f64
+        } else {
+            0.0
+        };
+        let pure_pct = (ss.pure_count as f64 * 100.0) / ss.total as f64;
+        println!(
+            "| {:<13} | {:>7} | {:>8} | {:>8} | {:>8} | {:>9} | {:>7.2}% | {:>5.1}% |",
+            stack_label(idx),
+            ss.by_street[0],
+            ss.by_street[1],
+            ss.by_street[2],
+            ss.by_street[3],
+            ss.total,
+            share_pct,
+            pure_pct
+        );
+    }
+    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
+
+    let textured_flop_total: usize = flop_tex_counts[..4].iter().sum();
+    if textured_flop_total > 0 {
+        println!(
+            "Flop Textures:  Dry(d)={} | Wet(w)={} | Paired(p)={} | Monotone(m)={} | Untextured={}\n",
+            flop_tex_counts[0],
+            flop_tex_counts[1],
+            flop_tex_counts[2],
+            flop_tex_counts[3],
+            flop_tex_counts[4],
+        );
+    } else {
+        println!();
+    }
 
     /* Print Average Action Probabilities by Street */
     println!("Average Action Distributions by Street:");

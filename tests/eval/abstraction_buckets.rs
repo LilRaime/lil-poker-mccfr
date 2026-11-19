@@ -470,3 +470,52 @@ fn test_postflop_board_quads_and_double_paired_draw() {
         "Nut flush draw on double-paired board must preserve FD bucket 23"
     );
 }
+
+#[test]
+fn test_full_house_pair_rank_and_counterfeited_pocket_pair_buckets() {
+    /* 1. Top Full House on trips board (AA on K K K 7 2) must be bucket 85 (not 84 underfull) */
+    let board_trips = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let hole_aa = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Ace, Suit::Diamonds),
+    ];
+    let hole_33 = [
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Diamonds),
+    ];
+    assert_eq!(
+        postflop_equity_bucket(&hole_aa, &board_trips),
+        85,
+        "AA on KKK72 must be top Full House (bucket 85)"
+    );
+    assert_eq!(
+        postflop_equity_bucket(&hole_33, &board_trips),
+        84,
+        "33 on KKK72 is an underfull (3 < 7) -> bucket 84"
+    );
+
+    /* 2. Counterfeited pocket pair (22 on K K Q Q 7) must be classified as air/kicker (<= 10), not a live pair */
+    let board_double_pair = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Spades),
+    ];
+    let hole_22 = [
+        Card::new(Rank::Two, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let b_22 = postflop_equity_bucket(&hole_22, &board_double_pair);
+    assert!(
+        b_22 <= 10,
+        "Counterfeited pocket pair 22 on KKQQ7 must be bucket <= 10, got {}",
+        b_22
+    );
+}

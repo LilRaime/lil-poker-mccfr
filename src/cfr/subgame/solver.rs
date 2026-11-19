@@ -21,15 +21,17 @@ struct SubgameIterContext<'a> {
     contributions: [i32; 2],
     raises_this_round: u8,
     my_player: usize,
-    remaining_deck: &'a [Card],
+    stack_size: i32,
+    board_only_deck: &'a [Card],
     reach_dist: &'a OpponentReachDistribution,
     hero_reach_opt: Option<&'a OpponentReachDistribution>,
 }
 
 /* Sample one iteration's hole cards, board runout, and precomputed street buckets.
- * Uses symmetric 50/50 range-vs-range sampling for hero_hole across BOTH players:
- * 50% exact *hole for dense root convergence, 50% Bayesian hero_reach so all range
- * buckets in Hero's subtree receive CFR+ regret updates instead of remaining uniform. */
+ * - On Hero's update (`sample_hero_from_range == false`): 50% exact `*ctx.hole` for dense root
+ *   convergence, 50% Bayesian `hero_reach`.
+ * - On Opponent's update (`sample_hero_from_range == true`): ALWAYS sample from `hero_reach`
+ *   so Opponent never learns a clairvoyant best response to Hero's exact private cards! */
 fn build_iteration_state(
     ctx: &SubgameIterContext<'_>,
     sample_hero_from_range: bool,
@@ -41,7 +43,7 @@ fn build_iteration_state(
     let hero_hole = if sample_hero_from_range {
         if let Some(hr) = ctx.hero_reach_opt {
             let mut chosen = *ctx.hole;
-            for _ in 0..4 {
+            for _ in 0..8 {
                 let cand = hr.sample(rng);
                 if !cand.contains(&opp_hole[0]) && !cand.contains(&opp_hole[1]) {
                     chosen = cand;
@@ -64,7 +66,7 @@ fn build_iteration_state(
 
     let mut deck_rem_cards = [ALL_52_CARDS[0]; NUM_CARDS_DECK];
     let mut rem_count = 0;
-    for &c in ctx.remaining_deck {
+    for &c in ctx.board_only_deck {
         if c != opp_hole[0] && c != opp_hole[1] && c != hero_hole[0] && c != hero_hole[1] {
             deck_rem_cards[rem_count] = c;
             rem_count += 1;
@@ -123,7 +125,7 @@ fn build_iteration_state(
         current_player: ctx.my_player,
         round: ctx.round,
         raises_this_round: ctx.raises_this_round,
-        stack_size: STACK_SIZE,
+        stack_size: ctx.stack_size,
         terminal: false,
         returns: [0.0, 0.0],
         showdown_outcome,
@@ -139,6 +141,7 @@ pub struct SubgameSolver {
     pub adaptive: bool,
     pub threads: usize,
     pub max_depth_streets: u8,
+    pub stack_size: i32,
 }
 
 /* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
@@ -177,7 +180,13 @@ impl SubgameSolver {
             adaptive: true,
             threads: default_threads,
             max_depth_streets: 2,
+            stack_size: STACK_SIZE,
         }
+    }
+
+    pub fn with_stack_size(mut self, stack_size: i32) -> Self {
+        self.stack_size = stack_size.max(BIG_BLIND * 2);
+        self
     }
 
     pub fn with_adaptive(mut self, adaptive: bool) -> Self {
@@ -410,6 +419,11 @@ impl SubgameSolver {
             .copied()
             .filter(|&c| !is_used(c))
             .collect();
+        let board_only_deck: Vec<Card> = ALL_52_CARDS
+            .iter()
+            .copied()
+            .filter(|&c| !board.contains(&c))
+            .collect();
 
         let rem_len = remaining_deck.len();
         if rem_len < 2 {
@@ -435,34 +449,33 @@ impl SubgameSolver {
             opp_pfr,
         );
 
-        /* Construct Hero's own Bayesian reach distribution for Range-vs-Range Continual Resolving */
-        let hero_reach_opt = if effective_iterations >= 50 {
-            Some(OpponentReachDistribution::build_for_target_generic(
-                &remaining_deck,
-                board,
-                round,
-                history,
-                strategy_map,
-                Some(my_player),
-                Some(my_player),
-                None,
-                None,
-            ))
-        } else {
-            None
-        };
+        /* Construct Hero's own Bayesian reach distribution from board_only_deck so Hero's actual
+         * hole cards are naturally included in Hero's range without card-removal bias! */
+        let hero_reach_opt = Some(OpponentReachDistribution::build_for_target_generic(
+            &board_only_deck,
+            board,
+            round,
+            history,
+            strategy_map,
+            Some(my_player),
+            Some(my_player),
+            None,
+            None,
+        ));
 
         /* Extract root infoset hash */
         let root_hash = hash_holdem_infoset_key(hole, board, round, history);
 
-        /* Warm-start root node from blueprint strategy if available */
+        /* Warm-start root node from blueprint strategy if available (single-model stack-depth aware) */
+        let eff_stack_bb = self.stack_size / BIG_BLIND.max(1);
         let blueprint_root_opt: Option<Vec<f64>> = strategy_map.and_then(|smap| {
-            crate::cfr::fallback::lookup_strategy_hierarchical_owned(
+            crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
                 |k| smap.get(k).map(|v| v.as_ref().to_vec()),
                 hole,
                 board,
                 round,
                 history,
+                eff_stack_bb,
             )
         });
 
@@ -477,6 +490,15 @@ impl SubgameSolver {
             .map(|n| n.get())
             .unwrap_or(1);
         let eff_threads = self.threads.min(available_threads);
+        let eff_stack = self.stack_size.max(contributions[0]).max(contributions[1]);
+        /* Derive lightweight node-locking bias (fold_mult, raise_mult) for Opponent child priors
+         * from observed VPIP/PFR so CFR+ solves an exploitative best response inside the subgame. */
+        let opp_prior_bias: Option<(f64, f64)> = match (opp_vpip, opp_pfr) {
+            (Some(_v), Some(p)) if p > 0.45 => Some((0.75, 1.45)), /* Maniac: folds less, raises more */
+            (Some(v), Some(p)) if v > 0.68 && p < 0.22 => Some((0.65, 0.70)), /* Station: calls more */
+            (Some(v), _) if v < 0.25 => Some((1.40, 0.85)), /* Nit/Rock: folds more */
+            _ => None,
+        };
         let iter_ctx = SubgameIterContext {
             hole,
             board,
@@ -485,7 +507,8 @@ impl SubgameSolver {
             contributions,
             raises_this_round,
             my_player,
-            remaining_deck: &remaining_deck,
+            stack_size: eff_stack,
+            board_only_deck: &board_only_deck,
             reach_dist: &reach_dist,
             hero_reach_opt: hero_reach_opt.as_ref(),
         };
@@ -498,7 +521,9 @@ impl SubgameSolver {
             root_node
         };
 
-        /* Run local CFR+ iterations with symmetric 50/50 Range-vs-Range Bayesian sampling */
+        /* Run local CFR+ iterations:
+         * - When updating Opponent: always sample Hero from hero_reach (no hole-card leak!).
+         * - When updating Hero: alternate exact *hole (dense root convergence) and hero_reach. */
         let solved_strategy: Option<Vec<f64>> = if eff_threads > 1 && effective_iterations >= 200 {
             use rayon::prelude::*;
             let num_threads = eff_threads.min(8);
@@ -518,13 +543,17 @@ impl SubgameSolver {
 
                 for iter_idx in 0..iters_per_thread {
                     let updating_player = (iter_idx + t_id) % 2;
-                    let sample_hero_from_range = ((iter_idx / 2) % 2) == 1;
+                    let sample_hero_from_range =
+                        updating_player != my_player || ((iter_idx / 2) % 2) == 1;
                     let (game, precomputed_buckets) =
                         build_iteration_state(&iter_ctx, sample_hero_from_range, &mut t_rng);
 
                     self.cfr_shared(
                         &game,
                         round,
+                        root_hash,
+                        my_player,
+                        opp_prior_bias,
                         updating_player,
                         (iter_idx + 1) as f64,
                         &precomputed_buckets,
@@ -544,13 +573,17 @@ impl SubgameSolver {
 
             for iter_idx in 0..effective_iterations {
                 let updating_player = iter_idx % 2;
-                let sample_hero_from_range = ((iter_idx / 2) % 2) == 1;
+                let sample_hero_from_range =
+                    updating_player != my_player || ((iter_idx / 2) % 2) == 1;
                 let (game, precomputed_buckets) =
                     build_iteration_state(&iter_ctx, sample_hero_from_range, &mut rng);
 
                 self.cfr_local(
                     &game,
                     round,
+                    root_hash,
+                    my_player,
+                    opp_prior_bias,
                     updating_player,
                     (iter_idx + 1) as f64,
                     &precomputed_buckets,
@@ -565,7 +598,14 @@ impl SubgameSolver {
         let opp = 1 - my_player;
         let to_call = (contributions[opp] - contributions[my_player]).max(0);
         let pot = contributions[0] + contributions[1];
-        let legal = if raises_this_round >= MAX_RAISES_PER_ROUND {
+        let any_allin = contributions[opp] >= eff_stack || contributions[my_player] >= eff_stack;
+        let legal = if any_allin {
+            if to_call > 0 {
+                vec![FOLD, CALL_CHECK]
+            } else {
+                vec![CALL_CHECK]
+            }
+        } else if raises_this_round >= MAX_RAISES_PER_ROUND {
             if to_call > 0 {
                 vec![FOLD, CALL_CHECK, ALL_IN]
             } else {

@@ -153,7 +153,7 @@ impl LiveRoundTracker {
         } else {
             scaled_allin_thresh
         };
-        let eff_limp_thresh = (bb * 2).max(1);
+        let eff_limp_thresh = bb.max(1);
 
         if hist.is_empty() {
             if round_idx == 0 {
@@ -218,8 +218,10 @@ impl LiveRoundTracker {
                     }
                 }
             } else {
-                /* Postflop: BB acts first. If opponent is BB (OOP), opponent acted first! */
-                if snapshot.my_is_sb && !snapshot.opp_is_sb {
+                /* Postflop: player 1 acts first (OOP), player 0 acts second (IP).
+                 * If Hero is IP (my_player == 0), opponent acted first; if Hero is OOP and faces a bet
+                 * (e.g. multi-way seat ahead of Hero bet), record that bet as well. */
+                if snapshot.my_player == 0 || snapshot.to_call > 0 {
                     if snapshot.to_call == 0 {
                         hist.push(CALL_CHECK);
                         if let Some(ref mut tr) = tracker {
@@ -232,8 +234,9 @@ impl LiveRoundTracker {
                             );
                         }
                     } else {
+                        let bet_amt = snapshot.opp_bet.max(snapshot.to_call);
                         let bet_act = pseudo_harmonic_action_mapping(
-                            snapshot.opp_bet,
+                            bet_amt,
                             snapshot.pot,
                             eff_allin_thresh,
                             &mut rng,
@@ -244,7 +247,7 @@ impl LiveRoundTracker {
                                 bet_act,
                                 (round_idx + 1) as u8,
                                 false,
-                                snapshot.opp_bet,
+                                bet_amt,
                                 snapshot.pot,
                             );
                         }
@@ -310,20 +313,32 @@ impl LiveRoundTracker {
      * inside TexasHoldemGame preserves the exact real-world Stack-to-Pot Ratio (SPR) and pot odds. */
     pub fn compute_scaled_subgame_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
         let (raw_contribs, raises) = self.compute_engine_contributions(snapshot);
-        if snapshot.my_chips <= 0 && snapshot.opp_chips <= 0 {
+        let eff_my_chips = if snapshot.my_chips > 0 {
+            snapshot.my_chips
+        } else {
+            self.estimated_my_chips
+        };
+        if eff_my_chips <= 0 && snapshot.opp_chips <= 0 {
             return (raw_contribs, raises);
         }
         let my_c = raw_contribs[snapshot.my_player];
         let opp_c = raw_contribs[1 - snapshot.my_player];
         let eff_rem = if snapshot.opp_chips > 0 || snapshot.to_call > 0 {
-            snapshot.my_chips.min(snapshot.opp_chips + snapshot.to_call)
+            eff_my_chips.min(snapshot.opp_chips + snapshot.to_call)
         } else {
-            snapshot.my_chips
+            eff_my_chips
+        };
+        let table_bb = if snapshot.big_blind > 0 {
+            snapshot.big_blind
+        } else if self.last_big_blind > 0 {
+            self.last_big_blind
+        } else {
+            BIG_BLIND
         };
         let max_c = my_c.max(opp_c);
         let eff_total = (max_c + eff_rem.saturating_sub(opp_c.saturating_sub(my_c)))
             .max(max_c)
-            .max(BIG_BLIND * 2);
+            .max(table_bb * 2);
         let scale = STACK_SIZE as f64 / eff_total as f64;
         let mut scaled_my = ((my_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
         let mut scaled_opp = ((opp_c as f64 * scale).round() as i32).clamp(SMALL_BLIND, STACK_SIZE);
@@ -343,6 +358,16 @@ impl LiveRoundTracker {
     }
 
     pub fn record_bot_action(&mut self, chosen_action: &str, amount: i32, pot: i32) {
+        self.record_bot_action_with_bet(chosen_action, amount, pot, 0);
+    }
+
+    pub fn record_bot_action_with_bet(
+        &mut self,
+        chosen_action: &str,
+        amount: i32,
+        pot: i32,
+        my_bet: i32,
+    ) {
         let bb = if self.last_big_blind > 0 {
             self.last_big_blind
         } else {
@@ -355,21 +380,22 @@ impl LiveRoundTracker {
             (bb * 35).max(1)
         };
         let open_min_total = (bb * 5 / 2).max(bb * 2);
+        let added = (amount - my_bet).max(0);
         let bot_act = match chosen_action {
             "fold" => FOLD,
             "check" | "call" => CALL_CHECK,
             "raise" | "bet" => {
-                if amount > 0 && self.estimated_my_chips > amount {
-                    self.estimated_my_chips -= amount;
+                if added > 0 {
+                    self.estimated_my_chips = self.estimated_my_chips.saturating_sub(added);
                 }
-                if amount >= allin_thresh {
+                if added >= allin_thresh {
                     ALL_IN
                 } else if self.current_round_idx == 0 {
                     if amount == open_min_total && pot <= sb + bb {
                         RAISE_MIN
-                    } else if amount >= pot / 2 {
+                    } else if added >= pot / 2 {
                         RAISE_HALF_POT
-                    } else if amount >= pot / 3 {
+                    } else if added >= pot / 3 {
                         RAISE_THIRD_POT
                     } else {
                         RAISE_MIN
@@ -377,9 +403,9 @@ impl LiveRoundTracker {
                 } else {
                     let half_thresh = (pot / 2).max(bb);
                     let third_thresh = (pot / 3).max(bb);
-                    if amount >= half_thresh {
+                    if added >= half_thresh {
                         RAISE_HALF_POT
-                    } else if amount >= third_thresh {
+                    } else if added >= third_thresh {
                         RAISE_THIRD_POT
                     } else {
                         RAISE_MIN
