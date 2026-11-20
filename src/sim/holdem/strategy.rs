@@ -1,15 +1,15 @@
-/* Texas Hold'em Strategy Loading and Fallback Resolution */
+/*! Texas Hold'em Strategy Loading and Fallback Resolution */
 use std::collections::HashMap;
 
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
-use crate::cfr::fallback::get_holdem_fallback_strategy;
+use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
 use crate::game::config::*;
 use crate::game::holdem::Card as HCard;
 
-/* Hold'em strategy: 6 actions [fold, call_check, raise_min, raise_third_pot, raise_half_pot, all_in] */
+/** Hold'em strategy: 6 actions [fold, call_check, raise_min, raise_third_pot, raise_half_pot, all_in] */
 pub type HoldemStrategy = HashMap<String, [f64; HOLDEM_NUM_ACTIONS]>;
 
-/* Hold'em Strategy Loader (supports both legacy 4-action, modern 6-action JSON, and .bin/.bincode formats) */
+/** Hold'em Strategy Loader (supports both legacy 4-action, modern 6-action JSON, and .bin/.bincode formats) */
 pub fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
     let prefer_json =
         path.ends_with(".json") || path.contains(".json.") || path.contains(".tmp.json");
@@ -89,7 +89,15 @@ pub fn find_strategy_or_fallback(
     pot: i32,
     legal: &[u8],
 ) -> Vec<f64> {
-    let fallback = get_holdem_fallback_strategy(hole, board, round, to_call, pot, legal);
+    let fallback = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: *hole,
+        board,
+        round,
+        to_call,
+        pot,
+        legal,
+        ..Default::default()
+    });
 
     let prefix = if round == 1 {
         let (_, name) = preflop_bucket(hole[0], hole[1]);

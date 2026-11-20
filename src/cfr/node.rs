@@ -1,11 +1,11 @@
-/*
+/*!
  * Lock-free information set node for parallel MCCFR.
  * Stores regret and strategy sums as scaled integers (× SCALE) in AtomicI64.
  * Uses atomic CAS clamping for true CFR+ (regrets floored at 0).
  */
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/* Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
+/** Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
 const SCALE: f64 = 1_000_000.0;
 pub const MAX_ACTIONS: usize = crate::game::config::HOLDEM_NUM_ACTIONS;
 pub const REGRET_FLOOR_I64: i64 = -200_000_000_000;
@@ -30,7 +30,7 @@ impl InfosetNode {
         }
     }
 
-    /* Current strategy via regret matching (positive part normalised) into a stack buffer. */
+    /** Current strategy via regret matching (positive part normalised) into a stack buffer. */
     #[inline(always)]
     pub fn get_strategy_buf(&self, out: &mut [f64; MAX_ACTIONS]) {
         let n = self.num_actions;
@@ -53,7 +53,7 @@ impl InfosetNode {
         }
     }
 
-    /* Single-pass legal action strategy via regret matching (avoids double normalization). */
+    /** Single-pass legal action strategy via regret matching (avoids double normalization). */
     #[inline(always)]
     pub fn get_legal_strategy_buf(&self, legal_actions: &[u8], out_probs: &mut [f64; MAX_ACTIONS]) {
         let n = legal_actions.len();
@@ -77,14 +77,14 @@ impl InfosetNode {
         }
     }
 
-    /* Current strategy via regret matching (allocated Vec). */
+    /** Current strategy via regret matching (allocated Vec). */
     pub fn get_strategy(&self) -> Vec<f64> {
         let mut buf = [0.0; MAX_ACTIONS];
         self.get_strategy_buf(&mut buf);
         buf[..self.num_actions].to_vec()
     }
 
-    /* Cumulative regret for a specific action */
+    /** Cumulative regret for a specific action */
     #[inline(always)]
     pub fn get_regret(&self, action: usize) -> f64 {
         if action < self.num_actions {
@@ -94,7 +94,7 @@ impl InfosetNode {
         }
     }
 
-    /* Average strategy (used as final policy after training). */
+    /** Average strategy (used as final policy after training). */
     pub fn get_average_strategy(&self) -> Vec<f64> {
         let n = self.num_actions;
         let mut sums = [0.0; MAX_ACTIONS];
@@ -111,7 +111,7 @@ impl InfosetNode {
         }
     }
 
-    /* Add regrets for each action using atomic CAS clamp for true CFR+ (floor at 0). */
+    /** Add regrets for each action using atomic CAS clamp for true CFR+ (floor at 0). */
     #[inline(always)]
     pub fn update_regrets_cfr_plus(&self, regrets: &[f64]) {
         for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
@@ -132,7 +132,7 @@ impl InfosetNode {
         }
     }
 
-    /* Fast lock-free regret update via fetch_add (used in epoch-based DCFR / Linear CFR). */
+    /** Fast lock-free regret update via fetch_add (used in epoch-based DCFR / Linear CFR). */
     #[inline(always)]
     pub fn update_regrets_linear(&self, regrets: &[f64]) {
         for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
@@ -143,7 +143,7 @@ impl InfosetNode {
         }
     }
 
-    /* Epoch-level DCFR / Linear CFR discount and floor clamping pass across all actions. */
+    /** Epoch-level DCFR / Linear CFR discount and floor clamping pass across all actions. */
     #[inline]
     pub fn discount(&self, pos_discount: f64, neg_discount: f64, strat_discount: f64) {
         for i in 0..self.num_actions {
@@ -166,7 +166,7 @@ impl InfosetNode {
         }
     }
 
-    /* Export raw atomic state for lossless training checkpoints. */
+    /** Export raw atomic state for lossless training checkpoints. */
     pub fn get_raw_state(&self) -> ([i64; MAX_ACTIONS], [i64; MAX_ACTIONS]) {
         let mut r = [0i64; MAX_ACTIONS];
         let mut s = [0i64; MAX_ACTIONS];
@@ -177,7 +177,7 @@ impl InfosetNode {
         (r, s)
     }
 
-    /* Restore raw atomic state from a training checkpoint. */
+    /** Restore raw atomic state from a training checkpoint. */
     pub fn set_raw_state(&self, regrets: &[i64; MAX_ACTIONS], strategies: &[i64; MAX_ACTIONS]) {
         for i in 0..self.num_actions {
             self.regret_sum[i].store(regrets[i], Ordering::Relaxed);
@@ -185,7 +185,7 @@ impl InfosetNode {
         }
     }
 
-    /* Discounted CFR (DCFR, Brown & Sandholm 2019):
+    /** Discounted CFR (DCFR, Brown & Sandholm 2019):
      * Discounts positive regrets by pos_discount = t^alpha / (t^alpha + 1),
      * and negative regrets by neg_discount = t^beta / (t^beta + 1). */
     #[inline(always)]
@@ -222,7 +222,7 @@ impl InfosetNode {
         }
     }
 
-    /* Accumulate strategy (weighted for linear averaging). */
+    /** Accumulate strategy (weighted for linear averaging). */
     #[inline(always)]
     pub fn accumulate_strategy(&self, strategy: &[f64], weight: f64) {
         let scale_weight = weight * SCALE;

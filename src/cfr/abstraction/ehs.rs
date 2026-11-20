@@ -1,4 +1,4 @@
-/*
+/*!
  * Expected Hand Strength (EHS / Equity) Rollouts via Monte Carlo & River Enumeration.
  */
 
@@ -8,7 +8,7 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
-/* Computes Expected Hand Strength (EHS / Equity) via Monte Carlo rollouts or River enumeration. */
+/** Computes Expected Hand Strength (EHS / Equity) via Monte Carlo rollouts or River enumeration. */
 pub fn calculate_ehs_equity(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> f64 {
     let mut is_used = [false; NUM_CARDS_DECK];
     let card_idx = |c: Card| -> usize { (c.suit as usize) * NUM_RANKS + (c.rank as usize) };
@@ -77,7 +77,7 @@ pub fn calculate_ehs_equity(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> f6
     wins / (num_trials as f64)
 }
 
-/* Computes Range-Aware & Multi-Way Expected Hand Strength (Equity in 0.0..=1.0)
+/** Computes Range-Aware & Multi-Way Expected Hand Strength (Equity in 0.0..=1.0)
  * against opponent ranges filtered by observed VPIP and aggression context. */
 pub fn calculate_range_equity(
     hole: &[Card; NUM_HOLE_CARDS],

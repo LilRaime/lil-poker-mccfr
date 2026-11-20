@@ -1,233 +1,112 @@
-/* Real-time Decision Engine for Live Poker Client */
+/*! Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::map_action_index_full;
+use super::protocol::{map_action_index, ActionMapRequest};
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
-use crate::cfr::fallback::{get_holdem_fallback_strategy_bb, StrategyLookupIndex};
-use crate::cfr::opponent_model::{DecisionTrace, OpponentTracker};
-use crate::cfr::subgame::{SubgameContext, SubgameSolver};
+use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
+use crate::cfr::opponent_model::{
+    DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest,
+};
+use crate::cfr::subgame::{SubgameContext, SubgameRequest, SubgameSolver};
 use crate::game::config::*;
-use crate::game::holdem::{Card, RoundHistory};
+use crate::game::holdem::{Card, Rank, RoundHistory, Suit};
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub struct LiveDecisionRequest<'a> {
+    pub hole: [Card; 2],
+    pub board: &'a [Card],
+    pub legal: &'a [String],
+    pub to_call: i32,
+    pub pot: i32,
+    pub subgame_search: bool,
+    pub history: [RoundHistory; 4],
+    pub my_player: usize,
+    pub contributions: [i32; 2],
+    pub raises_this_round: u8,
+    pub active_opponents: usize,
+    pub big_blind: i32,
+    pub my_chips: i32,
+    pub current_bet: i32,
+    pub strategy_index: Option<&'a StrategyLookupIndex>,
+    pub solver: Option<&'a SubgameSolver>,
+}
+
+impl Default for LiveDecisionRequest<'_> {
+    fn default() -> Self {
+        Self {
+            hole: [
+                Card::new(Rank::Ace, Suit::Spades),
+                Card::new(Rank::King, Suit::Spades),
+            ],
+            board: &[],
+            legal: &[],
+            to_call: 0,
+            pot: 0,
+            subgame_search: false,
+            history: [RoundHistory::new(); 4],
+            my_player: 0,
+            contributions: [SMALL_BLIND, BIG_BLIND],
+            raises_this_round: 0,
+            active_opponents: 1,
+            big_blind: BIG_BLIND,
+            my_chips: 0,
+            current_bet: 0,
+            strategy_index: None,
+            solver: None,
+        }
+    }
+}
+
 pub fn decide_action(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
+    req: &LiveDecisionRequest<'_>,
     strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
     tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-    my_player: usize,
-    contributions: [i32; 2],
-    raises_this_round: u8,
-    strategy_index: Option<&StrategyLookupIndex>,
-    solver: Option<&SubgameSolver>,
     solver_ctx: Option<&mut SubgameContext>,
 ) -> (String, i32) {
-    decide_action_multiway(
-        hole,
-        board,
-        legal,
-        to_call,
-        pot,
-        strategy_map,
-        subgame_search,
-        tracker,
-        history,
-        my_player,
-        contributions,
-        raises_this_round,
-        strategy_index,
-        solver,
-        solver_ctx,
-        1,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn decide_action_multiway(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
-    tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-    my_player: usize,
-    contributions: [i32; 2],
-    raises_this_round: u8,
-    strategy_index: Option<&StrategyLookupIndex>,
-    solver: Option<&SubgameSolver>,
-    solver_ctx: Option<&mut SubgameContext>,
-    active_opponents: usize,
-) -> (String, i32) {
-    decide_action_multiway_context(
-        hole,
-        board,
-        legal,
-        to_call,
-        pot,
-        strategy_map,
-        subgame_search,
-        tracker,
-        history,
-        my_player,
-        contributions,
-        raises_this_round,
-        strategy_index,
-        solver,
-        solver_ctx,
-        active_opponents,
-        BIG_BLIND,
-        0,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn decide_action_multiway_context(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
-    tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-    my_player: usize,
-    contributions: [i32; 2],
-    raises_this_round: u8,
-    strategy_index: Option<&StrategyLookupIndex>,
-    solver: Option<&SubgameSolver>,
-    solver_ctx: Option<&mut SubgameContext>,
-    active_opponents: usize,
-    big_blind: i32,
-    my_chips: i32,
-) -> (String, i32) {
-    let (act, amt, _) = decide_action_traced(
-        hole,
-        board,
-        legal,
-        to_call,
-        pot,
-        strategy_map,
-        subgame_search,
-        tracker,
-        history,
-        my_player,
-        contributions,
-        raises_this_round,
-        strategy_index,
-        solver,
-        solver_ctx,
-        active_opponents,
-        big_blind,
-        my_chips,
-    );
+    let (act, amt, _) = decide_action_traced(req, strategy_map, tracker, solver_ctx);
     (act, amt)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn decide_action_traced(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
+    req: &LiveDecisionRequest<'_>,
     strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
     tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-    my_player: usize,
-    contributions: [i32; 2],
-    raises_this_round: u8,
-    strategy_index: Option<&StrategyLookupIndex>,
-    solver: Option<&SubgameSolver>,
     solver_ctx: Option<&mut SubgameContext>,
-    active_opponents: usize,
-    big_blind: i32,
-    my_chips: i32,
 ) -> (String, i32, DecisionTrace) {
-    decide_action_traced_with_bet(
-        hole,
-        board,
-        legal,
-        to_call,
-        pot,
-        strategy_map,
-        subgame_search,
-        tracker,
-        history,
-        my_player,
-        contributions,
-        raises_this_round,
-        strategy_index,
-        solver,
-        solver_ctx,
-        active_opponents,
-        big_blind,
-        my_chips,
-        0,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn decide_action_traced_with_bet(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
-    tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-    my_player: usize,
-    contributions: [i32; 2],
-    raises_this_round: u8,
-    strategy_index: Option<&StrategyLookupIndex>,
-    solver: Option<&SubgameSolver>,
-    solver_ctx: Option<&mut SubgameContext>,
-    active_opponents: usize,
-    big_blind: i32,
-    my_chips: i32,
-    current_bet: i32,
-) -> (String, i32, DecisionTrace) {
-    let bb = if big_blind > 0 { big_blind } else { BIG_BLIND };
-    let active_opponents = active_opponents.max(1);
-    let (to_call, pot) = normalize_uncallable_bet(to_call, pot, my_chips);
-    let round = match board.len() {
+    let bb = if req.big_blind > 0 {
+        req.big_blind
+    } else {
+        BIG_BLIND
+    };
+    let active_opponents = req.active_opponents.max(1);
+    let (to_call, pot) = normalize_uncallable_bet(req.to_call, req.pot, req.my_chips);
+    let round = match req.board.len() {
         0 => 1,
         3 => 2,
         4 => 3,
         _ => 4,
     };
-    let legal_u8 = derive_legal_u8(legal, to_call);
+    let legal_u8 = derive_legal_u8(req.legal, to_call);
     let current_bucket = if round == 1 {
-        preflop_bucket(hole[0], hole[1]).0
+        preflop_bucket(req.hole[0], req.hole[1]).0
     } else {
-        postflop_equity_bucket(hole, board)
+        postflop_equity_bucket(&req.hole, req.board)
     };
     let state = LiveDecisionState {
-        hole,
-        board,
-        legal,
+        hole: &req.hole,
+        board: req.board,
+        legal: req.legal,
         legal_u8,
         round,
         bucket: current_bucket,
         to_call,
         pot,
         bb,
-        my_chips,
-        current_bet,
+        my_chips: req.my_chips,
+        current_bet: req.current_bet,
         active_opponents,
-        my_player,
-        history,
+        my_player: req.my_player,
+        history: &req.history,
     };
 
     if let Some(early) = try_extreme_pot_commit_rescue(&state) {
@@ -242,29 +121,31 @@ pub fn decide_action_traced_with_bet(
         tracker,
         LiveSubgameParams {
             strategy_map,
-            subgame_search,
-            contributions,
-            raises_this_round,
-            strategy_index,
-            solver,
+            subgame_search: req.subgame_search,
+            contributions: req.contributions,
+            raises_this_round: req.raises_this_round,
+            strategy_index: req.strategy_index,
+            solver: req.solver,
             solver_ctx,
         },
     );
 
     let mut rng = rand::thread_rng();
-    let (chosen_u8, mut trace) = tracker.select_action_purified_traced_with_stack_ex(
-        &raw_probs,
-        &state.legal_u8,
-        state.bucket,
-        state.round,
-        state.to_call,
-        state.pot,
-        Some(state.hole),
-        Some(state.board),
-        state.active_opponents,
-        state.bb,
-        state.my_chips,
-        use_subgame,
+    let (chosen_u8, mut trace) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &raw_probs,
+            legal_actions: &state.legal_u8,
+            bucket: state.bucket,
+            round: state.round,
+            to_call: state.to_call,
+            pot: state.pot,
+            hole: Some(state.hole),
+            board: Some(state.board),
+            active_opponents: state.active_opponents,
+            table_bb: state.bb,
+            my_chips: state.my_chips,
+            from_subgame: use_subgame,
+        },
         &mut rng,
     );
     let mut chosen_idx = chosen_u8 as usize;
@@ -272,17 +153,17 @@ pub fn decide_action_traced_with_bet(
     trace.final_action = chosen_idx as u8;
 
     let is_wet = has_wet_suits(state.board);
-    if let Some((act, amt)) = map_action_index_full(
-        chosen_idx,
-        state.legal,
-        state.to_call,
-        state.pot,
+    if let Some((act, amt)) = map_action_index(&ActionMapRequest {
+        action_idx: chosen_idx,
+        legal: state.legal,
+        to_call: state.to_call,
+        pot: state.pot,
         is_wet,
-        state.round,
-        state.bb,
-        state.my_chips,
-        state.current_bet,
-    ) {
+        round: state.round,
+        table_bb: state.bb,
+        my_chips: state.my_chips,
+        current_bet: state.current_bet,
+    }) {
         return (act, amt, trace);
     }
 
@@ -413,15 +294,15 @@ fn try_short_stack_nash_decision(
     if s.round != 1 || s.my_chips <= 0 || s.my_chips > s.bb * 12 {
         return None;
     }
-    let (short_act, reason) = tracker.select_short_stack_preflop_action(
-        s.bucket,
-        s.to_call,
-        s.pot,
-        s.active_opponents,
-        s.bb,
-        s.my_chips,
-        &s.legal_u8,
-    )?;
+    let (short_act, reason) = tracker.select_short_stack_preflop_action(&ShortStackRequest {
+        bucket: s.bucket,
+        to_call: s.to_call,
+        pot: s.pot,
+        active_opponents: s.active_opponents,
+        table_bb: s.bb,
+        my_chips: s.my_chips,
+        legal_actions: &s.legal_u8,
+    })?;
     let total_pot = (s.pot + s.to_call).max(1);
     let pot_odds = s.to_call as f64 / total_pot as f64;
     let pot_odds_bps = (pot_odds.clamp(0.0, 1.0) * 1000.0).round() as u16;
@@ -498,36 +379,21 @@ fn resolve_raw_strategy_probs(
     let raw_probs = if use_subgame {
         let default_solver = SubgameSolver::default();
         let active_solver = sp.solver.unwrap_or(&default_solver);
-        if let Some(ctx) = sp.solver_ctx {
-            active_solver.solve_with_stats(
-                s.hole,
-                s.board,
-                s.round,
-                s.history,
-                s.my_player,
-                sp.contributions,
-                sp.raises_this_round,
-                ctx,
-                Some(sp.strategy_map),
-                opp_vpip_opt,
-                opp_pfr_opt,
-            )
-        } else {
-            let mut local_ctx = SubgameContext::new();
-            active_solver.solve_with_stats(
-                s.hole,
-                s.board,
-                s.round,
-                s.history,
-                s.my_player,
-                sp.contributions,
-                sp.raises_this_round,
-                &mut local_ctx,
-                Some(sp.strategy_map),
-                opp_vpip_opt,
-                opp_pfr_opt,
-            )
-        }
+        active_solver.solve_with_strategy(
+            &SubgameRequest {
+                hole: *s.hole,
+                board: s.board,
+                round: s.round,
+                my_player: s.my_player,
+                contributions: sp.contributions,
+                raises_this_round: sp.raises_this_round,
+                opp_vpip: opp_vpip_opt,
+                opp_pfr: opp_pfr_opt,
+            },
+            s.history,
+            Some(sp.strategy_map),
+            sp.solver_ctx,
+        )
     } else {
         /* 2. Abstract Strategy Model Lookup (single-model multi-stack aware) with O(1) Fallback */
         let eff_stack_bb = if s.my_chips > 0 && s.bb > 0 {
@@ -544,27 +410,21 @@ fn resolve_raw_strategy_probs(
             eff_stack_bb,
         ) {
             p
-        } else if let Some(idx) = sp.strategy_index {
-            idx.get_blended_fallback_bb(
-                s.hole,
-                s.board,
-                s.round,
-                s.to_call,
-                s.pot,
-                &s.legal_u8,
-                s.bb,
-            )
         } else {
-            get_holdem_fallback_strategy_bb(
-                s.hole,
-                s.board,
-                s.round,
-                s.to_call,
-                s.pot,
-                &s.legal_u8,
-                s.bb,
-            )
-            .to_vec()
+            let req = FallbackRequest {
+                hole: *s.hole,
+                board: s.board,
+                round: s.round,
+                to_call: s.to_call,
+                pot: s.pot,
+                legal: &s.legal_u8,
+                table_bb: s.bb,
+            };
+            if let Some(idx) = sp.strategy_index {
+                idx.get_blended_fallback(&req)
+            } else {
+                get_holdem_fallback_strategy(&req).to_vec()
+            }
         }
     };
     (raw_probs, use_subgame)
@@ -698,38 +558,4 @@ fn safe_default_live_action(s: &LiveDecisionState<'_>) -> (String, i32) {
     } else {
         ("fold".to_string(), 0)
     }
-}
-
-/* Convenience wrapper for tests or callers that do not track detailed seats/chips */
-#[allow(clippy::too_many_arguments)]
-pub fn decide_action_simple(
-    hole: &[Card; 2],
-    board: &[Card],
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    strategy_map: &HashMap<String, Vec<f64>>,
-    subgame_search: bool,
-    tracker: &OpponentTracker,
-    history: &[RoundHistory; 4],
-) -> (String, i32) {
-    let my_contrib = ((pot - to_call) / 2).max(10);
-    let opp_contrib = my_contrib + to_call;
-    decide_action(
-        hole,
-        board,
-        legal,
-        to_call,
-        pot,
-        strategy_map,
-        subgame_search,
-        tracker,
-        history,
-        0,
-        [my_contrib, opp_contrib],
-        0,
-        None,
-        None,
-        None,
-    )
 }

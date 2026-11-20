@@ -1,10 +1,10 @@
-/* Multi-Way Table Adaptation (3 to 6 Active Players: Range Tightening & Bluff Damping) */
+/*! Multi-Way Table Adaptation (3 to 6 Active Players: Range Tightening & Bluff Damping) */
 use super::guards::{action_idx, force_action, zero_and_sum, GuardContext};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::preflop_strength_tier;
 use crate::game::config::*;
 
-/* 6-Max Positional Preflop Open-Raise Chart:
+/** 6-Max Positional Preflop Open-Raise Chart:
  * Maps seat_position (0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB) to maximum playable open tier. */
 pub fn max_open_tier_6max(seat_pos: u8) -> u8 {
     match seat_pos {

@@ -1,4 +1,4 @@
-/* Action constants and sizing for 52-Card Texas Hold'em. */
+/*! Action constants and sizing for 52-Card Texas Hold'em. */
 pub use crate::game::config::{
     ALL_IN, BIG_BLIND_F64, CALL_CHECK, DEFAULT_SUBGAME_ITERATIONS, FOLD, HOLDEM_NUM_ACTIONS,
     MAX_ROUND_ACTIONS, NUM_CARDS_DECK, NUM_COMMUNITY_CARDS, NUM_EQUITY_BUCKETS, NUM_HOLE_CARDS,
@@ -6,7 +6,7 @@ pub use crate::game::config::{
     RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
 
-/* Calculates geometric bet sizing to smoothly commit remaining stack over remaining streets.
+/** Calculates geometric bet sizing to smoothly commit remaining stack over remaining streets.
  * SPR = remaining_stack / pot.
  * Multiplier per street = ((1 + 2 * SPR)^(1 / streets_left) - 1) / 2. */
 #[inline]

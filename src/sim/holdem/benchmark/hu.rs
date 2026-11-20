@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use super::super::engine::simulate_holdem_hand_traced;
+use super::super::engine::{simulate_holdem_hand_traced, SimHandConfig};
 use super::super::strategy::{load_holdem_strategy, HoldemStrategy};
 use super::telemetry::{
     print_guard_telemetry, print_opponent_tracker_summary, print_positional_breakdown,
@@ -17,147 +17,91 @@ use crate::game::config::*;
 use crate::game::holdem::TexasHoldemGame;
 use crate::sim::stats::SimStats;
 
-/* Backward-compatible simulation entrypoint used by play CLI */
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_episodes_log_mode(
-    strategy_path: &str,
-    total_episodes: u64,
-    delay_ms: u64,
-    enable_subgame_search: bool,
-    player_arg: &str,
-    opp_archetype: &str,
-    opp_strategy_path: Option<&str>,
-    duplicate_mode: bool,
-) {
-    let _ = run_holdem_benchmark(
-        strategy_path,
-        total_episodes,
-        delay_ms,
-        enable_subgame_search,
-        player_arg,
-        opp_archetype,
-        opp_strategy_path,
-        duplicate_mode,
-        0.70,
-        false,
-    );
+#[derive(Debug, Clone, Copy)]
+pub struct HoldemBenchmarkConfig<'a> {
+    pub strategy_path: &'a str,
+    pub total_episodes: u64,
+    pub delay_ms: u64,
+    pub enable_subgame_search: bool,
+    pub player_arg: &'a str,
+    pub opp_archetype: &'a str,
+    pub opp_strategy_path: Option<&'a str>,
+    pub duplicate_mode: bool,
+    pub exploit_factor: f64,
+    pub quiet: bool,
+    pub seed: Option<u64>,
+    pub disabled_guards: &'a [String],
+    pub stack_size: i32,
 }
 
-/* Full 52-Card Texas Hold'em Benchmark and A/B Evaluation Suite */
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_benchmark(
-    strategy_path: &str,
-    total_episodes: u64,
-    delay_ms: u64,
-    enable_subgame_search: bool,
-    player_arg: &str,
-    opp_archetype: &str,
-    opp_strategy_path: Option<&str>,
-    duplicate_mode: bool,
-    exploit_factor: f64,
-    quiet: bool,
-) -> HoldemBenchmarkResult {
-    run_holdem_benchmark_seeded(
-        strategy_path,
-        total_episodes,
-        delay_ms,
-        enable_subgame_search,
-        player_arg,
-        opp_archetype,
-        opp_strategy_path,
-        duplicate_mode,
-        exploit_factor,
-        quiet,
-        None,
-        &[],
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_benchmark_seeded(
-    strategy_path: &str,
-    total_episodes: u64,
-    delay_ms: u64,
-    enable_subgame_search: bool,
-    player_arg: &str,
-    opp_archetype: &str,
-    opp_strategy_path: Option<&str>,
-    duplicate_mode: bool,
-    exploit_factor: f64,
-    quiet: bool,
-    seed: Option<u64>,
-    disabled_guards: &[String],
-) -> HoldemBenchmarkResult {
-    run_holdem_benchmark_with_stack(
-        strategy_path,
-        total_episodes,
-        delay_ms,
-        enable_subgame_search,
-        player_arg,
-        opp_archetype,
-        opp_strategy_path,
-        duplicate_mode,
-        exploit_factor,
-        quiet,
-        seed,
-        disabled_guards,
-        STACK_SIZE,
-    )
+impl Default for HoldemBenchmarkConfig<'_> {
+    fn default() -> Self {
+        Self {
+            strategy_path: "",
+            total_episodes: 100,
+            delay_ms: 0,
+            enable_subgame_search: false,
+            player_arg: "0",
+            opp_archetype: "tag",
+            opp_strategy_path: None,
+            duplicate_mode: true,
+            exploit_factor: 0.70,
+            quiet: false,
+            seed: None,
+            disabled_guards: &[],
+            stack_size: STACK_SIZE,
+        }
+    }
 }
 
 fn load_strategies_and_log(
-    strategy_path: &str,
-    opp_archetype: &str,
-    opp_strategy_path: Option<&str>,
-    duplicate_mode: bool,
-    enable_subgame_search: bool,
+    cfg: &HoldemBenchmarkConfig<'_>,
     stack_size: i32,
-    quiet: bool,
 ) -> (Option<HoldemStrategy>, Option<HoldemStrategy>) {
-    let strategy = load_holdem_strategy(strategy_path);
-    if !quiet {
+    let strategy = load_holdem_strategy(cfg.strategy_path);
+    if !cfg.quiet {
         if strategy.is_some() {
-            println!("[holdem] Loaded bot strategy from '{}'", strategy_path);
+            println!("[holdem] Loaded bot strategy from '{}'", cfg.strategy_path);
         } else {
             println!(
                 "[holdem] WARNING: strategy file '{}' not found — bot plays using fallback.",
-                strategy_path
+                cfg.strategy_path
             );
         }
     }
 
-    let opp_strategy = if let Some(path) = opp_strategy_path {
+    let opp_strategy = if let Some(path) = cfg.opp_strategy_path {
         let loaded = load_holdem_strategy(path);
-        if !quiet {
+        if !cfg.quiet {
             if loaded.is_some() {
                 println!("[holdem] Loaded opponent strategy from '{}'", path);
             } else {
                 eprintln!(
                     "[holdem] WARNING: Strategy file '{}' not found or invalid JSON — opponent falls back to '{}' archetype.",
                     path,
-                    opp_archetype.to_uppercase()
+                    cfg.opp_archetype.to_uppercase()
                 );
             }
         }
         loaded
-    } else if opp_archetype.eq_ignore_ascii_case("self") {
+    } else if cfg.opp_archetype.eq_ignore_ascii_case("self") {
         strategy.clone()
     } else {
         None
     };
 
-    if !quiet {
-        if let (Some(_), Some(opp_path)) = (&opp_strategy, opp_strategy_path) {
-            println!("\nA/B BENCHMARK: '{}' vs '{}'", strategy_path, opp_path);
-        } else if opp_archetype.eq_ignore_ascii_case("self") {
-            println!("\nSELF-PLAY BENCHMARK: '{}' vs Self", strategy_path);
+    if !cfg.quiet {
+        if let (Some(_), Some(opp_path)) = (&opp_strategy, cfg.opp_strategy_path) {
+            println!("\nA/B BENCHMARK: '{}' vs '{}'", cfg.strategy_path, opp_path);
+        } else if cfg.opp_archetype.eq_ignore_ascii_case("self") {
+            println!("\nSELF-PLAY BENCHMARK: '{}' vs Self", cfg.strategy_path);
         } else {
             println!(
                 "[holdem] Opponent archetype: '{}'",
-                opp_archetype.to_uppercase()
+                cfg.opp_archetype.to_uppercase()
             );
         }
-        if duplicate_mode {
+        if cfg.duplicate_mode {
             println!("[duplicate] DUPLICATE POKER ACTIVE: Each deal played in reverse seats to eliminate card luck!");
         }
         if stack_size != STACK_SIZE {
@@ -167,7 +111,7 @@ fn load_strategies_and_log(
                 stack_size / BIG_BLIND
             );
         }
-        if enable_subgame_search {
+        if cfg.enable_subgame_search {
             println!("[subgame] Real-Time Search (Subgame Solving) enabled on Turn & River.");
         }
     }
@@ -329,155 +273,172 @@ fn summarize_standard_result(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_benchmark_with_stack(
-    strategy_path: &str,
-    total_episodes: u64,
-    delay_ms: u64,
-    enable_subgame_search: bool,
-    player_arg: &str,
-    opp_archetype: &str,
-    opp_strategy_path: Option<&str>,
-    duplicate_mode: bool,
-    exploit_factor: f64,
-    quiet: bool,
-    seed: Option<u64>,
-    disabled_guards: &[String],
+struct BenchmarkLoopState<'a> {
+    opp_tracker: &'a mut OpponentTracker,
+    rng: &'a mut SmallRng,
+    total_stats: &'a mut SimStats,
+    pos_stats: &'a mut [SimStats; 2],
+    duplicate_stats: &'a mut SimStats,
+    guard_telemetry: &'a mut HashMap<String, (u64, f64)>,
+}
+
+fn run_duplicate_deals(
+    cfg: &HoldemBenchmarkConfig<'_>,
+    base_hand_cfg: &SimHandConfig<'_>,
     stack_size: i32,
-) -> HoldemBenchmarkResult {
-    let stack_size = stack_size.max(BIG_BLIND * 2);
-    let (strategy, opp_strategy) = load_strategies_and_log(
-        strategy_path,
-        opp_archetype,
-        opp_strategy_path,
-        duplicate_mode,
-        enable_subgame_search,
-        stack_size,
-        quiet,
-    );
+    st: &mut BenchmarkLoopState<'_>,
+) {
+    let show_logs = !cfg.quiet && (cfg.delay_ms > 0 || cfg.total_episodes <= 10);
+    const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
+    for ep in 1..=cfg.total_episodes {
+        let deck = deal_cards_prefix(st.rng, CARDS_NEEDED);
+        let hole_a = [deck[0], deck[1]];
+        let hole_b = [deck[2], deck[3]];
+        let runout = &deck[4..CARDS_NEEDED];
+
+        if show_logs {
+            println!("\n=== Deal {}/{} (Duplicate) ===", ep, cfg.total_episodes);
+        }
+
+        let label1 = format!("Deal {}/{} - Seat A (Bot as SB)", ep, cfg.total_episodes);
+        let game1 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
+        let (ret1, reasons1) = simulate_holdem_hand_traced(
+            game1,
+            &SimHandConfig {
+                my_player: 0,
+                show_logs,
+                label: &label1,
+                ..*base_hand_cfg
+            },
+            st.opp_tracker,
+            st.rng,
+        );
+        st.pos_stats[0].record(ret1);
+        st.total_stats.record(ret1);
+        record_guard_reasons(st.guard_telemetry, reasons1, ret1);
+
+        let label2 = format!("Deal {}/{} - Seat B (Bot as BB)", ep, cfg.total_episodes);
+        let game2 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
+        let (ret2, reasons2) = simulate_holdem_hand_traced(
+            game2,
+            &SimHandConfig {
+                my_player: 1,
+                show_logs,
+                label: &label2,
+                ..*base_hand_cfg
+            },
+            st.opp_tracker,
+            st.rng,
+        );
+        st.pos_stats[1].record(ret2);
+        st.total_stats.record(ret2);
+        record_guard_reasons(st.guard_telemetry, reasons2, ret2);
+
+        let net_edge = ret1 + ret2;
+        st.duplicate_stats.record(net_edge);
+
+        if !cfg.quiet && (show_logs || ep % 200 == 0 || ep == cfg.total_episodes) {
+            println!(
+                "Deal {:>4}/{} | SB: {:>+6.1} | BB: {:>+6.1} | Duplicate Edge: {:>+6.1} chips",
+                ep, cfg.total_episodes, ret1, ret2, net_edge
+            );
+        }
+    }
+}
+
+fn run_standard_episodes(
+    cfg: &HoldemBenchmarkConfig<'_>,
+    base_hand_cfg: &SimHandConfig<'_>,
+    stack_size: i32,
+    st: &mut BenchmarkLoopState<'_>,
+) {
+    for ep in 1..=cfg.total_episodes {
+        let my_player = match cfg.player_arg {
+            "0" | "sb" => 0usize,
+            "1" | "bb" => 1usize,
+            _ => ((ep - 1) % 2) as usize,
+        };
+        let label = format!("Episode {}", ep);
+        let game = TexasHoldemGame::new_random(st.rng).with_stack(stack_size);
+        let (ret, reasons) = simulate_holdem_hand_traced(
+            game,
+            &SimHandConfig {
+                my_player,
+                show_logs: !cfg.quiet,
+                label: &label,
+                ..*base_hand_cfg
+            },
+            st.opp_tracker,
+            st.rng,
+        );
+        st.pos_stats[my_player].record(ret);
+        st.total_stats.record(ret);
+        record_guard_reasons(st.guard_telemetry, reasons, ret);
+    }
+}
+
+/** Full 52-Card Texas Hold'em Benchmark and A/B Evaluation Suite */
+pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkResult {
+    let stack_size = cfg.stack_size.max(BIG_BLIND * 2);
+    let (strategy, opp_strategy) = load_strategies_and_log(cfg, stack_size);
     let strategy_index = strategy.as_ref().map(StrategyLookupIndex::build_from_map);
 
-    let mut rng = match seed {
+    let mut rng = match cfg.seed {
         Some(s) => SmallRng::seed_from_u64(s),
         None => SmallRng::from_entropy(),
     };
     let mut opp_tracker = OpponentTracker::new();
-    opp_tracker.set_exploit_factor(exploit_factor);
-    opp_tracker.set_disabled_guards(disabled_guards.to_vec());
+    opp_tracker.set_exploit_factor(cfg.exploit_factor);
+    opp_tracker.set_disabled_guards(cfg.disabled_guards.to_vec());
     let subgame_solver = SubgameSolver::default();
+
+    let base_hand_cfg = SimHandConfig {
+        my_player: 0,
+        strategy: strategy.as_ref(),
+        strategy_index: strategy_index.as_ref(),
+        opp_archetype: cfg.opp_archetype,
+        opp_strategy: opp_strategy.as_ref(),
+        subgame_solver: Some(&subgame_solver),
+        enable_subgame_search: cfg.enable_subgame_search,
+        delay_ms: cfg.delay_ms,
+        show_logs: false,
+        label: "",
+    };
 
     let mut total_stats = SimStats::default();
     let mut pos_stats = [SimStats::default(), SimStats::default()];
     let mut duplicate_stats = SimStats::default();
     let mut guard_telemetry: HashMap<String, (u64, f64)> = HashMap::new();
+    let mut loop_state = BenchmarkLoopState {
+        opp_tracker: &mut opp_tracker,
+        rng: &mut rng,
+        total_stats: &mut total_stats,
+        pos_stats: &mut pos_stats,
+        duplicate_stats: &mut duplicate_stats,
+        guard_telemetry: &mut guard_telemetry,
+    };
 
-    if duplicate_mode {
-        let show_logs = !quiet && (delay_ms > 0 || total_episodes <= 10);
-        const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
-        for ep in 1..=total_episodes {
-            let deck = deal_cards_prefix(&mut rng, CARDS_NEEDED);
-            let hole_a = [deck[0], deck[1]];
-            let hole_b = [deck[2], deck[3]];
-            let runout = &deck[4..CARDS_NEEDED];
-
-            if show_logs {
-                println!("\n=== Deal {}/{} (Duplicate) ===", ep, total_episodes);
-            }
-
-            let game1 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
-            let (ret1, reasons1) = simulate_holdem_hand_traced(
-                game1,
-                0,
-                &strategy,
-                strategy_index.as_ref(),
-                opp_archetype,
-                &opp_strategy,
-                &subgame_solver,
-                enable_subgame_search,
-                &mut opp_tracker,
-                &mut rng,
-                delay_ms,
-                show_logs,
-                &format!("Deal {}/{} - Seat A (Bot as SB)", ep, total_episodes),
-            );
-            pos_stats[0].record(ret1);
-            total_stats.record(ret1);
-            record_guard_reasons(&mut guard_telemetry, reasons1, ret1);
-
-            let game2 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_size);
-            let (ret2, reasons2) = simulate_holdem_hand_traced(
-                game2,
-                1,
-                &strategy,
-                strategy_index.as_ref(),
-                opp_archetype,
-                &opp_strategy,
-                &subgame_solver,
-                enable_subgame_search,
-                &mut opp_tracker,
-                &mut rng,
-                delay_ms,
-                show_logs,
-                &format!("Deal {}/{} - Seat B (Bot as BB)", ep, total_episodes),
-            );
-            pos_stats[1].record(ret2);
-            total_stats.record(ret2);
-            record_guard_reasons(&mut guard_telemetry, reasons2, ret2);
-
-            let net_edge = ret1 + ret2;
-            duplicate_stats.record(net_edge);
-
-            if !quiet && (show_logs || ep % 200 == 0 || ep == total_episodes) {
-                println!(
-                    "Deal {:>4}/{} | SB: {:>+6.1} | BB: {:>+6.1} | Duplicate Edge: {:>+6.1} chips",
-                    ep, total_episodes, ret1, ret2, net_edge
-                );
-            }
-        }
+    if cfg.duplicate_mode {
+        run_duplicate_deals(cfg, &base_hand_cfg, stack_size, &mut loop_state);
     } else {
-        for ep in 1..=total_episodes {
-            let my_player = match player_arg {
-                "0" | "sb" => 0usize,
-                "1" | "bb" => 1usize,
-                _ => ((ep - 1) % 2) as usize,
-            };
-            let game = TexasHoldemGame::new_random(&mut rng).with_stack(stack_size);
-            let (ret, reasons) = simulate_holdem_hand_traced(
-                game,
-                my_player,
-                &strategy,
-                strategy_index.as_ref(),
-                opp_archetype,
-                &opp_strategy,
-                &subgame_solver,
-                enable_subgame_search,
-                &mut opp_tracker,
-                &mut rng,
-                delay_ms,
-                !quiet,
-                &format!("Episode {}", ep),
-            );
-            pos_stats[my_player].record(ret);
-            total_stats.record(ret);
-            record_guard_reasons(&mut guard_telemetry, reasons, ret);
-        }
+        run_standard_episodes(cfg, &base_hand_cfg, stack_size, &mut loop_state);
     }
 
-    if !quiet {
+    if !cfg.quiet {
         print_opponent_tracker_summary(&opp_tracker);
     }
 
-    let mut res = if duplicate_mode {
+    let mut res = if cfg.duplicate_mode {
         summarize_duplicate_result(
             &duplicate_stats,
             &total_stats,
             &opp_strategy,
-            opp_strategy_path,
-            opp_archetype,
-            quiet,
+            cfg.opp_strategy_path,
+            cfg.opp_archetype,
+            cfg.quiet,
         )
     } else {
-        summarize_standard_result(&total_stats, opp_archetype, quiet)
+        summarize_standard_result(&total_stats, cfg.opp_archetype, cfg.quiet)
     };
 
     if pos_stats[0].hands > 0 {
@@ -487,7 +448,7 @@ pub fn run_holdem_benchmark_with_stack(
         res.bb_win_rate_bb100 = (pos_stats[1].avg_chips() / BIG_BLIND_F64) * 100.0;
     }
 
-    if !quiet {
+    if !cfg.quiet {
         print_positional_breakdown(&pos_stats);
         if !guard_telemetry.is_empty() {
             print_guard_telemetry(&guard_telemetry, total_stats.hands.max(1));

@@ -1,4 +1,4 @@
-/* Simulation and Match Statistics Tracking */
+/*! Simulation and Match Statistics Tracking */
 
 #[derive(Default, Clone, Debug)]
 pub struct SimStats {

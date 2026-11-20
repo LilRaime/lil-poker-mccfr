@@ -1,4 +1,4 @@
-/* Live Client Runtime and Poker Decision Module */
+/*! Live Client Runtime and Poker Decision Module */
 pub mod client;
 pub mod decision;
 pub mod protocol;

@@ -1,4 +1,4 @@
-/* Live Poker State Snapshot and Table/Round History Tracker */
+/*! Live Poker State Snapshot and Table/Round History Tracker */
 pub mod snapshot;
 pub mod table_tracker;
 

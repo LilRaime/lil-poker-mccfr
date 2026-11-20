@@ -1,8 +1,9 @@
 use lil_poker_mccfr::cfr::fallback::get_postflop_fallback_by_bucket;
-use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, SubgameContext, SubgameSolver};
+use lil_poker_mccfr::cfr::subgame::{
+    OpponentReachDistribution, ReachRequest, SubgameContext, SubgameRequest, SubgameSolver,
+};
 use lil_poker_mccfr::game::config::*;
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
-use std::collections::HashMap;
 
 #[test]
 fn test_subgame_solver_with_state() {
@@ -20,7 +21,17 @@ fn test_subgame_solver_with_state() {
     let history_dummy = [vec![1u8, 2u8], vec![1u8], vec![], vec![]];
 
     let solver = SubgameSolver::new(100);
-    let probs = solver.solve_with_state(&hole, &board, 3, &history_dummy, 0, [200, 240], 1);
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board,
+            contributions: [200, 240],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &history_dummy,
+        None,
+    );
     assert_eq!(probs.len(), 6);
     let sum: f64 = probs.iter().sum();
     assert!(
@@ -91,7 +102,17 @@ fn test_subgame_solver_multithreaded() {
     let solver = SubgameSolver::new(400).with_threads(4);
     assert_eq!(solver.threads, 4);
 
-    let probs = solver.solve_with_state(&hole, &board, 3, &history_dummy, 0, [200, 240], 1);
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board,
+            contributions: [200, 240],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &history_dummy,
+        None,
+    );
     assert_eq!(probs.len(), 6);
     let sum: f64 = probs.iter().sum();
     assert!(
@@ -126,7 +147,17 @@ fn test_subgame_solver_single_threaded() {
     let solver = SubgameSolver::new(400).with_threads(1);
     assert_eq!(solver.threads, 1);
 
-    let probs = solver.solve_with_state(&hole, &board, 3, &history_dummy, 0, [200, 240], 1);
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board,
+            contributions: [200, 240],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &history_dummy,
+        None,
+    );
     assert_eq!(probs.len(), 6);
     let sum: f64 = probs.iter().sum();
     assert!(
@@ -161,15 +192,27 @@ fn test_bet_size_aware_reach_and_depth_limited_subgame() {
     let hist_min = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
     let hist_shove = [vec![2u8, 1u8], vec![5u8], vec![], vec![]];
 
-    let dist_min =
-        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &hist_min, None, Some(1));
-    let dist_shove = OpponentReachDistribution::build_detailed(
-        &remaining,
-        &board,
-        2,
+    let dist_min = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &hist_min,
+    );
+    let dist_shove = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
         &hist_shove,
-        None,
-        Some(1),
     );
 
     /* Unimproved King-Ten offsuit on 7-7-3 board must be treated as air (not One Pair),
@@ -195,7 +238,19 @@ fn test_bet_size_aware_reach_and_depth_limited_subgame() {
     /* Depth-limited subgame solver with max_depth_streets = 1 */
     let solver = SubgameSolver::new(200).with_max_depth_streets(1);
     assert_eq!(solver.max_depth_streets, 1);
-    let probs = solver.solve_with_state(&hole, &board, 2, &hist_min, 1, [300, 200], 1);
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board,
+            round: 2,
+            my_player: 1,
+            contributions: [300, 200],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &hist_min,
+        None,
+    );
     let sum: f64 = probs.iter().sum();
     assert!((sum - 1.0).abs() < 1e-4);
 }
@@ -240,22 +295,18 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
         Card::new(Rank::Two, Suit::Spades),
     ];
     let history = [vec![1u8, 1u8], vec![1u8, 1u8], vec![], vec![]];
-    let no_map: Option<&HashMap<String, Vec<f64>>> = None;
 
     let solver = SubgameSolver::new(80);
     let mut ctx = SubgameContext::new();
-    let probs = solver.solve_with_stats_generic(
-        &hero_hole,
-        &board,
-        3,
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole: hero_hole,
+            board: &board,
+            contributions: [2000, 2000],
+            ..Default::default()
+        },
         &history,
-        0,
-        [2000, 2000],
-        0,
-        &mut ctx,
-        no_map,
-        None,
-        None,
+        Some(&mut ctx),
     );
 
     let sum: f64 = probs.iter().sum();
@@ -292,7 +343,16 @@ fn test_subgame_filters_extreme_overbet_allin() {
         vec![],
     ];
     let solver = SubgameSolver::new(200).with_stack_size(10000);
-    let probs = solver.solve_with_state(&hole_flush, &board_flush, 3, &history, 0, [200, 200], 0);
+    let probs = solver.solve(
+        &SubgameRequest {
+            hole: hole_flush,
+            board: &board_flush,
+            contributions: [200, 200],
+            ..Default::default()
+        },
+        &history,
+        None,
+    );
     assert!(
         probs[ALL_IN as usize] < 1e-6,
         "SubgameSolver must filter extreme >3x pot ALL_IN shoves from tree/root: {:?}",

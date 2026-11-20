@@ -1,4 +1,4 @@
-/*
+/*!
  * Explicit Bayesian reach distribution for opponent's private hole cards.
  */
 
@@ -11,6 +11,31 @@ use std::collections::HashMap;
 
 use postflop::{flop_likelihood, monotone_texture_multiplier, river_likelihood, turn_likelihood};
 use preflop::{preflop_prior_weight, style_width_multiplier};
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReachRequest<'a> {
+    pub remaining_deck: &'a [Card],
+    pub board: &'a [Card],
+    pub round: u8,
+    pub target_player: Option<usize>,
+    pub active_player: Option<usize>,
+    pub opp_vpip: Option<f64>,
+    pub opp_pfr: Option<f64>,
+}
+
+impl Default for ReachRequest<'_> {
+    fn default() -> Self {
+        Self {
+            remaining_deck: &[],
+            board: &[],
+            round: 2,
+            target_player: None,
+            active_player: None,
+            opp_vpip: None,
+            opp_pfr: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OpponentReachDistribution {
@@ -243,92 +268,29 @@ fn finalize_distribution(
 
 impl OpponentReachDistribution {
     pub fn build<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        remaining_deck: &[Card],
-        board: &[Card],
-        round: u8,
+        req: &ReachRequest<'_>,
         history: &H,
     ) -> Self {
-        Self::build_detailed(remaining_deck, board, round, history, None, None)
+        Self::build_with_strategy::<H, Vec<f64>>(req, history, None)
     }
 
-    pub fn build_with_strategy_map<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        remaining_deck: &[Card],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        strategy_map: Option<&HashMap<String, Vec<f64>>>,
-    ) -> Self {
-        Self::build_detailed(remaining_deck, board, round, history, strategy_map, None)
-    }
-
-    pub fn build_detailed<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        remaining_deck: &[Card],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        strategy_map: Option<&HashMap<String, Vec<f64>>>,
-        my_player: Option<usize>,
-    ) -> Self {
-        Self::build_with_stats(
-            remaining_deck,
-            board,
-            round,
-            history,
-            strategy_map,
-            my_player,
-            None,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_with_stats<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        remaining_deck: &[Card],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        strategy_map: Option<&HashMap<String, Vec<f64>>>,
-        my_player: Option<usize>,
-        opp_vpip: Option<f64>,
-        opp_pfr: Option<f64>,
-    ) -> Self {
-        Self::build_for_target_generic(
-            remaining_deck,
-            board,
-            round,
-            history,
-            strategy_map,
-            my_player.map(|mp| 1 - mp),
-            my_player,
-            opp_vpip,
-            opp_pfr,
-        )
-    }
-
-    /* Generic target-player reach distribution builder avoiding active-street actor inversion.
+    /** Target-player reach distribution builder avoiding active-street actor inversion.
      * `target_player`: seat (0=SB, 1=BB) whose hand distribution is built.
      * `active_player`: seat currently about to act at the root node. */
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_for_target_generic<
+    pub fn build_with_strategy<
         H: crate::cfr::abstraction::HistoryActions + ?Sized,
         V: AsRef<[f64]>,
     >(
-        remaining_deck: &[Card],
-        board: &[Card],
-        round: u8,
+        req: &ReachRequest<'_>,
         history: &H,
         strategy_map: Option<&HashMap<String, V>>,
-        target_player: Option<usize>,
-        active_player: Option<usize>,
-        opp_vpip: Option<f64>,
-        opp_pfr: Option<f64>,
     ) -> Self {
         use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
 
-        let rem_len = remaining_deck.len();
+        let rem_len = req.remaining_deck.len();
         if rem_len < 2 {
             let dummy = if rem_len == 1 {
-                [remaining_deck[0], remaining_deck[0]]
+                [req.remaining_deck[0], req.remaining_deck[0]]
             } else {
                 [
                     Card::new(Rank::Ace, Suit::Spades),
@@ -346,25 +308,32 @@ impl OpponentReachDistribution {
         let num_combos = rem_len * (rem_len - 1) / 2;
         let mut combos = Vec::with_capacity(num_combos);
         let mut weights = Vec::with_capacity(num_combos);
-        let ctx = extract_reach_context(board, round, history, target_player, active_player);
+        let ctx = extract_reach_context(
+            req.board,
+            req.round,
+            history,
+            req.target_player,
+            req.active_player,
+        );
         let mut sum_w = 0.0f64;
 
         for i in 0..rem_len {
             for j in (i + 1)..rem_len {
-                let cand = [remaining_deck[i], remaining_deck[j]];
+                let cand = [req.remaining_deck[i], req.remaining_deck[j]];
                 let (pf_idx, pf_name) = preflop_bucket(cand[0], cand[1]);
 
                 let pf_weight =
-                    preflop_prior_weight(pf_idx, pf_name, strategy_map, target_player, &ctx);
-                let flop_weight = flop_likelihood(&cand, board, round, &ctx);
-                let turn_weight = turn_likelihood(&cand, board, round, &ctx);
-                let river_weight = river_likelihood(&cand, board, round, &ctx);
+                    preflop_prior_weight(pf_idx, pf_name, strategy_map, req.target_player, &ctx);
+                let flop_weight = flop_likelihood(&cand, req.board, req.round, &ctx);
+                let turn_weight = turn_likelihood(&cand, req.board, req.round, &ctx);
+                let river_weight = river_likelihood(&cand, req.board, req.round, &ctx);
                 let texture_mult = monotone_texture_multiplier(&cand, &ctx);
 
                 let base_w = (pf_weight * flop_weight * turn_weight * river_weight * texture_mult)
                     .max(1e-5f64);
                 let tier = preflop_strength_tier(pf_idx);
-                let style_mult = style_width_multiplier(tier, opp_vpip, opp_pfr, ctx.opp_raised_pf);
+                let style_mult =
+                    style_width_multiplier(tier, req.opp_vpip, req.opp_pfr, ctx.opp_raised_pf);
                 let w = (base_w * style_mult).max(1e-5f64);
 
                 combos.push(cand);

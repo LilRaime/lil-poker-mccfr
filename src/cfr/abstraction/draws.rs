@@ -1,4 +1,4 @@
-/*
+/*!
  * Fast O(1) draw detection for Flop & Turn (Flush draws, Nut Flush draws, Straight draws, Gutshots).
  */
 
@@ -122,14 +122,14 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     }
 }
 
-/* Backward-compatible draw detection returning (is_flush_draw, is_straight_draw) */
+/** Backward-compatible draw detection returning (is_flush_draw, is_straight_draw) */
 #[inline(always)]
 pub fn detect_draws(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, bool) {
     let d = detect_draws_detailed(hole, board);
     (d.is_flush_draw, d.is_straight_draw)
 }
 
-/* Fast blocker detection for River bluffing:
+/** Fast blocker detection for River bluffing:
  * Checks whether the player holds a key blocker that removes the opponent's nut hands:
  * 1. Nut Flush Blocker: board has >= 3 cards of suit S, and player holds the Ace of suit S.
  * 2. Broadway Straight Blocker: board has >= 3 broadway cards, and player holds an Ace or King. */

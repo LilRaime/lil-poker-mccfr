@@ -1,4 +1,4 @@
-use lil_poker_mccfr::cfr::fallback::get_holdem_fallback_strategy;
+use lil_poker_mccfr::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -18,8 +18,15 @@ fn test_fallback_strategy_preflop_and_postflop() {
         RAISE_HALF_POT,
         ALL_IN,
     ];
-    let strat_aa =
-        get_holdem_fallback_strategy(&hole_aa, &board_empty, 1, 20, 40, &legal_facing_bet);
+    let strat_aa = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_aa,
+        board: &board_empty,
+        round: 1,
+        to_call: 20,
+        pot: 40,
+        legal: &legal_facing_bet,
+        ..Default::default()
+    });
     assert_eq!(
         strat_aa[FOLD as usize], 0.0,
         "Pocket Aces should never fold"
@@ -38,8 +45,15 @@ fn test_fallback_strategy_preflop_and_postflop() {
         card(Rank::Seven, Suit::Diamonds),
         card(Rank::Two, Suit::Clubs),
     ];
-    let strat_72 =
-        get_holdem_fallback_strategy(&hole_72, &board_empty, 1, 20, 40, &legal_facing_bet);
+    let strat_72 = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_72,
+        board: &board_empty,
+        round: 1,
+        to_call: 20,
+        pot: 40,
+        legal: &legal_facing_bet,
+        ..Default::default()
+    });
     assert!(
         strat_72[FOLD as usize] > 0.90,
         "72o facing bet should fold > 90%, got {}",
@@ -55,8 +69,15 @@ fn test_fallback_strategy_preflop_and_postflop() {
         card(Rank::King, Suit::Hearts),
         card(Rank::Queen, Suit::Diamonds),
     ];
-    let strat_fl =
-        get_holdem_fallback_strategy(&hole_fl, &board_fl, 4, 100, 300, &legal_facing_bet);
+    let strat_fl = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_fl,
+        board: &board_fl,
+        round: 4,
+        to_call: 100,
+        pot: 300,
+        legal: &legal_facing_bet,
+        ..Default::default()
+    });
     assert_eq!(
         strat_fl[FOLD as usize], 0.0,
         "Nut flush on river should never fold"
@@ -83,7 +104,15 @@ fn test_fallback_strategy_preflop_and_postflop() {
         RAISE_HALF_POT,
         ALL_IN,
     ];
-    let strat_air = get_holdem_fallback_strategy(&hole_72, &board_air, 2, 0, 100, &legal_free);
+    let strat_air = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_72,
+        board: &board_air,
+        round: 2,
+        to_call: 0,
+        pot: 100,
+        legal: &legal_free,
+        ..Default::default()
+    });
     assert_eq!(strat_air[FOLD as usize], 0.0);
     assert!(
         strat_air[CALL_CHECK as usize] >= 0.85,
@@ -129,7 +158,14 @@ fn test_strategy_lookup_index() {
         RAISE_HALF_POT,
         ALL_IN,
     ];
-    let blended = index.get_blended_fallback(&hole_aa, &[], 1, 20, 50, &legal);
+    let blended = index.get_blended_fallback(&FallbackRequest {
+        hole: hole_aa,
+        round: 1,
+        to_call: 20,
+        pot: 50,
+        legal: &legal,
+        ..Default::default()
+    });
     assert_eq!(
         blended.len(),
         lil_poker_mccfr::game::holdem::HOLDEM_NUM_ACTIONS
@@ -230,7 +266,14 @@ fn test_preflop_strength_tiers_and_88_shove_defense() {
         card(Rank::Eight, Suit::Hearts),
     ];
     let legal = [FOLD, CALL_CHECK, ALL_IN];
-    let strat_88_shove = get_holdem_fallback_strategy(&hole_88, &[], 1, 4000, 8000, &legal);
+    let strat_88_shove = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_88,
+        round: 1,
+        to_call: 4000,
+        pot: 8000,
+        legal: &legal,
+        ..Default::default()
+    });
     assert!(
         strat_88_shove[FOLD as usize] >= 0.70,
         "Pocket 88 facing 40 BB shove in fallback must fold >= 70%, got {}",
@@ -241,9 +284,7 @@ fn test_preflop_strength_tiers_and_88_shove_defense() {
 #[test]
 fn test_fallback_high_blinds_and_turn_owned_lookup() {
     use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-    use lil_poker_mccfr::cfr::fallback::{
-        get_holdem_fallback_strategy_bb, lookup_strategy_hierarchical_owned,
-    };
+    use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical_owned;
     use lil_poker_mccfr::game::holdem::{RoundHistory, NUM_ROUNDS};
     use std::collections::HashMap;
 
@@ -253,8 +294,24 @@ fn test_fallback_high_blinds_and_turn_owned_lookup() {
         Card::new(Rank::Four, Suit::Hearts),
     ];
     let legal = [FOLD, CALL_CHECK, RAISE_MIN];
-    let strat_bb400 = get_holdem_fallback_strategy_bb(&hole_44, &[], 1, 400, 1000, &legal, 400);
-    let strat_bb100 = get_holdem_fallback_strategy_bb(&hole_44, &[], 1, 400, 1000, &legal, 100);
+    let strat_bb400 = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_44,
+        round: 1,
+        to_call: 400,
+        pot: 1000,
+        legal: &legal,
+        table_bb: 400,
+        ..Default::default()
+    });
+    let strat_bb100 = get_holdem_fallback_strategy(&FallbackRequest {
+        hole: hole_44,
+        round: 1,
+        to_call: 400,
+        pot: 1000,
+        legal: &legal,
+        table_bb: 100,
+        ..Default::default()
+    });
     assert!(
         strat_bb400[CALL_CHECK as usize] > strat_bb100[CALL_CHECK as usize] + 0.2,
         "At table_bb=400, 400 chips is 1 BB (call ~0.40), whereas at bb=100 it is 4 BB (fold ~0.96)"

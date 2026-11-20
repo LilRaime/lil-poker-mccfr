@@ -1,4 +1,4 @@
-/*
+/*!
  * Full-tree Vanilla CFR / CFR+ solver for Leduc Poker.
  * Computes exact counterfactual regrets without sampling.
  */

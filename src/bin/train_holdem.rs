@@ -4,71 +4,71 @@ use lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver;
 #[derive(Parser, Debug)]
 #[command(about = "Train Parallel Card-Abstracted MCCFR for 52-Card Texas Hold'em")]
 struct Args {
-    /* Number of training iterations (episodes) */
+    /** Number of training iterations (episodes) */
     #[arg(short, long, default_value_t = 10_000_000)]
     iterations: u64,
 
-    /* Number of parallel threads */
+    /** Number of parallel threads */
     #[arg(short, long, default_value_t = 16)]
     threads: usize,
 
-    /* Log progress every N iterations */
+    /** Log progress every N iterations */
     #[arg(short, long, default_value_t = 50_000)]
     log_every: u64,
 
-    /* Output file path for strategy */
+    /** Output file path for strategy */
     #[arg(short, long, default_value = "models/holdem_abstract_strategy.bin")]
     save_path: String,
 
-    /* Save checkpoint every N iterations */
+    /** Save checkpoint every N iterations */
     #[arg(long, default_value_t = 0)]
     checkpoint_every: u64,
 
-    /* Also keep versioned checkpoint files */
+    /** Also keep versioned checkpoint files */
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     keep_checkpoints: bool,
 
-    /* Retain previous-round betting context (distinguish 3-bet from limp pots) */
+    /** Retain previous-round betting context (distinguish 3-bet from limp pots) */
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     rich_history: bool,
 
-    /* Regret-based pruning (speeds up training 2-3x by skipping sub-optimal branches) */
+    /** Regret-based pruning (speeds up training 2-3x by skipping sub-optimal branches) */
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pruning: bool,
 
-    /* Discounted CFR (DCFR, Brown & Sandholm 2019, used in Pluribus) */
+    /** Discounted CFR (DCFR, Brown & Sandholm 2019, used in Pluribus) */
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     dcfr: bool,
 
-    /* Prune river nodes upon saving (optimizes model size for bots <= 400MB RAM) */
+    /** Prune river nodes upon saving (optimizes model size for bots <= 400MB RAM) */
     #[arg(long, default_value_t = false)]
     prune_river: bool,
 
-    /* Maximum actions retained on Turn upon saving (0 = unlimited) */
+    /** Maximum actions retained on Turn upon saving (0 = unlimited) */
     #[arg(long, default_value_t = 0)]
     max_turn_actions: usize,
 
-    /* Optional path to existing strategy file to warm-start / resume training */
+    /** Optional path to existing strategy file to warm-start / resume training */
     #[arg(long)]
     resume: Option<String>,
 
-    /* Save lossless raw solver state (.ckpt) alongside the strategy file for resuming */
+    /** Save lossless raw solver state (.ckpt) alongside the strategy file for resuming */
     #[arg(long, default_value_t = false)]
     save_raw_ckpt: bool,
 
-    /* Effective starting stack depth in Big Blinds (e.g. 15, 30, 100) when --multi-stack is false */
+    /** Effective starting stack depth in Big Blinds (e.g. 15, 30, 100) when --multi-stack is false */
     #[arg(long, default_value_t = 100)]
     stack_bb: u32,
 
-    /* Train unified single-file multi-stack blueprint (15 BB + 30 BB + 100 BB in one model) */
+    /** Train unified single-file multi-stack blueprint (15 BB + 30 BB + 100 BB in one model) */
     #[arg(long, default_value_t = false)]
     multi_stack: bool,
 
-    /* Include compact 4-state board texture (d/w/p/m) in postflop infoset keys (v2 model) */
+    /** Include compact 4-state board texture (d/w/p/m) in postflop infoset keys (v2 model) */
     #[arg(long, default_value_t = false)]
     board_texture: bool,
 
-    /* Train only 15 BB (S15|) and 30 BB (S30|) episodes while keeping 100 BB nodes frozen */
+    /** Train only 15 BB (S15|) and 30 BB (S30|) episodes while keeping 100 BB nodes frozen */
     #[arg(long, default_value_t = false)]
     short_stacks_only: bool,
 }

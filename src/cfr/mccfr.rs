@@ -1,4 +1,4 @@
-/* Parallel External Sampling MCCFR with CFR+ for Leduc Poker. */
+/*! Parallel External Sampling MCCFR with CFR+ for Leduc Poker. */
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -26,7 +26,7 @@ impl MCCFRSolver {
         }
     }
 
-    /* Fast get or create a node for key. */
+    /** Fast get or create a node for key. */
     #[inline(always)]
     fn get_node(&self, key: &str) -> Arc<InfosetNode> {
         if let Some(node) = self.nodes.get(key) {
@@ -38,7 +38,7 @@ impl MCCFRSolver {
             .clone()
     }
 
-    /* Run iterations of parallel External Sampling MCCFR. */
+    /** Run iterations of parallel External Sampling MCCFR. */
     pub fn train(&self, iterations: u64, threads: usize, log_every: u64) {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -171,7 +171,7 @@ impl MCCFRSolver {
         }
     }
 
-    /* Collect average strategies as a map from infoset key → probabilities */
+    /** Collect average strategies as a map from infoset key → probabilities */
     pub fn export_strategy(&self) -> std::collections::HashMap<String, Vec<f64>> {
         self.nodes
             .iter()
@@ -184,7 +184,7 @@ impl MCCFRSolver {
     }
 }
 
-/* Sample an index from a probability distribution. */
+/** Sample an index from a probability distribution. */
 #[inline(always)]
 fn sample_action_buf(probs: &[f64], rng: &mut SmallRng) -> usize {
     let r: f64 = rng.gen();

@@ -1,4 +1,4 @@
-/* Priority Tier 2A: Preflop Discipline & All-In / Heavy-Bet Shove Defense */
+/*! Priority Tier 2A: Preflop Discipline & All-In / Heavy-Bet Shove Defense */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};

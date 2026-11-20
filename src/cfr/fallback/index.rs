@@ -1,8 +1,8 @@
-/*
+/*!
  * StrategyLookupIndex: Pre-indexed bucket -> averaged strategy lookup table.
  */
 
-use super::heuristic::get_holdem_fallback_strategy_bb;
+use super::heuristic::{get_holdem_fallback_strategy, FallbackRequest};
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::game::config::*;
 use crate::game::holdem::Card;
@@ -344,35 +344,12 @@ impl StrategyLookupIndex {
         }
     }
 
-    pub fn get_blended_fallback(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        legal: &[u8],
-    ) -> Vec<f64> {
-        self.get_blended_fallback_bb(hole, board, round, to_call, pot, legal, BIG_BLIND)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn get_blended_fallback_bb(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        legal: &[u8],
-        table_bb: i32,
-    ) -> Vec<f64> {
-        let fallback =
-            get_holdem_fallback_strategy_bb(hole, board, round, to_call, pot, legal, table_bb);
-        if let Some(avg) = self.query_bucket_avg(round, hole, board, to_call) {
+    pub fn get_blended_fallback(&self, req: &FallbackRequest<'_>) -> Vec<f64> {
+        let fallback = get_holdem_fallback_strategy(req);
+        if let Some(avg) = self.query_bucket_avg(req.round, &req.hole, req.board, req.to_call) {
             let mut blended = vec![0.0f64; HOLDEM_NUM_ACTIONS];
             let mut sum = 0.0f64;
-            for &a in legal {
+            for &a in req.legal {
                 let idx = a as usize;
                 if idx < HOLDEM_NUM_ACTIONS {
                     let val = 0.60 * avg[idx] + 0.40 * fallback[idx];
@@ -382,7 +359,7 @@ impl StrategyLookupIndex {
             }
             if sum > 1e-9 {
                 let inv = 1.0 / sum;
-                for &a in legal {
+                for &a in req.legal {
                     let idx = a as usize;
                     if idx < HOLDEM_NUM_ACTIONS {
                         blended[idx] *= inv;

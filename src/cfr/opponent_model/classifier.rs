@@ -1,4 +1,4 @@
-/* Opponent Archetype and Style Classification */
+/*! Opponent Archetype and Style Classification */
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpponentStyle {

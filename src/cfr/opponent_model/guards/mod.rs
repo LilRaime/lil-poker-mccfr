@@ -1,4 +1,4 @@
-/* Priority-Ordered Tactical Guards Architecture:
+/*! Priority-Ordered Tactical Guards Architecture:
  * - context / helpers: precomputed decision context and zero-cost probability helpers
  * - subgame: Essential safety invariants for Turn/River online subgame solves
  * - Tier 1 (tier1_boosts): Soft value/sizing boosts, button steals, and blocker bluffs

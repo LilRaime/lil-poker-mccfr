@@ -1,4 +1,4 @@
-/* Simulation, Match Runner, and Benchmark Module */
+/*! Simulation, Match Runner, and Benchmark Module */
 pub mod holdem;
 pub mod leduc;
 pub mod opponents;

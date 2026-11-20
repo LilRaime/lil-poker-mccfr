@@ -1,4 +1,4 @@
-/*
+/*!
  * Intelligent GTO-aligned Strategy Fallback and Equity Heuristic Engine.
  * Used when an Information Set key is not present in the offline strategy model.
  */
@@ -6,45 +6,54 @@
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
 use crate::game::config::*;
 use crate::game::holdem::{
-    Card, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
 
-/*
+#[derive(Debug, Clone, Copy)]
+pub struct FallbackRequest<'a> {
+    pub hole: [Card; 2],
+    pub board: &'a [Card],
+    pub round: u8,
+    pub to_call: i32,
+    pub pot: i32,
+    pub legal: &'a [u8],
+    pub table_bb: i32,
+}
+
+impl Default for FallbackRequest<'_> {
+    fn default() -> Self {
+        Self {
+            hole: [
+                Card::new(Rank::Ace, Suit::Spades),
+                Card::new(Rank::King, Suit::Spades),
+            ],
+            board: &[],
+            round: 1,
+            to_call: 0,
+            pot: 0,
+            legal: &[],
+            table_bb: BIG_BLIND,
+        }
+    }
+}
+
+/**
  * Returns a robust probability distribution [p_fold, p_call, p_raise_min, p_raise_third_pot, p_raise_half_pot, p_all_in]
  * tailored to hand strength, equity tier, pot odds, and legal actions.
  */
-pub fn get_holdem_fallback_strategy(
-    hole: &[Card; 2],
-    board: &[Card],
-    round: u8,
-    to_call: i32,
-    pot: i32,
-    legal: &[u8],
-) -> [f64; HOLDEM_NUM_ACTIONS] {
-    get_holdem_fallback_strategy_bb(hole, board, round, to_call, pot, legal, BIG_BLIND)
-}
-
-pub fn get_holdem_fallback_strategy_bb(
-    hole: &[Card; 2],
-    board: &[Card],
-    round: u8,
-    to_call: i32,
-    pot: i32,
-    legal: &[u8],
-    table_bb: i32,
-) -> [f64; HOLDEM_NUM_ACTIONS] {
-    let raw = if round == 1 {
-        let (pf_idx, _) = preflop_bucket(hole[0], hole[1]);
-        preflop_fallback(pf_idx, to_call, pot, table_bb)
+pub fn get_holdem_fallback_strategy(req: &FallbackRequest<'_>) -> [f64; HOLDEM_NUM_ACTIONS] {
+    let raw = if req.round == 1 {
+        let (pf_idx, _) = preflop_bucket(req.hole[0], req.hole[1]);
+        preflop_fallback(pf_idx, req.to_call, req.pot, req.table_bb)
     } else {
-        let bucket = postflop_equity_bucket(hole, board);
-        postflop_fallback(bucket, round, to_call, pot)
+        let bucket = postflop_equity_bucket(&req.hole, req.board);
+        postflop_fallback(bucket, req.round, req.to_call, req.pot)
     };
 
-    normalize_legal_action_probs(&raw, legal)
+    normalize_legal_action_probs(&raw, req.legal)
 }
 
-/* Fast postflop fallback lookup when precomputed equity bucket is already known. */
+/** Fast postflop fallback lookup when precomputed equity bucket is already known. */
 #[inline]
 pub fn get_postflop_fallback_by_bucket(
     bucket: usize,
@@ -88,7 +97,7 @@ fn normalize_legal_action_probs(
     filtered
 }
 
-/* Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers (1..=8) */
+/** Preflop heuristic based on Sklansky-Chubukov / canonical 169 hand tiers (1..=8) */
 fn preflop_fallback(
     idx: usize,
     to_call: i32,
@@ -203,7 +212,7 @@ fn preflop_fallback(
     s
 }
 
-/* Postflop heuristic based on 88 equity buckets (0..=87), board round, pot odds, and aggression */
+/** Postflop heuristic based on 88 equity buckets (0..=87), board round, pot odds, and aggression */
 fn postflop_fallback(
     bucket: usize,
     round: u8,
@@ -403,7 +412,7 @@ fn postflop_fallback(
     s
 }
 
-/*
+/**
  * Multi-tier hierarchical information set lookup.
  * Guarantees high hit rates (>98%) for models trained with rich history.
  */
@@ -645,7 +654,7 @@ pub fn lookup_strategy_hierarchical_owned<V>(
     None
 }
 
-/* Stack-aware hierarchical lookup for unified single-file multi-stack models:
+/** Stack-aware hierarchical lookup for unified single-file multi-stack models:
  * tries stack-depth prefixed keys ("S15|" for <= 20 BB, "S30|" for 21..=45 BB) first,
  * and seamlessly falls back to unprefixed 100 BB blueprint keys if absent. */
 pub fn lookup_strategy_hierarchical_with_stack<'a, V>(

@@ -1,4 +1,4 @@
-/*
+/*!
  * Information set key formatting and zero-allocation 64-bit FNV-1a hashing.
  */
 
@@ -77,7 +77,7 @@ pub fn action_to_char(a: u8) -> char {
     }
 }
 
-/* Fast zero-allocation infoset key formatting into a reusable String buffer */
+/** Fast zero-allocation infoset key formatting into a reusable String buffer */
 #[inline]
 pub fn format_holdem_infoset_key_slice(
     hole: &[Card; 2],
@@ -125,7 +125,7 @@ pub fn format_holdem_infoset_key<H: HistoryActions + ?Sized>(
     format_holdem_infoset_key_slice(hole, board, round, history.actions_in_round(r_idx), out);
 }
 
-/* Generates compact abstracted Information Set key for Texas Hold'em */
+/** Generates compact abstracted Information Set key for Texas Hold'em */
 pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     hole: &[Card; 2],
     board: &[Card],
@@ -137,7 +137,7 @@ pub fn get_holdem_infoset_key<H: HistoryActions + ?Sized>(
     s
 }
 
-/* Generates compact Infoset key using a precomputed postflop bucket */
+/** Generates compact Infoset key using a precomputed postflop bucket */
 #[inline]
 pub fn get_holdem_infoset_key_with_bucket<H: HistoryActions + ?Sized>(
     hole: &[Card; 2],
@@ -182,7 +182,7 @@ pub fn action_to_char_coarse(a: u8) -> char {
     }
 }
 
-/* Rich Information Set key formatting that retains full multi-street betting context across Preflop, Flop, Turn, and River.
+/** Rich Information Set key formatting that retains full multi-street betting context across Preflop, Flop, Turn, and River.
  * Previous rounds use canonical coarse actions ('c' or 'r') to prevent combinatorial explosion,
  * while current round uses exact actions ('f', 'c', 'r', 't', 'h', 'a'). */
 #[inline]
@@ -263,7 +263,7 @@ pub fn get_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     s
 }
 
-/* Generates Rich Infoset key using a precomputed postflop bucket */
+/** Generates Rich Infoset key using a precomputed postflop bucket */
 #[inline]
 pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     hole: &[Card; 2],
@@ -534,7 +534,7 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     h
 }
 
-/* Ultra-fast precomputed-bucket FNV-1a hashes (where round 1 `bucket` is already `preflop_bucket.0 as u8`). */
+/** Ultra-fast precomputed-bucket FNV-1a hashes (where round 1 `bucket` is already `preflop_bucket.0 as u8`). */
 #[inline(always)]
 pub fn hash_holdem_infoset_key_fast<H: HistoryActions + ?Sized>(
     bucket: u8,
@@ -636,7 +636,7 @@ pub fn char_to_action(c: u8) -> Option<u8> {
     }
 }
 
-/* Reconstructs the exact 64-bit FNV-1a infoset hash from a formatted infoset key string
+/** Reconstructs the exact 64-bit FNV-1a infoset hash from a formatted infoset key string
  * (both rich keys like "P:rc|F:B39/c" and compact keys like "P:AKo/rc" or "R:B50/t"),
  * matching `hash_holdem_infoset_key_rich_with_bucket` / `hash_holdem_infoset_key_with_bucket`. */
 pub fn hash_from_infoset_key_str(key: &str) -> u64 {

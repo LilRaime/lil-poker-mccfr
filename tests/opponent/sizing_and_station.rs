@@ -1,4 +1,4 @@
-use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -25,7 +25,13 @@ fn test_opponent_model_context_adjustment() {
     ];
 
     /* Strong hand (bucket 55) against calling station -> raise probability must increase */
-    let adj_strong = tracker.adjust_strategy_with_context(&base_strat, &legal, 55, false);
+    let adj_strong = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 55,
+        round: 2,
+        ..Default::default()
+    });
     let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
         .iter()
         .sum();
@@ -38,7 +44,13 @@ fn test_opponent_model_context_adjustment() {
     );
 
     /* Weak hand (bucket 10) against calling station -> bluff raises must decrease */
-    let adj_weak = tracker.adjust_strategy_with_context(&base_strat, &legal, 10, false);
+    let adj_weak = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 2,
+        ..Default::default()
+    });
     let total_raise_adj_weak: f64 = adj_weak[RAISE_MIN as usize..=ALL_IN as usize].iter().sum();
     assert!(
         total_raise_adj_weak < total_raise_base,
@@ -62,7 +74,13 @@ fn test_exploit_guardrails_and_toggles() {
 
     /* 1. When exploit is disabled: MUST return identical blueprint probabilities! */
     tracker.set_exploit_enabled(false);
-    let disabled_adj = tracker.adjust_strategy_full(&bp, &legal, 10, 2);
+    let disabled_adj = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &bp,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 2,
+        ..Default::default()
+    });
     for i in 0..5 {
         assert!(
             (disabled_adj[i] - bp[i]).abs() < 1e-6,
@@ -73,7 +91,13 @@ fn test_exploit_guardrails_and_toggles() {
     /* 2. When exploit is enabled: adjusted probabilities must be clamped within safe guardrails [0.15*bp, 2.50*bp] */
     tracker.set_exploit_enabled(true);
     tracker.set_exploit_factor(0.70);
-    let enabled_adj = tracker.adjust_strategy_full(&bp, &legal, 10, 2);
+    let enabled_adj = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &bp,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 2,
+        ..Default::default()
+    });
     for &a in &legal {
         let idx = a as usize;
         /* Even for extreme calling station where bluffing is suppressed, probability cannot drop below 0.15 * bp */
@@ -117,7 +141,13 @@ fn test_limper_exploitation_and_float_probe() {
     /* Test 1: Preflop ISO-raise against limper on BB (bucket 40, to_call = 0) */
     let base_strat = [0.0, 0.60, 0.20, 0.20, 0.0, 0.0];
     let legal = [CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT];
-    let adj_limp = tracker.adjust_strategy_full(&base_strat, &legal, 40, 1);
+    let adj_limp = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 40,
+        round: 1,
+        ..Default::default()
+    });
     let total_raise_limp = adj_limp[RAISE_MIN as usize] + adj_limp[RAISE_THIRD_POT as usize];
     let total_raise_base = base_strat[RAISE_MIN as usize] + base_strat[RAISE_THIRD_POT as usize];
     assert!(
@@ -128,7 +158,13 @@ fn test_limper_exploitation_and_float_probe() {
     );
 
     /* Test 2: Turn Float/Probe on missed flop c-bet (round 3) */
-    let adj_turn = tracker.adjust_strategy_full(&base_strat, &legal, 30, 3);
+    let adj_turn = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 30,
+        round: 3,
+        ..Default::default()
+    });
     let total_raise_turn = adj_turn[RAISE_MIN as usize] + adj_turn[RAISE_THIRD_POT as usize];
     assert!(
         total_raise_turn > total_raise_base,
@@ -157,7 +193,13 @@ fn test_dynamic_bet_sizing_against_leaks() {
     ];
 
     /* 1. Strong hand (bucket 50) against calling station -> Overbets (RAISE_HALF_POT, ALL_IN) boosted more than RAISE_MIN */
-    let adj_station_strong = station_tracker.adjust_strategy_full(&base_strat, &legal, 50, 2);
+    let adj_station_strong = station_tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 50,
+        round: 2,
+        ..Default::default()
+    });
     let boost_half =
         adj_station_strong[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
     let boost_min = adj_station_strong[RAISE_MIN as usize] / base_strat[RAISE_MIN as usize];
@@ -169,7 +211,13 @@ fn test_dynamic_bet_sizing_against_leaks() {
     );
 
     /* 2. Weak hand (bucket 10) against calling station -> All raises suppressed */
-    let adj_station_weak = station_tracker.adjust_strategy_full(&base_strat, &legal, 10, 2);
+    let adj_station_weak = station_tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 2,
+        ..Default::default()
+    });
     let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
         .iter()
         .sum();
@@ -191,7 +239,13 @@ fn test_dynamic_bet_sizing_against_leaks() {
     nit_tracker.record_action(CALL_CHECK, false);
     nit_tracker.record_action(RAISE_MIN, false);
 
-    let adj_nit_weak = nit_tracker.adjust_strategy_full(&base_strat, &legal, 10, 2);
+    let adj_nit_weak = nit_tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 2,
+        ..Default::default()
+    });
     let boost_third = adj_nit_weak[RAISE_THIRD_POT as usize] / base_strat[RAISE_THIRD_POT as usize];
     let boost_half_nit =
         adj_nit_weak[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
@@ -232,15 +286,16 @@ fn test_passive_station_value_extraction_boost() {
      * Must override passive SubgameSolver checking and fire RAISE_HALF_POT / RAISE_THIRD_POT! */
     for &round in &[2u8, 3, 4] {
         for &bucket in &[47usize, 55, 62, 70] {
-            let act = tracker.select_action_purified_context(
-                &passive_solver_probs,
-                &legal,
-                bucket,
-                round,
-                0,
-                1200,
-                None,
-                Some(&safe_board[..(round as usize + 1)]),
+            let act = tracker.select_action(
+                &PolicyRequest {
+                    raw_probs: &passive_solver_probs,
+                    legal_actions: &legal,
+                    bucket,
+                    round,
+                    pot: 1200,
+                    board: Some(&safe_board[..(round as usize + 1)]),
+                    ..Default::default()
+                },
                 &mut rng,
             );
             assert!(
@@ -255,15 +310,15 @@ fn test_passive_station_value_extraction_boost() {
 
     /* 2. Preflop (round 1) with strong Tier 1-2 hand (bucket 5) against passive station:
      * Must size up to RAISE_HALF_POT instead of limping or min-raising */
-    let pf_act = tracker.select_action_purified_context(
-        &passive_solver_probs,
-        &legal,
-        5,
-        1,
-        0,
-        300,
-        None,
-        None,
+    let pf_act = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &passive_solver_probs,
+            legal_actions: &legal,
+            bucket: 5,
+            round: 1,
+            pot: 300,
+            ..Default::default()
+        },
         &mut rng,
     );
     assert_eq!(

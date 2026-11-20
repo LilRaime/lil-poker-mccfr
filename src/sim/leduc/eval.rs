@@ -1,4 +1,4 @@
-/* Leduc Poker Exploitability (Best Response / NashConv) and Model Evaluation */
+/*! Leduc Poker Exploitability (Best Response / NashConv) and Model Evaluation */
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -6,7 +6,7 @@ use super::runner::{LeducStrategy, Strategy};
 use crate::game::card::ALL_CARDS;
 use crate::game::leduc::LeducGame;
 
-/* Simulation results against random agent */
+/** Simulation results against random agent */
 #[derive(Debug, Clone, Copy)]
 pub struct SimResult {
     pub win_pct: f64,
@@ -15,7 +15,7 @@ pub struct SimResult {
     pub mbb_se: f64,
 }
 
-/* Tabular Strategy Display */
+/** Tabular Strategy Display */
 pub fn display_sample_strategy(strategy: &Strategy, verbose: bool) {
     println!("\n--- Strategy Profile Highlights ---");
     println!(
@@ -72,7 +72,7 @@ pub fn display_sample_strategy(strategy: &Strategy, verbose: bool) {
     }
 }
 
-/* Simulation against Random Agent */
+/** Simulation against Random Agent */
 pub fn simulate_vs_random(
     strategy: &Strategy,
     hands: u64,
@@ -158,7 +158,7 @@ pub fn sample_model_action(
     legal[n - 1]
 }
 
-/* Best Response Tree Traversal (NashConv) */
+/** Best Response Tree Traversal (NashConv) */
 pub fn compute_exploitability(strategy: &LeducStrategy) -> f64 {
     let cards = &ALL_CARDS;
     let n = cards.len();

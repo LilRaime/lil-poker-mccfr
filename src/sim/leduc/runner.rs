@@ -1,4 +1,4 @@
-/* Leduc Poker CLI Runner and Match Simulator */
+/*! Leduc Poker CLI Runner and Match Simulator */
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::thread::sleep;
@@ -12,13 +12,13 @@ use crate::game::card::Card;
 use crate::game::leduc::{LeducGame, CALL, FOLD, RAISE};
 use crate::sim::stats::SimStats;
 
-/* Leduc strategy: 3 actions [fold, call, raise] */
+/** Leduc strategy: 3 actions [fold, call, raise] */
 pub type LeducStrategy = HashMap<String, [f64; 3]>;
 
-/* Keep backward-compat alias used in Leduc helpers. */
+/** Keep backward-compat alias used in Leduc helpers. */
 pub type Strategy = LeducStrategy;
 
-/* Load Strategy */
+/** Load Strategy */
 pub fn load_strategy(path: &str) -> Strategy {
     let data = std::fs::read_to_string(path)
         .unwrap_or_else(|_| panic!("Cannot read strategy file: {}", path));
@@ -89,7 +89,7 @@ pub fn prompt_action(legal: &[u8]) -> u8 {
     }
 }
 
-/* Action Sampling Helpers */
+/** Action Sampling Helpers */
 pub fn get_action_probs(strategy: &Strategy, game: &LeducGame, player: usize) -> Vec<f64> {
     let legal = game.legal_actions();
     let n = legal.len();
@@ -117,7 +117,7 @@ pub fn sample_action(probs: &[f64], rng: &mut SmallRng) -> usize {
     probs.len() - 1
 }
 
-/* Mode 3: Leduc RL Episode Step Log Format */
+/** Mode 3: Leduc RL Episode Step Log Format */
 pub fn run_episodes_log_mode(
     strategy: &Strategy,
     total_episodes: u64,
@@ -282,7 +282,7 @@ pub fn run_episodes_log_mode(
     println!("============================================================\n");
 }
 
-/* Mode 1: Spectator Watch Mode */
+/** Mode 1: Spectator Watch Mode */
 pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
     let mut rng = SmallRng::from_entropy();
     let mut score = [0.0f64; 2];
@@ -420,7 +420,7 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
     println!("============================================================");
 }
 
-/* Mode 2: Interactive Human vs Bot Play */
+/** Mode 2: Interactive Human vs Bot Play */
 pub fn run_human_mode(strategy: &Strategy, total_hands: u64) {
     let mut rng = SmallRng::from_entropy();
     let mut human_score = 0.0f64;

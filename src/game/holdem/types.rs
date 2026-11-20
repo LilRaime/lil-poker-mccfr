@@ -1,4 +1,4 @@
-/*
+/*!
  * Core Card, Rank, Suit, Board, and History types for Texas Hold'em.
  */
 

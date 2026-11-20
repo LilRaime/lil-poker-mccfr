@@ -2,23 +2,23 @@ use clap::Parser;
 use lil_poker_mccfr::cfr::mccfr::MCCFRSolver;
 use std::fs;
 
-/* Parallel MCCFR (CFR+) Poker Solver — Leduc Hold'em */
+/** Parallel MCCFR (CFR+) Poker Solver — Leduc Hold'em */
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /* Number of MCCFR iterations */
+    /** Number of MCCFR iterations */
     #[arg(short, long, default_value_t = 200_000)]
     iterations: u64,
 
-    /* Number of parallel threads (Rayon) */
+    /** Number of parallel threads (Rayon) */
     #[arg(short, long, default_value_t = num_cpus())]
     threads: usize,
 
-    /* Path to save the strategy JSON */
+    /** Path to save the strategy JSON */
     #[arg(short, long, default_value = "strategy.json")]
     save_path: String,
 
-    /* Log progress every N iterations (0 = silent) */
+    /** Log progress every N iterations (0 = silent) */
     #[arg(long, default_value_t = 10_000)]
     log_every: u64,
 }

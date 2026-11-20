@@ -63,7 +63,7 @@ fn fallback_preflop_weight(pf_idx: usize, ctx: &ReachContext) -> f64 {
     }
 }
 
-/* 1. Preflop Bayesian Prior (informed by blueprint strategy when provided) */
+/** 1. Preflop Bayesian Prior (informed by blueprint strategy when provided) */
 pub(super) fn preflop_prior_weight<V: AsRef<[f64]>>(
     pf_idx: usize,
     pf_name: &str,
@@ -109,7 +109,7 @@ pub(super) fn preflop_prior_weight<V: AsRef<[f64]>>(
     }
 }
 
-/* 5. Observed VPIP / PFR Range Width Adaptation */
+/** 5. Observed VPIP / PFR Range Width Adaptation */
 pub(super) fn style_width_multiplier(
     tier: u8,
     opp_vpip: Option<f64>,

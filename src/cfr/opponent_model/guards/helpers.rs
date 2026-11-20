@@ -1,4 +1,4 @@
-/* Shared Zero-Cost Guard Action Helpers & Cross-Tier Safety Invariants */
+/*! Shared Zero-Cost Guard Action Helpers & Cross-Tier Safety Invariants */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
@@ -84,7 +84,7 @@ pub(super) fn is_three_straight_board(board: &[Card]) -> bool {
     (0..=9).any(|s| (s..s + 4).filter(|&r| ranks[r]).count() >= 3)
 }
 
-/* Cap extreme > 3x pot ALL_IN shoves for ALL hands when effective stack is known */
+/** Cap extreme > 3x pot ALL_IN shoves for ALL hands when effective stack is known */
 pub(super) fn apply_overbet_allin_cap(
     tracker: &OpponentTracker,
     probs: &mut [f64],
@@ -133,7 +133,7 @@ pub(super) fn apply_overbet_allin_cap(
     }
 }
 
-/* River bluff discipline: no A/K-high showdown-value bets, no 25% micro-bluff into paired
+/** River bluff discipline: no A/K-high showdown-value bets, no 25% micro-bluff into paired
  * rivers, and no 125% overbet on paired river with weak/medium pairs (28..=43). */
 pub(super) fn apply_river_bluff_cap(
     tracker: &OpponentTracker,

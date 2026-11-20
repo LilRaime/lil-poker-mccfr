@@ -1,62 +1,42 @@
 use std::collections::HashMap;
 
-use super::hu::run_holdem_benchmark_with_stack;
+use super::hu::{run_holdem_benchmark, HoldemBenchmarkConfig};
 use super::telemetry::print_guard_telemetry;
 use super::HoldemBenchmarkResult;
 use crate::game::config::{BIG_BLIND, STACK_SIZE};
 
-/* Multi-Archetype Gauntlet Benchmark Suite */
+#[derive(Debug, Clone, Copy)]
+pub struct GauntletConfig<'a> {
+    pub strategy_path: &'a str,
+    pub deals_per_archetype: u64,
+    pub enable_subgame_search: bool,
+    pub exploit_factor: f64,
+    pub base_seed: Option<u64>,
+    pub disabled_guards: &'a [String],
+    pub quiet: bool,
+    pub stack_size: i32,
+}
+
+impl Default for GauntletConfig<'_> {
+    fn default() -> Self {
+        Self {
+            strategy_path: "",
+            deals_per_archetype: 100,
+            enable_subgame_search: false,
+            exploit_factor: 0.70,
+            base_seed: Some(2026),
+            disabled_guards: &[],
+            quiet: false,
+            stack_size: STACK_SIZE,
+        }
+    }
+}
+
+/** Multi-Archetype Gauntlet Benchmark Suite */
 pub fn run_holdem_gauntlet_benchmark(
-    strategy_path: &str,
-    deals_per_archetype: u64,
-    enable_subgame_search: bool,
-    exploit_factor: f64,
+    cfg: &GauntletConfig<'_>,
 ) -> Vec<(String, HoldemBenchmarkResult)> {
-    run_holdem_gauntlet_benchmark_seeded(
-        strategy_path,
-        deals_per_archetype,
-        enable_subgame_search,
-        exploit_factor,
-        Some(2026),
-        &[],
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_gauntlet_benchmark_seeded(
-    strategy_path: &str,
-    deals_per_archetype: u64,
-    enable_subgame_search: bool,
-    exploit_factor: f64,
-    base_seed: Option<u64>,
-    disabled_guards: &[String],
-    quiet: bool,
-) -> Vec<(String, HoldemBenchmarkResult)> {
-    run_holdem_gauntlet_benchmark_with_stack(
-        strategy_path,
-        deals_per_archetype,
-        enable_subgame_search,
-        exploit_factor,
-        base_seed,
-        disabled_guards,
-        quiet,
-        STACK_SIZE,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_holdem_gauntlet_benchmark_with_stack(
-    strategy_path: &str,
-    deals_per_archetype: u64,
-    enable_subgame_search: bool,
-    exploit_factor: f64,
-    base_seed: Option<u64>,
-    disabled_guards: &[String],
-    quiet: bool,
-    stack_size: i32,
-) -> Vec<(String, HoldemBenchmarkResult)> {
-    let stack_size = stack_size.max(BIG_BLIND * 2);
+    let stack_size = cfg.stack_size.max(BIG_BLIND * 2);
     let archetypes = [
         "tag",
         "calling_station",
@@ -69,18 +49,18 @@ pub fn run_holdem_gauntlet_benchmark_with_stack(
     let mut results = Vec::with_capacity(archetypes.len());
     let mut combined_telemetry: HashMap<String, (u64, f64)> = HashMap::new();
 
-    if !quiet {
+    if !cfg.quiet {
         println!("\n============================================================");
         println!("     ♠️  Texas Hold'em Multi-Archetype Gauntlet Suite  ♥️     ");
         println!("============================================================");
         println!(
             "Deals per Archetype : {} (Duplicate Mode, Stack={} BB, Seed={:?})",
-            deals_per_archetype,
+            cfg.deals_per_archetype,
             stack_size / BIG_BLIND,
-            base_seed
+            cfg.base_seed
         );
-        if !disabled_guards.is_empty() {
-            println!("Disabled Guards     : {:?}", disabled_guards);
+        if !cfg.disabled_guards.is_empty() {
+            println!("Disabled Guards     : {:?}", cfg.disabled_guards);
         }
         println!(
             "{:<18} | {:>12} | {:>22} | {:>10} | {:>10}",
@@ -93,29 +73,28 @@ pub fn run_holdem_gauntlet_benchmark_with_stack(
 
     let mut total_bb100_sum = 0.0;
     for (idx, &arch) in archetypes.iter().enumerate() {
-        let arch_seed = base_seed.map(|s| s.wrapping_add((idx as u64 + 1) * 10_007));
-        let res = run_holdem_benchmark_with_stack(
-            strategy_path,
-            deals_per_archetype,
-            0,
-            enable_subgame_search,
-            "0",
-            arch,
-            None,
-            true,
-            exploit_factor,
-            true,
-            arch_seed,
-            disabled_guards,
+        let arch_seed = cfg
+            .base_seed
+            .map(|s| s.wrapping_add((idx as u64 + 1) * 10_007));
+        let res = run_holdem_benchmark(&HoldemBenchmarkConfig {
+            strategy_path: cfg.strategy_path,
+            total_episodes: cfg.deals_per_archetype,
+            enable_subgame_search: cfg.enable_subgame_search,
+            opp_archetype: arch,
+            exploit_factor: cfg.exploit_factor,
+            quiet: true,
+            seed: arch_seed,
+            disabled_guards: cfg.disabled_guards,
             stack_size,
-        );
+            ..Default::default()
+        });
         total_bb100_sum += res.win_rate_bb100;
         for (k, (cnt, net)) in &res.guard_telemetry {
             let entry = combined_telemetry.entry(k.clone()).or_insert((0, 0.0));
             entry.0 += *cnt;
             entry.1 += *net;
         }
-        if !quiet {
+        if !cfg.quiet {
             println!(
                 "{:<18} | {:>+9.2} bb | [{:>+8.2}, {:>+8.2}] | {:>+10.2} | {:>+10.2}",
                 arch.to_uppercase(),
@@ -130,8 +109,8 @@ pub fn run_holdem_gauntlet_benchmark_with_stack(
     }
 
     let avg_bb100 = total_bb100_sum / archetypes.len() as f64;
-    let total_hands = deals_per_archetype * 2 * archetypes.len() as u64;
-    if !quiet {
+    let total_hands = cfg.deals_per_archetype * 2 * archetypes.len() as u64;
+    if !cfg.quiet {
         println!(
             "------------------------------------------------------------------------------------"
         );
@@ -151,7 +130,7 @@ pub fn run_holdem_gauntlet_benchmark_with_stack(
     results
 }
 
-/* Automated Guard Ablation Study across the Gauntlet Suite */
+/** Automated Guard Ablation Study across the Gauntlet Suite */
 pub fn run_holdem_ablation_benchmark(
     strategy_path: &str,
     deals_per_archetype: u64,
@@ -160,15 +139,15 @@ pub fn run_holdem_ablation_benchmark(
     base_seed: Option<u64>,
 ) {
     let seed = base_seed.or(Some(2026));
-    let baseline = run_holdem_gauntlet_benchmark_seeded(
+    let base_cfg = GauntletConfig {
         strategy_path,
         deals_per_archetype,
         enable_subgame_search,
         exploit_factor,
-        seed,
-        &[],
-        false,
-    );
+        base_seed: seed,
+        ..Default::default()
+    };
+    let baseline = run_holdem_gauntlet_benchmark(&base_cfg);
     let base_avg: f64 =
         baseline.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>() / baseline.len().max(1) as f64;
 
@@ -199,15 +178,11 @@ pub fn run_holdem_ablation_benchmark(
 
     for &g in &guard_candidates {
         let disabled = vec![g.to_string()];
-        let ablated = run_holdem_gauntlet_benchmark_seeded(
-            strategy_path,
-            deals_per_archetype,
-            enable_subgame_search,
-            exploit_factor,
-            seed,
-            &disabled,
-            true,
-        );
+        let ablated = run_holdem_gauntlet_benchmark(&GauntletConfig {
+            disabled_guards: &disabled,
+            quiet: true,
+            ..base_cfg
+        });
         let ablated_avg: f64 = ablated.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>()
             / ablated.len().max(1) as f64;
         let guard_value = base_avg - ablated_avg;

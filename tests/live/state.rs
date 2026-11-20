@@ -4,7 +4,7 @@ use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, RoundHistory, Suit, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
 };
-use lil_poker_mccfr::live::decision::{decide_action_multiway, decide_action_multiway_context};
+use lil_poker_mccfr::live::decision::{decide_action, LiveDecisionRequest};
 use lil_poker_mccfr::live::state::{
     derive_legal_actions, parse_live_state, parse_live_state_with_hint, process_showdown,
     LiveRoundTracker, LiveTableTracker,
@@ -241,23 +241,24 @@ fn test_multiway_6max_state_and_decisions() {
     let tracker = OpponentTracker::new();
     let history = [RoundHistory::new(); NUM_ROUNDS];
     let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let (act, _) = decide_action_multiway(
-        &snap.hole,
-        &snap.board,
-        &snap.legal_actions,
-        snap.to_call,
-        snap.pot,
+    let (act, _) = decide_action(
+        &LiveDecisionRequest {
+            hole: snap.hole,
+            board: &snap.board,
+            legal: &snap.legal_actions,
+            to_call: snap.to_call,
+            pot: snap.pot,
+            subgame_search: true,
+            history,
+            my_player: snap.my_player,
+            contributions: [200, 600],
+            raises_this_round: 1,
+            active_opponents: snap.active_opponents,
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        snap.my_player,
-        [200, 600],
-        1,
         None,
-        None,
-        None,
-        snap.active_opponents,
     );
     assert_eq!(act, "fold");
 
@@ -326,25 +327,23 @@ fn test_uncallable_overbet_pot_preservation_and_bb_defense() {
         Card::new(Rank::Six, Suit::Spades),
     ];
     let legal_call = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (act_one_chip, _) = decide_action_multiway_context(
-        &hole_97o,
-        &board_kk6,
-        &legal_call,
-        snap.to_call,
-        snap.pot,
+    let (act_one_chip, _) = decide_action(
+        &LiveDecisionRequest {
+            hole: hole_97o,
+            board: &board_kk6,
+            legal: &legal_call,
+            to_call: snap.to_call,
+            pot: snap.pot,
+            subgame_search: true,
+            history,
+            contributions: [4556, 4557],
+            big_blind: 200,
+            my_chips: snap.my_chips,
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        0,
-        [4556, 4557],
-        0,
         None,
-        None,
-        None,
-        1,
-        200,
-        snap.my_chips,
     );
     assert_ne!(
         act_one_chip, "fold",
@@ -363,25 +362,23 @@ fn test_uncallable_overbet_pot_preservation_and_bb_defense() {
         "raise".to_string(),
         "allin".to_string(),
     ];
-    let (act_bb_defend, _) = decide_action_multiway_context(
-        &hole_a4o,
-        &[],
-        &legal_pf,
-        200,
-        600,
+    let (act_bb_defend, _) = decide_action(
+        &LiveDecisionRequest {
+            hole: hole_a4o,
+            legal: &legal_pf,
+            to_call: 200,
+            pot: 600,
+            subgame_search: true,
+            history,
+            my_player: 1,
+            contributions: [200, 400],
+            big_blind: 200,
+            my_chips: 1950,
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        1,
-        [200, 400],
-        0,
         None,
-        None,
-        None,
-        1,
-        200,
-        1950,
     );
     assert_eq!(
         act_bb_defend, "call",

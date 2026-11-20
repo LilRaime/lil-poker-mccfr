@@ -1,4 +1,4 @@
-/* Priority Tier 2B: Postflop Hard Raise Caps, Draw Odds & Pot Control */
+/*! Priority Tier 2B: Postflop Hard Raise Caps, Draw Odds & Pot Control */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{

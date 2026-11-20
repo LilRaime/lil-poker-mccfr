@@ -1,11 +1,11 @@
-/* Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
+/*! Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
 use super::guards::{action_idx, first_action_idx, force_action, GuardContext};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::preflop_strength_tier;
 use crate::game::config::*;
 
 impl OpponentTracker {
-    /* Checks if opponent predominantly checks and calls without raising */
+    /** Checks if opponent predominantly checks and calls without raising */
     pub fn is_passive_station(&self) -> bool {
         self.exploit_enabled
             && self.total_actions() >= 8
@@ -13,7 +13,7 @@ impl OpponentTracker {
             && (self.call_ratio() > 0.50 || self.fold_ratio() < 0.22)
     }
 
-    /* Shift passive check/min-bet weight directly into geometric value sizing (RAISE_HALF_POT / RAISE_THIRD_POT)
+    /** Shift passive check/min-bet weight directly into geometric value sizing (RAISE_HALF_POT / RAISE_THIRD_POT)
      * so the bot extracts full stacks in 15-25 hands instead of checking down Top Pair / Overpair / Two Pair! */
     pub(super) fn apply_passive_station_boost(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
         if ctx.is_preflop && ctx.to_call <= ctx.bb {
@@ -211,7 +211,7 @@ impl OpponentTracker {
         }
     }
 
-    /* Postflop Heavy-Bet / Multi-Street Barrel Defense
+    /** Postflop Heavy-Bet / Multi-Street Barrel Defense
      * & Unconditional Pot-Commitment Rescue (Priority Tier 3) */
     pub(super) fn apply_postflop_barrel_and_pot_commitment_guards(
         &self,

@@ -1,4 +1,4 @@
-/* WebSocket & HTTP Live Bot Client for lil-poker */
+/*! WebSocket & HTTP Live Bot Client for lil-poker */
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::decision::decide_action_traced_with_bet;
+use super::decision::{decide_action_traced, LiveDecisionRequest};
 use super::protocol::{ActPayload, GuestResponse, JoinRoomPayload};
 use super::state::{
     parse_live_state_with_hint, process_showdown_multiway, LiveRoundTracker, LiveSnapshot,
@@ -670,26 +670,28 @@ impl LiveSession {
 
         tokio::task::spawn_blocking(move || {
             let mut ctx = SubgameContext::new();
-            decide_action_traced_with_bet(
-                &hole,
-                &board_cards_clone,
-                &legal_actions,
-                to_call,
-                pot,
+            decide_action_traced(
+                &LiveDecisionRequest {
+                    hole,
+                    board: &board_cards_clone,
+                    legal: &legal_actions,
+                    to_call,
+                    pot,
+                    subgame_search: subgame,
+                    history: history_clone,
+                    my_player,
+                    contributions: engine_contributions,
+                    raises_this_round,
+                    active_opponents,
+                    big_blind,
+                    my_chips: eff_chips,
+                    current_bet: current_bet_now,
+                    strategy_index: Some(&index_clone),
+                    solver: Some(&solver_arc),
+                },
                 &strat_clone,
-                subgame,
                 &tracker_clone,
-                &history_clone,
-                my_player,
-                engine_contributions,
-                raises_this_round,
-                Some(&index_clone),
-                Some(&solver_arc),
                 Some(&mut ctx),
-                active_opponents,
-                big_blind,
-                eff_chips,
-                current_bet_now,
             )
         })
         .await
@@ -838,26 +840,28 @@ impl LiveSession {
                 .get(&self.current_opp_name)
                 .cloned()
                 .unwrap_or_default();
-            let (fb_act, fb_amt, _) = decide_action_traced_with_bet(
-                &snapshot.hole,
-                &snapshot.board,
-                &non_raise_legal,
-                snapshot.to_call,
-                snapshot.pot,
+            let (fb_act, fb_amt, _) = decide_action_traced(
+                &LiveDecisionRequest {
+                    hole: snapshot.hole,
+                    board: &snapshot.board,
+                    legal: &non_raise_legal,
+                    to_call: snapshot.to_call,
+                    pot: snapshot.pot,
+                    subgame_search: false,
+                    history: self.round_tracker.live_history,
+                    my_player: snapshot.my_player,
+                    contributions: engine_contributions,
+                    raises_this_round,
+                    active_opponents: snapshot.active_opponents,
+                    big_blind: snapshot.big_blind,
+                    my_chips,
+                    current_bet: snapshot.current_bet,
+                    strategy_index: Some(&self.strategy_index),
+                    solver: None,
+                },
                 &self.strategy_arc,
-                false,
                 &fb_tracker,
-                &self.round_tracker.live_history,
-                snapshot.my_player,
-                engine_contributions,
-                raises_this_round,
-                Some(&self.strategy_index),
                 None,
-                None,
-                snapshot.active_opponents,
-                snapshot.big_blind,
-                my_chips,
-                snapshot.current_bet,
             );
             Some((fb_act, fb_amt))
         } else {

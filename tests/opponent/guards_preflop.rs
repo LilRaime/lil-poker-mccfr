@@ -1,4 +1,4 @@
-use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
 use lil_poker_mccfr::game::config::{BIG_BLIND, HOLDEM_NUM_ACTIONS, SMALL_BLIND};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
@@ -15,14 +15,35 @@ fn test_select_action_purified_defense() {
      * purified selection MUST force FOLD! */
     let raw_probs = [0.60, 0.40, 0.0, 0.0, 0.0, 0.0];
     let legal = [FOLD, CALL_CHECK];
-    let chosen = tracker.select_action_purified(&raw_probs, &legal, 130, true, 500, &mut rng);
+    let chosen = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &raw_probs,
+            legal_actions: &legal,
+            bucket: 130,
+            round: 1,
+            to_call: 500,
+            pot: 1000,
+            ..Default::default()
+        },
+        &mut rng,
+    );
     assert_eq!(chosen, FOLD, "Preflop trash facing shove must fold!");
 
     /* 2. Preflop monster hand (bucket 5) facing All-in (to_call = 500)
      * Monster hands should call/raise! */
     let raw_probs_monster = [0.05, 0.85, 0.10, 0.0, 0.0, 0.0];
-    let chosen_monster =
-        tracker.select_action_purified(&raw_probs_monster, &legal, 5, true, 500, &mut rng);
+    let chosen_monster = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &raw_probs_monster,
+            legal_actions: &legal,
+            bucket: 5,
+            round: 1,
+            to_call: 500,
+            pot: 1000,
+            ..Default::default()
+        },
+        &mut rng,
+    );
     assert_eq!(
         chosen_monster, CALL_CHECK,
         "Preflop monster facing shove must not fold!"
@@ -30,8 +51,18 @@ fn test_select_action_purified_defense() {
 
     /* 3. Noise clamping: tiny 2% probability should be clamped to 0 */
     let raw_probs_noise = [0.02, 0.98];
-    let chosen_clean =
-        tracker.select_action_purified(&raw_probs_noise, &legal, 50, false, 0, &mut rng);
+    let chosen_clean = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &raw_probs_noise,
+            legal_actions: &legal,
+            bucket: 50,
+            round: 2,
+            to_call: 0,
+            pot: 200,
+            ..Default::default()
+        },
+        &mut rng,
+    );
     assert_eq!(chosen_clean, CALL_CHECK, "Noise should be clamped");
 }
 
@@ -48,15 +79,16 @@ fn test_preflop_button_steal_requires_unraised_pot() {
      * Playable hand (tier <= 4, e.g. bucket 20).
      * Folds should be shifted into raises (steal)!
      * 0.98 * 0.85 = +0.833 to RAISE_MIN, making raise overwhelmingly dominant. */
-    let action_steal = tracker.select_action_purified_context(
-        &raw_probs,
-        &legal,
-        20,
-        1,           /* Preflop */
-        SMALL_BLIND, /* Small blind to call in unraised pot */
-        BIG_BLIND + SMALL_BLIND,
-        None,
-        None,
+    let action_steal = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &raw_probs,
+            legal_actions: &legal,
+            bucket: 20,
+            round: 1,             /* Preflop */
+            to_call: SMALL_BLIND, /* Small blind to call in unraised pot */
+            pot: BIG_BLIND + SMALL_BLIND,
+            ..Default::default()
+        },
         &mut rng,
     );
     assert_eq!(
@@ -68,15 +100,16 @@ fn test_preflop_button_steal_requires_unraised_pot() {
      * The bot is in the Big Blind facing a min-raise.
      * This is NOT a button steal situation! Folds should NOT be converted into 3-bets!
      * 0.02 raise noise gets clamped to 0, leaving 100% FOLD. */
-    let action_defend = tracker.select_action_purified_context(
-        &raw_probs,
-        &legal,
-        20,
-        1,         /* Preflop */
-        BIG_BLIND, /* Facing a min-raise (BIG_BLIND to call) */
-        BIG_BLIND * 2,
-        None,
-        None,
+    let action_defend = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &raw_probs,
+            legal_actions: &legal,
+            bucket: 20,
+            round: 1,           /* Preflop */
+            to_call: BIG_BLIND, /* Facing a min-raise (BIG_BLIND to call) */
+            pot: BIG_BLIND * 2,
+            ..Default::default()
+        },
         &mut rng,
     );
     assert_eq!(
@@ -109,37 +142,21 @@ fn test_sb_limper_iso_raise_and_high_fold_to_3bet_3bet() {
     let mut iso_raises = 0;
     let mut baseline_raises = 0;
     for _ in 0..100 {
-        let (act, _) = limper.select_action_purified_traced_with_stack(
-            &passive_pf,
-            &legal_bb,
-            pf_bucket_qto,
-            1,
-            0,
-            200,
-            Some(&hole_qto),
-            None,
-            1,
-            100,
-            10_000,
-            &mut rng,
-        );
+        let req_qto = PolicyRequest {
+            raw_probs: &passive_pf,
+            legal_actions: &legal_bb,
+            bucket: pf_bucket_qto,
+            round: 1,
+            pot: 200,
+            hole: Some(&hole_qto),
+            my_chips: 10_000,
+            ..Default::default()
+        };
+        let (act, _) = limper.select_action_traced(&req_qto, &mut rng);
         if act >= RAISE_MIN {
             iso_raises += 1;
         }
-        let (base_act, _) = neutral.select_action_purified_traced_with_stack(
-            &passive_pf,
-            &legal_bb,
-            pf_bucket_qto,
-            1,
-            0,
-            200,
-            Some(&hole_qto),
-            None,
-            1,
-            100,
-            10_000,
-            &mut rng,
-        );
+        let (base_act, _) = neutral.select_action_traced(&req_qto, &mut rng);
         if base_act >= RAISE_MIN {
             baseline_raises += 1;
         }
@@ -178,37 +195,22 @@ fn test_sb_limper_iso_raise_and_high_fold_to_3bet_3bet() {
     let mut three_bets = 0;
     let mut base_three_bets = 0;
     for _ in 0..100 {
-        let (act, _) = nit3bet.select_action_purified_traced_with_stack(
-            &flat_heavy,
-            &legal_vs_open,
-            pf_bucket_ajs,
-            1,
-            150,
-            350,
-            Some(&hole_ajs),
-            None,
-            1,
-            100,
-            10_000,
-            &mut rng,
-        );
+        let req_ajs = PolicyRequest {
+            raw_probs: &flat_heavy,
+            legal_actions: &legal_vs_open,
+            bucket: pf_bucket_ajs,
+            round: 1,
+            to_call: 150,
+            pot: 350,
+            hole: Some(&hole_ajs),
+            my_chips: 10_000,
+            ..Default::default()
+        };
+        let (act, _) = nit3bet.select_action_traced(&req_ajs, &mut rng);
         if act >= RAISE_MIN {
             three_bets += 1;
         }
-        let (base_act, _) = neutral.select_action_purified_traced_with_stack(
-            &flat_heavy,
-            &legal_vs_open,
-            pf_bucket_ajs,
-            1,
-            150,
-            350,
-            Some(&hole_ajs),
-            None,
-            1,
-            100,
-            10_000,
-            &mut rng,
-        );
+        let (base_act, _) = neutral.select_action_traced(&req_ajs, &mut rng);
         if base_act >= RAISE_MIN {
             base_three_bets += 1;
         }
@@ -271,18 +273,18 @@ fn test_observe_blind_level_decay_and_short_stack_15bb_nash_call() {
     let mut rng = rand::rngs::SmallRng::seed_from_u64(101);
     let mut calls = 0;
     for _ in 0..50 {
-        let (act, _) = maniac.select_action_purified_traced_with_stack(
-            &fold_heavy_blueprint,
-            &legal,
-            bucket_88,
-            1,
-            1400,
-            1550,
-            Some(&hole_88),
-            None,
-            1,
-            100,
-            1400,
+        let (act, _) = maniac.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &fold_heavy_blueprint,
+                legal_actions: &legal,
+                bucket: bucket_88,
+                round: 1,
+                to_call: 1400,
+                pot: 1550,
+                hole: Some(&hole_88),
+                my_chips: 1400,
+                ..Default::default()
+            },
             &mut rng,
         );
         if act == CALL_CHECK {
@@ -298,7 +300,14 @@ fn test_observe_blind_level_decay_and_short_stack_15bb_nash_call() {
     /* 3. Unified <= 12 BB Push/Fold handles 10 BB shove call (including tier 4 77 at 0.45 pot odds) */
     let legal_facing_shove = [FOLD, CALL_CHECK];
     let (act_10bb_88, reason_88) = maniac
-        .select_short_stack_preflop_action(bucket_88, 900, 1100, 1, 100, 900, &legal_facing_shove)
+        .select_short_stack_preflop_action(&ShortStackRequest {
+            bucket: bucket_88,
+            to_call: 900,
+            pot: 1100,
+            my_chips: 900,
+            legal_actions: &legal_facing_shove,
+            ..Default::default()
+        })
         .expect("<= 12 BB short-stack engine must activate");
     assert_eq!(
         act_10bb_88, CALL_CHECK,
@@ -312,7 +321,14 @@ fn test_observe_blind_level_decay_and_short_stack_15bb_nash_call() {
     )
     .0 as usize;
     let (act_10bb_77, reason_77) = maniac
-        .select_short_stack_preflop_action(bucket_77, 900, 1100, 1, 100, 900, &legal_facing_shove)
+        .select_short_stack_preflop_action(&ShortStackRequest {
+            bucket: bucket_77,
+            to_call: 900,
+            pot: 1100,
+            my_chips: 900,
+            legal_actions: &legal_facing_shove,
+            ..Default::default()
+        })
         .expect("<= 12 BB short-stack engine must activate");
     assert_eq!(
         act_10bb_77, CALL_CHECK,
@@ -345,18 +361,20 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
     ];
     let jam_heavy = [0.0, 0.05, 0.15, 0.10, 0.10, 0.60];
     for _ in 0..50 {
-        let (act, _) = tracker.select_action_purified_traced_with_stack(
-            &jam_heavy,
-            &legal_6max,
-            b_99,
-            1,
-            300,
-            450,
-            Some(&hole_99),
-            None,
-            5,
-            300,
-            8938,
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &jam_heavy,
+                legal_actions: &legal_6max,
+                bucket: b_99,
+                round: 1,
+                to_call: 300,
+                pot: 450,
+                hole: Some(&hole_99),
+                active_opponents: 5,
+                table_bb: 300,
+                my_chips: 8938,
+                ..Default::default()
+            },
             &mut rng,
         );
         assert_ne!(
@@ -375,18 +393,19 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
     let limp_heavy = [0.10, 0.70, 0.20, 0.0, 0.0, 0.0];
     let mut raises = 0usize;
     for _ in 0..100 {
-        let (act, _) = tracker.select_action_purified_traced_with_stack(
-            &limp_heavy,
-            &legal_6max,
-            b_a8o,
-            1,
-            100,
-            300,
-            Some(&hole_a8o),
-            None,
-            1,
-            200,
-            5018,
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &limp_heavy,
+                legal_actions: &legal_6max,
+                bucket: b_a8o,
+                round: 1,
+                to_call: 100,
+                pot: 300,
+                hole: Some(&hole_a8o),
+                table_bb: 200,
+                my_chips: 5018,
+                ..Default::default()
+            },
             &mut rng,
         );
         if act >= RAISE_MIN {
@@ -475,7 +494,15 @@ fn test_short_stack_nash_sb_steal_and_4bet_guards() {
     for (r1, s1, r2, s2, bb, stack, label) in open_push_cases {
         let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
         let (act, reason) = tracker
-            .select_short_stack_preflop_action(b, bb / 2, bb + bb / 2, 1, bb, stack, &legal_sb)
+            .select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: b,
+                to_call: bb / 2,
+                pot: bb + bb / 2,
+                table_bb: bb,
+                my_chips: stack,
+                legal_actions: &legal_sb,
+                ..Default::default()
+            })
             .expect("short stack push/fold active");
         assert_eq!(
             act, ALL_IN,
@@ -517,7 +544,15 @@ fn test_short_stack_nash_sb_steal_and_4bet_guards() {
     for (r1, s1, r2, s2, bb, stack, label) in bb_call_cases {
         let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
         let (act, reason) = tracker
-            .select_short_stack_preflop_action(b, bb, bb * 3, 1, bb, stack, &legal_bb)
+            .select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: b,
+                to_call: bb,
+                pot: bb * 3,
+                table_bb: bb,
+                my_chips: stack,
+                legal_actions: &legal_bb,
+                ..Default::default()
+            })
             .expect("short stack BB defense active");
         assert_eq!(
             act, CALL_CHECK,
@@ -556,18 +591,18 @@ fn test_short_stack_nash_sb_steal_and_4bet_guards() {
         let b = preflop_bucket(c1, c2).0;
         let mut steals = 0usize;
         for _ in 0..100 {
-            let (act, _) = ultra_nit.select_action_purified_traced_with_stack(
-                &fold_heavy_sb,
-                &legal_sb,
-                b,
-                1,
-                50,
-                150,
-                Some(&hole),
-                None,
-                1,
-                100,
-                9950,
+            let (act, _) = ultra_nit.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &fold_heavy_sb,
+                    legal_actions: &legal_sb,
+                    bucket: b,
+                    round: 1,
+                    to_call: 50,
+                    pot: 150,
+                    hole: Some(&hole),
+                    my_chips: 9950,
+                    ..Default::default()
+                },
                 &mut rng,
             );
             if act == RAISE_MIN {
@@ -589,18 +624,18 @@ fn test_short_stack_nash_sb_steal_and_4bet_guards() {
     ];
     let b_44 = preflop_bucket(hole_44[0], hole_44[1]).0;
     let fold_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.80, 0.20, 0.0, 0.0, 0.0, 0.0];
-    let (act_44, _) = tracker.select_action_purified_traced_with_stack(
-        &fold_biased,
-        &legal_sb,
-        b_44,
-        1,
-        300,
-        500,
-        Some(&hole_44),
-        None,
-        1,
-        100,
-        8700,
+    let (act_44, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &fold_biased,
+            legal_actions: &legal_sb,
+            bucket: b_44,
+            round: 1,
+            to_call: 300,
+            pot: 500,
+            hole: Some(&hole_44),
+            my_chips: 8700,
+            ..Default::default()
+        },
         &mut rng,
     );
     assert_eq!(
@@ -616,18 +651,19 @@ fn test_short_stack_nash_sb_steal_and_4bet_guards() {
     let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
     let jam_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.20, 0.0, 0.15, 0.0, 0.60];
     for _ in 0..40 {
-        let (act_99, _) = tracker.select_action_purified_traced_with_stack(
-            &jam_biased,
-            &legal_sb,
-            b_99,
-            1,
-            1725,
-            2550,
-            Some(&hole_99),
-            None,
-            1,
-            150,
-            7800,
+        let (act_99, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &jam_biased,
+                legal_actions: &legal_sb,
+                bucket: b_99,
+                round: 1,
+                to_call: 1725,
+                pot: 2550,
+                hole: Some(&hole_99),
+                table_bb: 150,
+                my_chips: 7800,
+                ..Default::default()
+            },
             &mut rng,
         );
         assert_ne!(
@@ -712,7 +748,15 @@ fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
     for (r1, s1, r2, s2, bb, stack, label) in open_push_cases {
         let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
         let (act, reason) = tracker
-            .select_short_stack_preflop_action(b, bb / 2, bb + bb / 2, 1, bb, stack, &legal_sb)
+            .select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: b,
+                to_call: bb / 2,
+                pot: bb + bb / 2,
+                table_bb: bb,
+                my_chips: stack,
+                legal_actions: &legal_sb,
+                ..Default::default()
+            })
             .expect("short stack push/fold active");
         assert_eq!(
             act, ALL_IN,
@@ -754,7 +798,15 @@ fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
     for (r1, s1, r2, s2, bb, stack, label) in bb_call_cases {
         let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
         let (act, reason) = tracker
-            .select_short_stack_preflop_action(b, bb, bb * 3, 1, bb, stack, &legal_bb)
+            .select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: b,
+                to_call: bb,
+                pot: bb * 3,
+                table_bb: bb,
+                my_chips: stack,
+                legal_actions: &legal_bb,
+                ..Default::default()
+            })
             .expect("short stack BB defense active");
         assert_eq!(
             act, CALL_CHECK,
@@ -793,18 +845,18 @@ fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
         let b = preflop_bucket(c1, c2).0;
         let mut steals = 0usize;
         for _ in 0..100 {
-            let (act, _) = ultra_nit.select_action_purified_traced_with_stack(
-                &fold_heavy_sb,
-                &legal_sb,
-                b,
-                1,
-                50,
-                150,
-                Some(&hole),
-                None,
-                1,
-                100,
-                9950,
+            let (act, _) = ultra_nit.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &fold_heavy_sb,
+                    legal_actions: &legal_sb,
+                    bucket: b,
+                    round: 1,
+                    to_call: 50,
+                    pot: 150,
+                    hole: Some(&hole),
+                    my_chips: 9950,
+                    ..Default::default()
+                },
                 &mut rng,
             );
             if act == RAISE_MIN {
@@ -826,18 +878,18 @@ fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
     ];
     let b_44 = preflop_bucket(hole_44[0], hole_44[1]).0;
     let fold_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.80, 0.20, 0.0, 0.0, 0.0, 0.0];
-    let (act_44, _) = tracker.select_action_purified_traced_with_stack(
-        &fold_biased,
-        &legal_sb,
-        b_44,
-        1,
-        300,
-        500,
-        Some(&hole_44),
-        None,
-        1,
-        100,
-        8700,
+    let (act_44, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &fold_biased,
+            legal_actions: &legal_sb,
+            bucket: b_44,
+            round: 1,
+            to_call: 300,
+            pot: 500,
+            hole: Some(&hole_44),
+            my_chips: 8700,
+            ..Default::default()
+        },
         &mut rng,
     );
     assert_eq!(
@@ -853,18 +905,19 @@ fn test_lil_b3_short_stack_nash_sb_steal_and_4bet_guards() {
     let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
     let jam_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.20, 0.0, 0.15, 0.0, 0.60];
     for _ in 0..40 {
-        let (act_99, _) = tracker.select_action_purified_traced_with_stack(
-            &jam_biased,
-            &legal_sb,
-            b_99,
-            1,
-            1725,
-            2550,
-            Some(&hole_99),
-            None,
-            1,
-            150,
-            7800,
+        let (act_99, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &jam_biased,
+                legal_actions: &legal_sb,
+                bucket: b_99,
+                round: 1,
+                to_call: 1725,
+                pot: 2550,
+                hole: Some(&hole_99),
+                table_bb: 150,
+                my_chips: 7800,
+                ..Default::default()
+            },
             &mut rng,
         );
         assert_ne!(

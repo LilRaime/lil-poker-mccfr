@@ -1,4 +1,4 @@
-/*
+/*!
  * Fast board texture analysis (Monotone, TwoTone, Rainbow, Paired, Connected).
  */
 
@@ -88,7 +88,7 @@ pub fn board_texture_code(board: &[Card]) -> &'static str {
     }
 }
 
-/* Compact 4-state postflop board texture char for v2 blueprint infoset keys:
+/** Compact 4-state postflop board texture char for v2 blueprint infoset keys:
  * 'm' = monotone (3+ same suit), 'p' = paired, 'w' = wet (two-tone & connected), 'd' = dry. */
 #[inline(always)]
 pub fn compact_board_texture_char(board: &[Card]) -> char {
@@ -122,7 +122,7 @@ pub fn board_texture_byte(board: &[Card]) -> u8 {
     (flush_idx << 1) | paired_idx
 }
 
-/* Detects if community cards form a 3-flush or 4-flush board (3+ cards of the same suit). */
+/** Detects if community cards form a 3-flush or 4-flush board (3+ cards of the same suit). */
 #[inline(always)]
 pub fn is_three_flush_board(board: &[Card]) -> bool {
     if board.len() < 3 {
@@ -135,7 +135,7 @@ pub fn is_three_flush_board(board: &[Card]) -> bool {
     suit_counts.iter().any(|&cnt| cnt >= 3)
 }
 
-/* Detects if community cards form a 4-flush board (4+ cards of the same suit). */
+/** Detects if community cards form a 4-flush board (4+ cards of the same suit). */
 #[inline(always)]
 pub fn is_four_flush_board(board: &[Card]) -> bool {
     if board.len() < 4 {
@@ -148,7 +148,7 @@ pub fn is_four_flush_board(board: &[Card]) -> bool {
     suit_counts.iter().any(|&cnt| cnt >= 4)
 }
 
-/* Detects if community cards contain 4 or more cards to a straight (e.g. 9-T-J-Q or 5-6-7-8). */
+/** Detects if community cards contain 4 or more cards to a straight (e.g. 9-T-J-Q or 5-6-7-8). */
 #[inline(always)]
 pub fn is_four_straight_board(board: &[Card]) -> bool {
     if board.len() < 4 {
@@ -168,7 +168,7 @@ pub fn is_four_straight_board(board: &[Card]) -> bool {
     ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4
 }
 
-/* Detects if community cards form a dangerous, highly coordinated board
+/** Detects if community cards form a dangerous, highly coordinated board
  * (e.g. 3+ cards to a flush, 4 cards to a straight, or coordinated 3-to-straight on turn/river).
  */
 pub fn is_dangerous_board(board: &[Card]) -> bool {

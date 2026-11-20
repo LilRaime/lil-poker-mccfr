@@ -1,4 +1,4 @@
-/* Leduc Poker uses a 6-card deck: J, Q, K in two suits. */
+/*! Leduc Poker uses a 6-card deck: J, Q, K in two suits. */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rank {
     Jack = 0,
@@ -23,7 +23,7 @@ impl Card {
         Card { rank, suit }
     }
 
-    /* Returns a 0-based index (0..5) for this card. */
+    /** Returns a 0-based index (0..5) for this card. */
     pub fn index(self) -> usize {
         self.rank as usize * 2 + self.suit as usize
     }
@@ -40,7 +40,7 @@ impl Card {
     }
 }
 
-/* Full 6-card Leduc deck in a fixed order. */
+/** Full 6-card Leduc deck in a fixed order. */
 pub const ALL_CARDS: [Card; 6] = [
     Card {
         rank: Rank::Jack,

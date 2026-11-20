@@ -1,4 +1,4 @@
-use lil_poker_mccfr::cfr::subgame::OpponentReachDistribution;
+use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, ReachRequest};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, RoundHistory, Suit, ALL_52_CARDS, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
 };
@@ -27,7 +27,15 @@ fn test_opponent_reach_distribution() {
 
     /* Scenario 1: Opponent raised preflop (strong range) */
     let history_raised = [vec![1u8, 2u8], vec![], vec![], vec![]];
-    let dist_raised = OpponentReachDistribution::build(&remaining, &board, 2, &history_raised);
+    let dist_raised = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            ..Default::default()
+        },
+        &history_raised,
+    );
     assert!(dist_raised.effective_combos() > 100);
     assert!(dist_raised.total_weight > 0.0);
 
@@ -43,7 +51,15 @@ fn test_opponent_reach_distribution() {
 
     /* Scenario 2: Opponent checked/limped (wider, weaker range) */
     let history_limped = [vec![1u8, 1u8], vec![], vec![], vec![]];
-    let dist_limped = OpponentReachDistribution::build(&remaining, &board, 2, &history_limped);
+    let dist_limped = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            ..Default::default()
+        },
+        &history_limped,
+    );
     assert_eq!(
         dist_limped.effective_combos(),
         dist_raised.effective_combos()
@@ -83,10 +99,13 @@ fn test_opponent_reach_with_strategy_map() {
     strat_map.insert("P:72o/".to_string(), vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
 
     let history_raised = [vec![1u8, 2u8], vec![], vec![], vec![]];
-    let dist = OpponentReachDistribution::build_with_strategy_map(
-        &remaining,
-        &board,
-        2,
+    let dist = OpponentReachDistribution::build_with_strategy(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            ..Default::default()
+        },
         &history_raised,
         Some(&strat_map),
     );
@@ -120,12 +139,30 @@ fn test_opponent_reach_distribution_position_aware() {
     let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
 
     /* If my_player == 0: Bot raised, opponent called. Opponent range should be CALLER range */
-    let dist_bot_raised =
-        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(0));
+    let dist_bot_raised = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(1),
+            active_player: Some(0),
+            ..Default::default()
+        },
+        &history,
+    );
 
     /* If my_player == 1: Opponent raised, bot called. Opponent range should be RAISER range */
-    let dist_opp_raised =
-        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(1));
+    let dist_opp_raised = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &history,
+    );
 
     /* Find weight for a premium hand like AA */
     let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
@@ -169,13 +206,16 @@ fn test_opponent_reach_distribution_3bet_and_limp_lines() {
 
     /* 1. Opponent 3-Bet Line: Bot raises (action 0 = 2), Opponent 3-bets (action 1 = 4) */
     let history_3bet = [vec![2u8, 4u8], vec![], vec![], vec![]];
-    let dist_3bet = OpponentReachDistribution::build_detailed(
-        &remaining,
-        &board,
-        2,
+    let dist_3bet = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(1), /* My player is 0, so opponent is 1 (the 3-bettor) */
+            active_player: Some(0),
+            ..Default::default()
+        },
         &history_3bet,
-        None,
-        Some(0), /* My player is 0, so opponent is 1 (the 3-bettor) */
     );
 
     let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
@@ -210,13 +250,16 @@ fn test_opponent_reach_distribution_3bet_and_limp_lines() {
 
     /* 2. Limped Pot Line: Both players limp/check (actions = [1, 1]) */
     let history_limp = [vec![1u8, 1u8], vec![], vec![], vec![]];
-    let dist_limp = OpponentReachDistribution::build_detailed(
-        &remaining,
-        &board,
-        2,
+    let dist_limp = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(1),
+            active_player: Some(0),
+            ..Default::default()
+        },
         &history_limp,
-        None,
-        Some(0),
     );
 
     let mid_pair_88 = [
@@ -261,13 +304,16 @@ fn test_opponent_reach_distribution_monotone_texture() {
 
     /* History: Bot calls (1), Opponent raises (2) on flop */
     let history = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
-    let dist = OpponentReachDistribution::build_detailed(
-        &remaining,
-        &board,
-        2,
+    let dist = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(0), /* My player is 1, so opponent is 0 (the raiser on flop) */
+            active_player: Some(1),
+            ..Default::default()
+        },
         &history,
-        None,
-        Some(1), /* My player is 1, so opponent is 0 (the raiser on flop) */
     );
 
     /* Candidate 1: Made flush with 2 spades (K♠ Q♠) */
@@ -328,8 +374,17 @@ fn test_opponent_reach_distribution_raiser_ako_weight() {
     /* Preflop action: Opponent (Player 0) raises (2), Bot (Player 1) calls (1) */
     let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
 
-    let dist_opp_raised =
-        OpponentReachDistribution::build_detailed(&remaining, &board, 2, &history, None, Some(1));
+    let dist_opp_raised = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &history,
+    );
 
     /* AKo combo: A♠ K♥ */
     let ako_combo = [
@@ -403,27 +458,29 @@ fn test_subgame_reach_active_street_actor_separation() {
 
     /* With active_player == Some(0) and F=[CALL_CHECK, RAISE_HALF_POT], target=0's action is idx 0 (check).
      * With active_player == Some(1) (inverted/opponent turn), target=0 is attributed idx 1 (half-pot bet). */
-    let target0_as_checker = OpponentReachDistribution::build_for_target_generic(
-        &rem,
-        &board,
-        2,
+    let target0_as_checker = OpponentReachDistribution::build_with_strategy(
+        &ReachRequest {
+            remaining_deck: &rem,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(0),
+            ..Default::default()
+        },
         &history,
         no_map,
-        Some(0),
-        Some(0),
-        None,
-        None,
     );
-    let target0_as_bettor = OpponentReachDistribution::build_for_target_generic(
-        &rem,
-        &board,
-        2,
+    let target0_as_bettor = OpponentReachDistribution::build_with_strategy(
+        &ReachRequest {
+            remaining_deck: &rem,
+            board: &board,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
         &history,
         no_map,
-        Some(0),
-        Some(1),
-        None,
-        None,
     );
     let air_weight = |dist: &OpponentReachDistribution| -> f64 {
         dist.combos

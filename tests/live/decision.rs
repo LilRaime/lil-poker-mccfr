@@ -1,16 +1,14 @@
 use lil_poker_mccfr::cfr::abstraction::{nash_open_push_max_bb, preflop_bucket};
 use lil_poker_mccfr::cfr::fallback::StrategyLookupIndex;
-use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::cfr::subgame::{SubgameContext, SubgameSolver};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, RoundHistory, Suit, ALL_IN, CALL_CHECK, FOLD, NUM_ROUNDS, RAISE_HALF_POT,
     RAISE_MIN, RAISE_THIRD_POT,
 };
-use lil_poker_mccfr::live::decision::{
-    decide_action, decide_action_multiway_context, decide_action_traced_with_bet,
-};
-use lil_poker_mccfr::live::protocol::map_action_index_full;
+use lil_poker_mccfr::live::decision::{decide_action, decide_action_traced, LiveDecisionRequest};
+use lil_poker_mccfr::live::protocol::{map_action_index, ActionMapRequest};
 use lil_poker_mccfr::live::state::derive_legal_actions;
 use std::collections::HashMap;
 
@@ -40,20 +38,20 @@ fn test_live_decide_action_with_real_contributions() {
 
     /* 1. As player 0 (SB) with contributions [100, 100], to_call = 0 */
     let (act1, amt1) = decide_action(
-        &hole,
-        &board,
-        &legal,
-        0,
-        200,
+        &LiveDecisionRequest {
+            hole,
+            board: &board,
+            legal: &legal,
+            pot: 200,
+            subgame_search: true,
+            history,
+            contributions: [100, 100],
+            strategy_index: Some(&index),
+            solver: Some(&solver),
+            ..Default::default()
+        },
         &strategy_map,
-        true, /* subgame search on */
         &tracker,
-        &history,
-        0,
-        [100, 100],
-        0,
-        Some(&index),
-        Some(&solver),
         Some(&mut ctx),
     );
     assert!(!act1.is_empty());
@@ -67,20 +65,23 @@ fn test_live_decide_action_with_real_contributions() {
         "allin".to_string(),
     ];
     let (act2, amt2) = decide_action(
-        &hole,
-        &board,
-        &legal_facing_raise,
-        150,
-        350,
+        &LiveDecisionRequest {
+            hole,
+            board: &board,
+            legal: &legal_facing_raise,
+            to_call: 150,
+            pot: 350,
+            subgame_search: true,
+            history,
+            my_player: 1,
+            contributions: [250, 100],
+            raises_this_round: 1,
+            strategy_index: Some(&index),
+            solver: Some(&solver),
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        1,
-        [250, 100],
-        1,
-        Some(&index),
-        Some(&solver),
         Some(&mut ctx),
     );
     assert!(!act2.is_empty());
@@ -114,20 +115,21 @@ fn test_bot_value_bets_straight_in_live_game() {
 
     for _ in 0..num_trials {
         let (action, amount) = decide_action(
-            &hole,
-            &board,
-            &legal,
-            0,
-            200,
+            &LiveDecisionRequest {
+                hole,
+                board: &board,
+                legal: &legal,
+                pot: 200,
+                subgame_search: true,
+                history,
+                my_player: 1,
+                contributions: [100, 100],
+                strategy_index: Some(&index),
+                solver: Some(&solver),
+                ..Default::default()
+            },
             &empty_map,
-            true,
             &tracker,
-            &history,
-            1,
-            [100, 100],
-            0,
-            Some(&index),
-            Some(&solver),
             Some(&mut ctx),
         );
 
@@ -166,25 +168,22 @@ fn test_short_stack_bb_check_and_pot_commitment() {
         Card::new(Rank::Nine, Suit::Hearts),
         Card::new(Rank::Six, Suit::Hearts),
     ];
-    let (act_bb_limp, _) = decide_action_multiway_context(
-        &hole_96s,
-        &[],
-        &legal_bb,
-        0,
-        400,
+    let (act_bb_limp, _) = decide_action(
+        &LiveDecisionRequest {
+            hole: hole_96s,
+            legal: &legal_bb,
+            pot: 400,
+            subgame_search: true,
+            history,
+            my_player: 1,
+            contributions: [200, 200],
+            big_blind: 200,
+            my_chips: 2200,
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        1,
-        [200, 200],
-        0,
         None,
-        None,
-        None,
-        1,
-        200,
-        2200,
     );
     assert_eq!(
         act_bb_limp, "check",
@@ -203,25 +202,24 @@ fn test_short_stack_bb_check_and_pot_commitment() {
         Card::new(Rank::Nine, Suit::Spades),
     ];
     let legal_call = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (act_micro_call, _) = decide_action_multiway_context(
-        &hole_k7o,
-        &board_turn,
-        &legal_call,
-        2,
-        10940,
+    let (act_micro_call, _) = decide_action(
+        &LiveDecisionRequest {
+            hole: hole_k7o,
+            board: &board_turn,
+            legal: &legal_call,
+            to_call: 2,
+            pot: 10940,
+            subgame_search: true,
+            history,
+            contributions: [5469, 5471],
+            raises_this_round: 2,
+            big_blind: 200,
+            my_chips: 2,
+            ..Default::default()
+        },
         &strategy_map,
-        true,
         &tracker,
-        &history,
-        0,
-        [5469, 5471],
-        2,
         None,
-        None,
-        None,
-        1,
-        200,
-        2,
     );
     assert_ne!(
         act_micro_call, "fold",
@@ -246,26 +244,25 @@ fn test_6max_small_pair_folds_8x_open_and_flop_shove() {
     ];
 
     /* 1. Preflop 6-max (200/400): 66 facing 8x open (to_call = 3200, pot = 3800) must fold */
-    let (pf_act, _, _) = decide_action_traced_with_bet(
-        &hole_66,
-        &[],
-        &legal,
-        3200,
-        3800,
+    let (pf_act, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_66,
+            legal: &legal,
+            to_call: 3200,
+            pot: 3800,
+            history,
+            my_player: 1,
+            contributions: [200, 3200],
+            raises_this_round: 1,
+            active_opponents: 2,
+            big_blind: 400,
+            my_chips: 12000,
+            current_bet: 3200,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        1,
-        [200, 3200],
-        1,
         None,
-        None,
-        None,
-        2,
-        400,
-        12000,
-        3200,
     );
     assert_eq!(
         pf_act, "fold",
@@ -279,26 +276,25 @@ fn test_6max_small_pair_folds_8x_open_and_flop_shove() {
         Card::new(Rank::Two, Suit::Diamonds),
     ];
     let legal_shove = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (flop_act, _, _) = decide_action_traced_with_bet(
-        &hole_66,
-        &board_j82,
-        &legal_shove,
-        8000,
-        15200,
+    let (flop_act, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_66,
+            board: &board_j82,
+            legal: &legal_shove,
+            to_call: 8000,
+            pot: 15200,
+            history,
+            my_player: 1,
+            contributions: [3200, 3200],
+            raises_this_round: 1,
+            big_blind: 400,
+            my_chips: 8000,
+            current_bet: 8000,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        1,
-        [3200, 3200],
-        1,
         None,
-        None,
-        None,
-        1,
-        400,
-        8000,
-        8000,
     );
     assert_eq!(
         flop_act, "fold",
@@ -328,26 +324,24 @@ fn test_hu_bare_flush_draw_flop_raise_and_3bet_discipline() {
     ];
 
     /* 1. Facing 4x BB bet (600 into 1200) on flop with bare flush draw (Js6s): must not check-raise */
-    let (act_vs_bet, _, _) = decide_action_traced_with_bet(
-        &hole_j6s,
-        &board_583,
-        &legal,
-        600,
-        1200,
+    let (act_vs_bet, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_j6s,
+            board: &board_583,
+            legal: &legal,
+            to_call: 600,
+            pot: 1200,
+            history,
+            my_player: 1,
+            contributions: [300, 300],
+            big_blind: 150,
+            my_chips: 9000,
+            current_bet: 600,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        1,
-        [300, 300],
-        0,
         None,
-        None,
-        None,
-        1,
-        150,
-        9000,
-        600,
     );
     assert_ne!(
         act_vs_bet, "raise",
@@ -359,26 +353,25 @@ fn test_hu_bare_flush_draw_flop_raise_and_3bet_discipline() {
     );
 
     /* 2. Facing 25 BB 3-bet on flop (3750 into 7500, 33.3% pot odds) with bare flush draw: must fold */
-    let (act_vs_3bet, _, _) = decide_action_traced_with_bet(
-        &hole_j6s,
-        &board_583,
-        &legal,
-        3750,
-        7500,
+    let (act_vs_3bet, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_j6s,
+            board: &board_583,
+            legal: &legal,
+            to_call: 3750,
+            pot: 7500,
+            history,
+            my_player: 1,
+            contributions: [300, 300],
+            raises_this_round: 1,
+            big_blind: 150,
+            my_chips: 8000,
+            current_bet: 3750,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        1,
-        [300, 300],
-        1,
         None,
-        None,
-        None,
-        1,
-        150,
-        8000,
-        3750,
     );
     assert_eq!(
         act_vs_3bet, "fold",
@@ -408,26 +401,22 @@ fn test_hu_suited_connector_12bb_no_open_jam() {
         "raise".to_string(),
         "allin".to_string(),
     ];
-    let (act, _, _) = decide_action_traced_with_bet(
-        &hole_76s,
-        &[],
-        &legal,
-        400,
-        1200,
+    let (act, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_76s,
+            legal: &legal,
+            to_call: 400,
+            pot: 1200,
+            history,
+            contributions: [400, 800],
+            big_blind: 800,
+            my_chips: 10000,
+            current_bet: 800,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        0,
-        [400, 800],
-        0,
         None,
-        None,
-        None,
-        1,
-        800,
-        10000,
-        800,
     );
     assert_ne!(
         act, "allin",
@@ -457,18 +446,19 @@ fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
     let mut raise_min_count = 0usize;
     let mut trace_has_guard = false;
     for _ in 0..100 {
-        let (act, trace) = tracker.select_action_purified_traced_with_stack(
-            &policy,
-            &legal_idx,
-            bucket_55,
-            1,
-            350,
-            1100,
-            Some(&hole_55),
-            None,
-            1,
-            300,
-            15000,
+        let (act, trace) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &policy,
+                legal_actions: &legal_idx,
+                bucket: bucket_55,
+                round: 1,
+                to_call: 350,
+                pot: 1100,
+                hole: Some(&hole_55),
+                table_bb: 300,
+                my_chips: 15000,
+                ..Default::default()
+            },
             &mut rng,
         );
         assert!(
@@ -499,17 +489,17 @@ fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
         "raise".to_string(),
         "allin".to_string(),
     ];
-    let (_, three_bet_amt) = map_action_index_full(
-        RAISE_HALF_POT as usize,
-        &legal,
-        350,
-        1100,
-        false,
-        1,
-        300,
-        15000,
-        650,
-    )
+    let (_, three_bet_amt) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_HALF_POT as usize,
+        legal: &legal,
+        to_call: 350,
+        pot: 1100,
+        is_wet: false,
+        round: 1,
+        table_bb: 300,
+        my_chips: 15000,
+        current_bet: 650,
+    })
     .expect("map 3-bet");
     assert!(
         three_bet_amt <= 1950,
@@ -543,52 +533,48 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
         }
         tag_tracker.end_hand();
     }
-    let (tag_act, _, _) = decide_action_traced_with_bet(
-        &hole_aqo,
-        &[],
-        &legal,
-        6600,
-        7000,
+    let (tag_act, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_aqo,
+            legal: &legal,
+            to_call: 6600,
+            pot: 7000,
+            history,
+            my_player: 1,
+            contributions: [200, 200],
+            raises_this_round: 1,
+            big_blind: 200,
+            my_chips: 6600,
+            current_bet: 6600,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tag_tracker,
-        &history,
-        1,
-        [200, 200],
-        1,
         None,
-        None,
-        None,
-        1,
-        200,
-        6600,
-        6600,
     );
     assert_eq!(tag_act, "fold", "AQo must fold vs non-maniac 33 BB shove");
 
     /* 2. TAG opponent at 28 BB: within HU Nash call cap (28 <= 30 BB), mixed/majority call */
     let mut hu_28_calls = 0usize;
     for _ in 0..30 {
-        let (hu_28_act, _, _) = decide_action_traced_with_bet(
-            &hole_aqo,
-            &[],
-            &legal,
-            5600,
-            6000,
+        let (hu_28_act, _, _) = decide_action_traced(
+            &LiveDecisionRequest {
+                hole: hole_aqo,
+                legal: &legal,
+                to_call: 5600,
+                pot: 6000,
+                history,
+                my_player: 1,
+                contributions: [200, 200],
+                raises_this_round: 1,
+                big_blind: 200,
+                my_chips: 5600,
+                current_bet: 5600,
+                ..Default::default()
+            },
             &strategy_map,
-            false,
             &tag_tracker,
-            &history,
-            1,
-            [200, 200],
-            1,
             None,
-            None,
-            None,
-            1,
-            200,
-            5600,
-            5600,
         );
         if hu_28_act != "fold" {
             hu_28_calls += 1;
@@ -607,26 +593,24 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
         maniac_tracker.record_preflop_positional(true, true, true);
         maniac_tracker.end_hand();
     }
-    let (maniac_act, _, _) = decide_action_traced_with_bet(
-        &hole_aqo,
-        &[],
-        &legal,
-        6600,
-        7000,
+    let (maniac_act, _, _) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_aqo,
+            legal: &legal,
+            to_call: 6600,
+            pot: 7000,
+            history,
+            my_player: 1,
+            contributions: [200, 200],
+            raises_this_round: 1,
+            big_blind: 200,
+            my_chips: 6600,
+            current_bet: 6600,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &maniac_tracker,
-        &history,
-        1,
-        [200, 200],
-        1,
         None,
-        None,
-        None,
-        1,
-        200,
-        6600,
-        6600,
     );
     assert_ne!(maniac_act, "fold", "AQo should call maniac 33 BB shove");
 }
@@ -644,26 +628,24 @@ fn test_preflop_micro_stack_1chip_calls_and_deep_99_no_open_jam() {
         Card::new(Rank::Queen, Suit::Clubs),
     ];
     let legal_1chip = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (act_1chip, _, tr_1chip) = decide_action_traced_with_bet(
-        &hole_kqo,
-        &[],
-        &legal_1chip,
-        1,
-        5248,
+    let (act_1chip, _, tr_1chip) = decide_action_traced(
+        &LiveDecisionRequest {
+            hole: hole_kqo,
+            legal: &legal_1chip,
+            to_call: 1,
+            pot: 5248,
+            history,
+            my_player: 1,
+            contributions: [2624, 2624],
+            raises_this_round: 1,
+            big_blind: 400,
+            my_chips: 1,
+            current_bet: 13124,
+            ..Default::default()
+        },
         &strategy_map,
-        false,
         &tracker,
-        &history,
-        1,
-        [2624, 2624],
-        1,
         None,
-        None,
-        None,
-        1,
-        400,
-        1,
-        13124,
     );
     assert_eq!(
         act_1chip, "call",
@@ -684,26 +666,23 @@ fn test_preflop_micro_stack_1chip_calls_and_deep_99_no_open_jam() {
         "all_in".to_string(),
     ];
     for _ in 0..30 {
-        let (act_99, _, _) = decide_action_traced_with_bet(
-            &hole_99,
-            &[],
-            &legal_full,
-            300,
-            450,
+        let (act_99, _, _) = decide_action_traced(
+            &LiveDecisionRequest {
+                hole: hole_99,
+                legal: &legal_full,
+                to_call: 300,
+                pot: 450,
+                history,
+                contributions: [0, 300],
+                active_opponents: 5,
+                big_blind: 300,
+                my_chips: 8938,
+                current_bet: 300,
+                ..Default::default()
+            },
             &strategy_map,
-            false,
             &tracker,
-            &history,
-            0,
-            [0, 300],
-            0,
             None,
-            None,
-            None,
-            5,
-            300,
-            8938,
-            300,
         );
         assert_ne!(
             act_99, "all_in",

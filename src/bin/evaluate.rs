@@ -1,4 +1,4 @@
-/* Evaluate a trained CFR/MCCFR strategy profile for Leduc Poker or 52-Card Texas Hold'em.
+/*! Evaluate a trained CFR/MCCFR strategy profile for Leduc Poker or 52-Card Texas Hold'em.
  * Features:
  *   - Tabular strategy profile inspection (preflop / postflop decisions)
  *   - Simulation against random opponent (win %, profit chips/hand, mbb/hand)
@@ -14,63 +14,63 @@ use lil_poker_mccfr::sim::leduc::{
 #[derive(Parser, Debug)]
 #[command(about = "Evaluate CFR Strategy for Leduc or 52-Card Texas Hold'em Poker")]
 struct Args {
-    /* Game type: "leduc" or "holdem" (auto-detected if strategy path contains holdem/leduc) */
+    /** Game type: "leduc" or "holdem" (auto-detected if strategy path contains holdem/leduc) */
     #[arg(short, long)]
     game: Option<String>,
 
-    /* Path to strategy JSON file */
+    /** Path to strategy JSON file */
     #[arg(short, long)]
     strategy: Option<String>,
 
-    /* Number of hands/deals for simulation benchmark */
+    /** Number of hands/deals for simulation benchmark */
     #[arg(short = 'n', long)]
     hands: Option<u64>,
 
-    /* Opponent archetype for Hold'em: tag, fish, maniac, rock, self, random */
+    /** Opponent archetype for Hold'em: tag, fish, maniac, rock, self, random */
     #[arg(short = 'o', long, default_value = "tag")]
     opponent: String,
 
-    /* Optional second strategy file for A/B testing */
+    /** Optional second strategy file for A/B testing */
     #[arg(long)]
     opp_strategy: Option<String>,
 
-    /* Run in Duplicate Poker mode (each deal played in reverse seats to eliminate card luck) */
+    /** Run in Duplicate Poker mode (each deal played in reverse seats to eliminate card luck) */
     #[arg(short, long, default_value_t = true, action = clap::ArgAction::Set)]
     duplicate: bool,
 
-    /* Enable real-time subgame solving for Turn and River */
+    /** Enable real-time subgame solving for Turn and River */
     #[arg(long)]
     subgame: bool,
 
-    /* Opponent exploitation factor (0.0 = pure GTO, 1.0 = full exploit) */
+    /** Opponent exploitation factor (0.0 = pure GTO, 1.0 = full exploit) */
     #[arg(long, default_value_t = 0.70)]
     exploit_factor: f64,
 
-    /* Optional deterministic RNG seed for reproducible benchmarks */
+    /** Optional deterministic RNG seed for reproducible benchmarks */
     #[arg(long)]
     seed: Option<u64>,
 
-    /* Optional comma-separated list of guard reason codes to disable (for ablation) */
+    /** Optional comma-separated list of guard reason codes to disable (for ablation) */
     #[arg(long)]
     disable_guard: Option<String>,
 
-    /* Effective starting stack depth in Big Blinds (default: 100 BB) */
+    /** Effective starting stack depth in Big Blinds (default: 100 BB) */
     #[arg(long, default_value_t = 100)]
     stack_bb: u32,
 
-    /* Sweep benchmark across 15 BB, 30 BB, and 100 BB stacks */
+    /** Sweep benchmark across 15 BB, 30 BB, and 100 BB stacks */
     #[arg(long)]
     stack_sweep: bool,
 
-    /* Simulate rising-BB tournament structure (BB steps up every --level-hands hands) */
+    /** Simulate rising-BB tournament structure (BB steps up every --level-hands hands) */
     #[arg(long)]
     blind_schedule: bool,
 
-    /* Hands per blind level when --blind-schedule is active (default: 20) */
+    /** Hands per blind level when --blind-schedule is active (default: 20) */
     #[arg(long, default_value_t = 20)]
     level_hands: u64,
 
-    /* Show detailed strategy profile table for key infosets */
+    /** Show detailed strategy profile table for key infosets */
     #[arg(short, long)]
     verbose: bool,
 }
@@ -177,16 +177,18 @@ fn main() {
                         .or(Some(2026))
                         .map(|v| v.wrapping_add((idx as u64 + 1) * 10_007));
                     let res = lil_poker_mccfr::sim::run_holdem_blind_schedule_benchmark(
-                        &strategy_path,
-                        hands,
-                        args.level_hands,
-                        args.subgame,
-                        arch,
-                        None,
-                        args.exploit_factor,
-                        s,
-                        &disabled_guards,
-                        true,
+                        &lil_poker_mccfr::sim::BlindScheduleConfig {
+                            strategy_path: &strategy_path,
+                            total_deals: hands,
+                            hands_per_level: args.level_hands,
+                            enable_subgame_search: args.subgame,
+                            opp_archetype: arch,
+                            exploit_factor: args.exploit_factor,
+                            seed: s,
+                            disabled_guards: &disabled_guards,
+                            quiet: true,
+                            ..Default::default()
+                        },
                     );
                     total_bb100 += res.win_rate_bb100;
                     println!(
@@ -205,16 +207,18 @@ fn main() {
                 );
             } else {
                 let _ = lil_poker_mccfr::sim::run_holdem_blind_schedule_benchmark(
-                    &strategy_path,
-                    hands,
-                    args.level_hands,
-                    args.subgame,
-                    &args.opponent,
-                    args.opp_strategy.as_deref(),
-                    args.exploit_factor,
-                    args.seed,
-                    &disabled_guards,
-                    false,
+                    &lil_poker_mccfr::sim::BlindScheduleConfig {
+                        strategy_path: &strategy_path,
+                        total_deals: hands,
+                        hands_per_level: args.level_hands,
+                        enable_subgame_search: args.subgame,
+                        opp_archetype: &args.opponent,
+                        opp_strategy_path: args.opp_strategy.as_deref(),
+                        exploit_factor: args.exploit_factor,
+                        seed: args.seed,
+                        disabled_guards: &disabled_guards,
+                        quiet: false,
+                    },
                 );
             }
             return;
@@ -240,13 +244,15 @@ fn main() {
                 let mut rows = Vec::new();
                 for &bb in &[15u32, 30, 100] {
                     let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-                    let wr = lil_poker_mccfr::sim::run_holdem_multiway_benchmark_with_stack(
-                        &strategy_path,
-                        hands,
-                        args.subgame,
-                        args.exploit_factor,
-                        args.seed,
-                        chips,
+                    let wr = lil_poker_mccfr::sim::run_holdem_multiway_benchmark(
+                        &lil_poker_mccfr::sim::MultiwayBenchmarkConfig {
+                            strategy_path: &strategy_path,
+                            total_deals: hands,
+                            enable_subgame_search: args.subgame,
+                            exploit_factor: args.exploit_factor,
+                            seed: args.seed,
+                            stack_size: chips,
+                        },
                     );
                     rows.push((bb, wr));
                 }
@@ -257,13 +263,15 @@ fn main() {
             } else {
                 let chips =
                     (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-                let _ = lil_poker_mccfr::sim::run_holdem_multiway_benchmark_with_stack(
-                    &strategy_path,
-                    hands,
-                    args.subgame,
-                    args.exploit_factor,
-                    args.seed,
-                    chips,
+                let _ = lil_poker_mccfr::sim::run_holdem_multiway_benchmark(
+                    &lil_poker_mccfr::sim::MultiwayBenchmarkConfig {
+                        strategy_path: &strategy_path,
+                        total_deals: hands,
+                        enable_subgame_search: args.subgame,
+                        exploit_factor: args.exploit_factor,
+                        seed: args.seed,
+                        stack_size: chips,
+                    },
                 );
             }
             return;
@@ -276,15 +284,17 @@ fn main() {
                 let mut rows = Vec::new();
                 for &bb in &[15u32, 30, 100] {
                     let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-                    let res = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_with_stack(
-                        &strategy_path,
-                        hands,
-                        args.subgame,
-                        args.exploit_factor,
-                        args.seed.or(Some(1337)),
-                        &disabled_guards,
-                        false,
-                        chips,
+                    let res = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark(
+                        &lil_poker_mccfr::sim::GauntletConfig {
+                            strategy_path: &strategy_path,
+                            deals_per_archetype: hands,
+                            enable_subgame_search: args.subgame,
+                            exploit_factor: args.exploit_factor,
+                            base_seed: args.seed.or(Some(1337)),
+                            disabled_guards: &disabled_guards,
+                            quiet: false,
+                            stack_size: chips,
+                        },
                     );
                     let avg = if res.is_empty() {
                         0.0
@@ -300,15 +310,17 @@ fn main() {
             } else {
                 let chips =
                     (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-                let _ = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark_with_stack(
-                    &strategy_path,
-                    hands,
-                    args.subgame,
-                    args.exploit_factor,
-                    args.seed.or(Some(2026)),
-                    &disabled_guards,
-                    false,
-                    chips,
+                let _ = lil_poker_mccfr::sim::run_holdem_gauntlet_benchmark(
+                    &lil_poker_mccfr::sim::GauntletConfig {
+                        strategy_path: &strategy_path,
+                        deals_per_archetype: hands,
+                        enable_subgame_search: args.subgame,
+                        exploit_factor: args.exploit_factor,
+                        base_seed: args.seed.or(Some(2026)),
+                        disabled_guards: &disabled_guards,
+                        quiet: false,
+                        stack_size: chips,
+                    },
                 );
             }
             return;
@@ -319,20 +331,20 @@ fn main() {
             for &bb in &[15u32, 30, 100] {
                 let chips = (bb as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
                 println!("--- Stack Sweep: {} BB ---", bb);
-                let res = lil_poker_mccfr::sim::run_holdem_benchmark_with_stack(
-                    &strategy_path,
-                    hands,
-                    0,
-                    args.subgame,
-                    "0",
-                    &args.opponent,
-                    args.opp_strategy.as_deref(),
-                    args.duplicate,
-                    args.exploit_factor,
-                    false,
-                    args.seed,
-                    &disabled_guards,
-                    chips,
+                let res = lil_poker_mccfr::sim::run_holdem_benchmark(
+                    &lil_poker_mccfr::sim::HoldemBenchmarkConfig {
+                        strategy_path: &strategy_path,
+                        total_episodes: hands,
+                        enable_subgame_search: args.subgame,
+                        opp_archetype: &args.opponent,
+                        opp_strategy_path: args.opp_strategy.as_deref(),
+                        duplicate_mode: args.duplicate,
+                        exploit_factor: args.exploit_factor,
+                        seed: args.seed,
+                        disabled_guards: &disabled_guards,
+                        stack_size: chips,
+                        ..Default::default()
+                    },
                 );
                 rows.push((bb, res));
             }
@@ -353,20 +365,20 @@ fn main() {
             } else {
                 args.opponent.as_str()
             };
-            let _res = lil_poker_mccfr::sim::run_holdem_benchmark_with_stack(
-                &strategy_path,
-                hands,
-                0,
-                args.subgame,
-                "0",
-                eff_opponent,
-                args.opp_strategy.as_deref(),
-                args.duplicate,
-                args.exploit_factor,
-                false,
-                args.seed,
-                &disabled_guards,
-                chips,
+            let _res = lil_poker_mccfr::sim::run_holdem_benchmark(
+                &lil_poker_mccfr::sim::HoldemBenchmarkConfig {
+                    strategy_path: &strategy_path,
+                    total_episodes: hands,
+                    enable_subgame_search: args.subgame,
+                    opp_archetype: eff_opponent,
+                    opp_strategy_path: args.opp_strategy.as_deref(),
+                    duplicate_mode: args.duplicate,
+                    exploit_factor: args.exploit_factor,
+                    seed: args.seed,
+                    disabled_guards: &disabled_guards,
+                    stack_size: chips,
+                    ..Default::default()
+                },
             );
         }
         return;

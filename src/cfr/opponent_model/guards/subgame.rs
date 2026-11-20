@@ -1,4 +1,4 @@
-/* SubgameSolver Turn/River (round >= 3) Essential Safety Invariants */
+/*! SubgameSolver Turn/River (round >= 3) Essential Safety Invariants */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{

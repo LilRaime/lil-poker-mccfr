@@ -1,4 +1,5 @@
-/* Purified Action Sampling and Orchestration Pipeline */
+/*! Purified Action Sampling and Orchestration Pipeline */
+use super::exploit::ExploitRequest;
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
     nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
@@ -7,7 +8,67 @@ use crate::game::config::*;
 use crate::game::holdem::Card;
 use rand::Rng;
 
-/* Structured diagnostic trace of a purified action decision */
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyRequest<'a> {
+    pub raw_probs: &'a [f64],
+    pub legal_actions: &'a [u8],
+    pub bucket: usize,
+    pub round: u8,
+    pub to_call: i32,
+    pub pot: i32,
+    pub hole: Option<&'a [Card; 2]>,
+    pub board: Option<&'a [Card]>,
+    pub active_opponents: usize,
+    pub table_bb: i32,
+    pub my_chips: i32,
+    pub from_subgame: bool,
+}
+
+impl Default for PolicyRequest<'_> {
+    fn default() -> Self {
+        Self {
+            raw_probs: &[],
+            legal_actions: &[],
+            bucket: 0,
+            round: 2,
+            to_call: 0,
+            pot: 0,
+            hole: None,
+            board: None,
+            active_opponents: 1,
+            table_bb: BIG_BLIND,
+            my_chips: 0,
+            from_subgame: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ShortStackRequest<'a> {
+    pub bucket: usize,
+    pub to_call: i32,
+    pub pot: i32,
+    pub active_opponents: usize,
+    pub table_bb: i32,
+    pub my_chips: i32,
+    pub legal_actions: &'a [u8],
+}
+
+impl Default for ShortStackRequest<'_> {
+    fn default() -> Self {
+        Self {
+            bucket: 0,
+            to_call: 0,
+            pot: 0,
+            active_opponents: 1,
+            table_bb: BIG_BLIND,
+            my_chips: 0,
+            legal_actions: &[],
+        }
+    }
+}
+
+/** Structured diagnostic trace of a purified action decision */
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecisionTrace {
     pub bucket: usize,
@@ -19,232 +80,36 @@ pub struct DecisionTrace {
 }
 
 impl OpponentTracker {
-    /* Purified and noise-filtered action sampling with all-in defense (backward-compatible) */
-    pub fn select_action_purified<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        is_preflop: bool,
-        to_call: i32,
-        rng: &mut R,
-    ) -> u8 {
-        self.select_action_purified_round(
-            raw_probs,
-            legal_actions,
-            bucket,
-            if is_preflop { 1 } else { 2 },
-            to_call,
-            rng,
-        )
+    /** Contextual purified action sampling with opponent exploitation and guard pipeline */
+    pub fn select_action<R: Rng>(&self, req: &PolicyRequest<'_>, rng: &mut R) -> u8 {
+        self.select_action_traced(req, rng).0
     }
 
-    /* Street-aware purified action sampling */
-    pub fn select_action_purified_round<R: Rng>(
+    /** Contextual purified action sampling that also returns a structured DecisionTrace */
+    pub fn select_action_traced<R: Rng>(
         &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        rng: &mut R,
-    ) -> u8 {
-        self.select_action_purified_context(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            to_call.max(BIG_BLIND) * 2,
-            None,
-            None,
-            rng,
-        )
-    }
-
-    /* Full contextual purified action sampling with hole and board awareness for blocker effects and pot odds */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_context<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        rng: &mut R,
-    ) -> u8 {
-        self.select_action_purified_context_multiway(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            1,
-            rng,
-        )
-    }
-
-    /* Multi-way aware purified action sampling (adapts ranges, bluff frequencies, and pot-control for 2..=6 players) */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_context_multiway<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        rng: &mut R,
-    ) -> u8 {
-        self.select_action_purified_context_full(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            active_opponents,
-            BIG_BLIND,
-            rng,
-        )
-    }
-
-    /* Blind-level and Multi-way aware purified action sampling */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_context_full<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        table_bb: i32,
-        rng: &mut R,
-    ) -> u8 {
-        self.select_action_purified_traced(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            active_opponents,
-            table_bb,
-            rng,
-        )
-        .0
-    }
-
-    /* Full contextual purified action sampling that also returns a structured DecisionTrace */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_traced<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        table_bb: i32,
+        req: &PolicyRequest<'_>,
         rng: &mut R,
     ) -> (u8, DecisionTrace) {
-        self.select_action_purified_traced_with_stack(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            active_opponents,
-            table_bb,
-            0,
-            rng,
-        )
-    }
-
-    /* Full contextual purified action sampling with remaining stack awareness */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_traced_with_stack<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        table_bb: i32,
-        my_chips: i32,
-        rng: &mut R,
-    ) -> (u8, DecisionTrace) {
-        self.select_action_purified_traced_with_stack_ex(
-            raw_probs,
-            legal_actions,
-            bucket,
-            round,
-            to_call,
-            pot,
-            hole,
-            board,
-            active_opponents,
-            table_bb,
-            my_chips,
-            false,
-            rng,
-        )
-    }
-
-    /* Extended contextual purified action sampling with explicit `from_subgame` flag so
-     * Turn/River SubgameSolver solutions are trusted without heuristic Tier 2/3 overrides. */
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_action_purified_traced_with_stack_ex<R: Rng>(
-        &self,
-        raw_probs: &[f64],
-        legal_actions: &[u8],
-        bucket: usize,
-        round: u8,
-        to_call: i32,
-        pot: i32,
-        hole: Option<&[Card; 2]>,
-        board: Option<&[Card]>,
-        active_opponents: usize,
-        table_bb: i32,
-        my_chips: i32,
-        from_subgame: bool,
-        rng: &mut R,
-    ) -> (u8, DecisionTrace) {
-        let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
+        let bb = if req.table_bb > 0 {
+            req.table_bb
+        } else {
+            BIG_BLIND
+        };
         let eff_allin_threshold = (bb * 35).max(1);
-        let active_opponents = active_opponents.max(1);
-        let raw_top_action = top_legal_action(raw_probs, legal_actions);
-        let adjusted_probs =
-            self.adjust_strategy_context(raw_probs, legal_actions, bucket, round, to_call, bb);
+        let active_opponents = req.active_opponents.max(1);
+        let raw_top_action = top_legal_action(req.raw_probs, req.legal_actions);
+        let adjusted_probs = self.adjust_strategy(&ExploitRequest {
+            blueprint_probs: req.raw_probs,
+            legal_actions: req.legal_actions,
+            bucket: req.bucket,
+            round: req.round,
+            to_call: req.to_call,
+            table_bb: bb,
+        });
 
-        let mut probs: Vec<f64> = legal_actions
+        let mut probs: Vec<f64> = req
+            .legal_actions
             .iter()
             .map(|&a| {
                 adjusted_probs
@@ -255,42 +120,42 @@ impl OpponentTracker {
             })
             .collect();
 
-        let total_pot = pot + to_call;
+        let total_pot = req.pot + req.to_call;
         let pot_odds = if total_pot > 0 {
-            to_call as f64 / total_pot as f64
+            req.to_call as f64 / total_pot as f64
         } else {
             1.0
         };
         let mut reasons: Vec<&'static str> = Vec::with_capacity(4);
-        let is_three_flush = has_three_flush(board);
+        let is_three_flush = has_three_flush(req.board);
 
         /* Priority Pipeline (Tier 1 Soft Shifts -> Tier 2 Hard Raise Caps -> Multiway -> Tier 3 Terminal Fold / Pot-Commit) */
         self.apply_preflop_and_postflop_guards(
             &mut probs,
             super::guards::GuardInput {
-                legal_actions,
-                bucket,
-                round,
-                to_call,
-                pot,
-                hole,
-                board,
+                legal_actions: req.legal_actions,
+                bucket: req.bucket,
+                round: req.round,
+                to_call: req.to_call,
+                pot: req.pot,
+                hole: req.hole,
+                board: req.board,
                 active_opponents,
                 bb,
-                my_chips,
+                my_chips: req.my_chips,
                 eff_allin_threshold,
                 pot_odds,
                 is_three_flush,
-                from_subgame,
+                from_subgame: req.from_subgame,
             },
             &mut reasons,
         );
 
-        let chosen = purify_and_sample(&mut probs, legal_actions, rng);
+        let chosen = purify_and_sample(&mut probs, req.legal_actions, rng);
 
         let trace = DecisionTrace {
-            bucket,
-            round,
+            bucket: req.bucket,
+            round: req.round,
             pot_odds_bps: (pot_odds.clamp(0.0, 1.0) * 1000.0).round() as u16,
             raw_top_action,
             final_action: chosen,
@@ -299,56 +164,53 @@ impl OpponentTracker {
         (chosen, trace)
     }
 
-    /* Unified <= 12 BB Nash Push/Fold preflop engine shared by live play and simulation.
+    /** Unified <= 12 BB Nash Push/Fold preflop engine shared by live play and simulation.
      * Returns Some((action, reason_code)) when stack <= 12 BB preflop, else None. */
-    #[allow(clippy::too_many_arguments)]
     pub fn select_short_stack_preflop_action(
         &self,
-        bucket: usize,
-        to_call: i32,
-        pot: i32,
-        active_opponents: usize,
-        table_bb: i32,
-        my_chips: i32,
-        legal_actions: &[u8],
+        req: &ShortStackRequest<'_>,
     ) -> Option<(u8, &'static str)> {
-        let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
-        if my_chips <= 0 || my_chips > bb * 12 {
+        let bb = if req.table_bb > 0 {
+            req.table_bb
+        } else {
+            BIG_BLIND
+        };
+        if req.my_chips <= 0 || req.my_chips > bb * 12 {
             return None;
         }
-        let active_opponents = active_opponents.max(1);
-        let pf_tier = preflop_strength_tier(bucket);
+        let active_opponents = req.active_opponents.max(1);
+        let pf_tier = preflop_strength_tier(req.bucket);
         let is_maniac = self.total_actions() >= 10
             && (self.raise_ratio() > 0.38
                 || (self.pfr_ratio() > 0.50 && self.raise_ratio() > 0.28)
                 || (self.vpip_ratio() > 0.82 && self.raise_ratio() > 0.28));
-        let shove_action = if legal_actions.contains(&ALL_IN) {
+        let shove_action = if req.legal_actions.contains(&ALL_IN) {
             Some(ALL_IN)
-        } else if legal_actions.contains(&RAISE_HALF_POT) {
+        } else if req.legal_actions.contains(&RAISE_HALF_POT) {
             Some(RAISE_HALF_POT)
-        } else if legal_actions.contains(&RAISE_MIN) {
+        } else if req.legal_actions.contains(&RAISE_MIN) {
             Some(RAISE_MIN)
         } else {
             None
         };
-        let has_call_check = legal_actions.contains(&CALL_CHECK);
+        let has_call_check = req.legal_actions.contains(&CALL_CHECK);
         let ctx = ShortStackCtx {
-            bucket,
-            to_call,
-            pot,
+            bucket: req.bucket,
+            to_call: req.to_call,
+            pot: req.pot,
             active_opponents,
             bb,
-            my_chips,
+            my_chips: req.my_chips,
             pf_tier,
-            max_open_push_bb: nash_open_push_max_bb(bucket, active_opponents),
-            max_call_bb: nash_call_shove_max_bb(bucket, active_opponents, is_maniac),
+            max_open_push_bb: nash_open_push_max_bb(req.bucket, active_opponents),
+            max_call_bb: nash_call_shove_max_bb(req.bucket, active_opponents, is_maniac),
             is_maniac,
-            pot_odds: to_call as f64 / (pot + to_call).max(1) as f64,
-            call_only_allin: to_call > 0 && to_call >= my_chips,
+            pot_odds: req.to_call as f64 / (req.pot + req.to_call).max(1) as f64,
+            call_only_allin: req.to_call > 0 && req.to_call >= req.my_chips,
             shove_action,
             call_action: if has_call_check { CALL_CHECK } else { ALL_IN },
-            can_call: has_call_check || legal_actions.contains(&ALL_IN),
-            can_fold: legal_actions.contains(&FOLD),
+            can_call: has_call_check || req.legal_actions.contains(&ALL_IN),
+            can_fold: req.legal_actions.contains(&FOLD),
             has_call_check,
         };
 

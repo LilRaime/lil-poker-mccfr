@@ -8,7 +8,7 @@ use crate::game::config::STACK_SIZE;
 use crate::game::holdem::Card;
 use crate::live::protocol::parse_json_i32;
 
-/* Parsed snapshot of live poker table state for bot decision */
+/** Parsed snapshot of live poker table state for bot decision */
 #[derive(Debug, Clone)]
 pub struct LiveSnapshot {
     pub hand_id: u64,
@@ -54,7 +54,7 @@ struct TablePlayersSummary {
     nonzero_bets: Vec<i32>,
 }
 
-/* Dynamically derive legal action tokens when server does not provide legal_actions */
+/** Dynamically derive legal action tokens when server does not provide legal_actions */
 pub fn derive_legal_actions(to_call: i32, my_chips: i32) -> Vec<String> {
     let mut actions = Vec::new();
     if to_call == 0 {
@@ -197,12 +197,12 @@ fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize 
     }
 }
 
-/* Parse a WebSocket JSON message into LiveSnapshot if bot is active player */
+/** Parse a WebSocket JSON message into LiveSnapshot if bot is active player */
 pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> {
     parse_live_state_with_hint(state, player_id, 0)
 }
 
-/* Parse a WebSocket JSON message into LiveSnapshot with an optional same-hand big-blind hint */
+/** Parse a WebSocket JSON message into LiveSnapshot with an optional same-hand big-blind hint */
 pub fn parse_live_state_with_hint(
     state: &Value,
     player_id: &str,

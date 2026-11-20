@@ -16,7 +16,7 @@ fn effective_category(cand: &[Card; 2], street_board: &[Card], board_paired: boo
     }
 }
 
-/* 2. Flop Bayesian Likelihood Update (active on Flop once opponent acts, and on Turn/River) */
+/** 2. Flop Bayesian Likelihood Update (active on Flop once opponent acts, and on Turn/River) */
 pub(super) fn flop_likelihood(
     cand: &[Card; 2],
     board: &[Card],
@@ -75,7 +75,7 @@ pub(super) fn flop_likelihood(
     }
 }
 
-/* 3. Turn Bayesian Likelihood Update (active on Turn once opponent acts, and on River) */
+/** 3. Turn Bayesian Likelihood Update (active on Turn once opponent acts, and on River) */
 pub(super) fn turn_likelihood(
     cand: &[Card; 2],
     board: &[Card],
@@ -133,7 +133,7 @@ pub(super) fn turn_likelihood(
     }
 }
 
-/* 3b. River Bayesian Likelihood Update (active when facing a River bet/raise) */
+/** 3b. River Bayesian Likelihood Update (active when facing a River bet/raise) */
 pub(super) fn river_likelihood(
     cand: &[Card; 2],
     board: &[Card],
@@ -161,7 +161,7 @@ pub(super) fn river_likelihood(
     }
 }
 
-/* 4. Monotone Texture Blocker Adjustment */
+/** 4. Monotone Texture Blocker Adjustment */
 pub(super) fn monotone_texture_multiplier(cand: &[Card; 2], ctx: &ReachContext) -> f64 {
     let Some(mono_suit) = ctx.monotone_suit else {
         return 1.0;

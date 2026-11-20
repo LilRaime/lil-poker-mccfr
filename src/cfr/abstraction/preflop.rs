@@ -1,10 +1,10 @@
-/*
+/*!
  * Canonical Preflop Hand Indexing and Groups (Pairs, Suited, Offsuited).
  */
 
 use crate::game::holdem::{Card, Rank};
 
-/* Canonical Preflop Hand Index (0..168) & Name ("AA", "AKs", "AKo", etc.) */
+/** Canonical Preflop Hand Index (0..168) & Name ("AA", "AKs", "AKo", etc.) */
 pub fn preflop_bucket(c1: Card, c2: Card) -> (usize, &'static str) {
     let (r1, r2) = if (c1.rank as u8) >= (c2.rank as u8) {
         (c1.rank, c2.rank)
@@ -47,7 +47,7 @@ pub fn preflop_bucket(c1: Card, c2: Card) -> (usize, &'static str) {
     }
 }
 
-/* Canonical preflop hand strength tier (1..=8) based on Sklansky-Chubukov / HU & 6-max cash equity:
+/** Canonical preflop hand strength tier (1..=8) based on Sklansky-Chubukov / HU & 6-max cash equity:
  * - 1: Super-Premium Monster (AA, KK, QQ, AKs, AKo)
  * - 2: Strong Premium (JJ, TT, 99, AQs, AJs, KQs, AQo)
  * - 3: Upper Playable / 3-Bet Value (88, 77, ATs-A8s, A5s, KJs, KTs, QJs, AJo, KQo)
@@ -147,7 +147,7 @@ pub fn preflop_strength_tier(idx: usize) -> u8 {
     }
 }
 
-/* Nash-calibrated maximum effective stack (in BB) for open-pushing from SB / late position in an unopened pot */
+/** Nash-calibrated maximum effective stack (in BB) for open-pushing from SB / late position in an unopened pot */
 pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
     let hu_max = match idx {
         0..=9 | 13..=28 | 36..=37 | 46 | 91..=95 | 103..=105 | 114 => 15,
@@ -183,7 +183,7 @@ pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
     }
 }
 
-/* Nash-calibrated maximum call size (in BB) when facing an all-in preflop shove */
+/** Nash-calibrated maximum call size (in BB) when facing an all-in preflop shove */
 pub fn nash_call_shove_max_bb(idx: usize, active_opponents: usize, is_maniac: bool) -> i32 {
     let tier = preflop_strength_tier(idx);
     match idx {
@@ -280,7 +280,7 @@ pub fn nash_call_shove_max_bb(idx: usize, active_opponents: usize, is_maniac: bo
     }
 }
 
-/* Inverse lookup: canonical preflop hand name ("AA", "AKs", "72o") -> bucket index (0..168). */
+/** Inverse lookup: canonical preflop hand name ("AA", "AKs", "72o") -> bucket index (0..168). */
 pub fn preflop_bucket_from_name(name: &str) -> Option<usize> {
     use crate::game::holdem::Suit;
     let bytes = name.as_bytes();

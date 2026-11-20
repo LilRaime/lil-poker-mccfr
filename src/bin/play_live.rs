@@ -1,4 +1,4 @@
-/*
+/*!
  * Native Rust Live Client for lil-poker.
  * Connects directly to lil-poker REST API + WebSocket server,
  * loads abstract MCCFR strategy model, and plays in real-time.

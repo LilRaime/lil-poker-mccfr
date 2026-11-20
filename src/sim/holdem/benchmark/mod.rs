@@ -1,4 +1,4 @@
-/* Texas Hold'em Benchmark and A/B Evaluation Suite */
+/*! Texas Hold'em Benchmark and A/B Evaluation Suite */
 pub mod blind_schedule;
 pub mod gauntlet;
 pub mod hu;
@@ -14,19 +14,14 @@ use crate::game::config::NUM_CARDS_DECK;
 use crate::game::holdem::{Card, ALL_52_CARDS};
 
 pub use blind_schedule::{
-    run_holdem_blind_schedule_benchmark, BlindScheduleLevel, DEFAULT_BLIND_SCHEDULE,
+    run_holdem_blind_schedule_benchmark, BlindScheduleConfig, BlindScheduleLevel,
+    DEFAULT_BLIND_SCHEDULE,
 };
-pub use gauntlet::{
-    run_holdem_ablation_benchmark, run_holdem_gauntlet_benchmark,
-    run_holdem_gauntlet_benchmark_seeded, run_holdem_gauntlet_benchmark_with_stack,
-};
-pub use hu::{
-    run_holdem_benchmark, run_holdem_benchmark_seeded, run_holdem_benchmark_with_stack,
-    run_holdem_episodes_log_mode,
-};
-pub use multiway::{run_holdem_multiway_benchmark, run_holdem_multiway_benchmark_with_stack};
+pub use gauntlet::{run_holdem_ablation_benchmark, run_holdem_gauntlet_benchmark, GauntletConfig};
+pub use hu::{run_holdem_benchmark, HoldemBenchmarkConfig};
+pub use multiway::{run_holdem_multiway_benchmark, MultiwayBenchmarkConfig};
 
-/* Benchmark and Evaluation Result Structure */
+/** Benchmark and Evaluation Result Structure */
 #[derive(Debug, Clone, Default)]
 pub struct HoldemBenchmarkResult {
     pub duplicate_mode: bool,

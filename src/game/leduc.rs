@@ -1,4 +1,4 @@
-/*
+/*!
  * Leduc Poker game implementation (2 players, 6-card deck).
  * Actions: 0 = Fold, 1 = Call/Check, 2 = Raise.
  */
@@ -12,7 +12,7 @@ pub const RAISE: u8 = 2;
 
 pub const NUM_ACTIONS: usize = 3;
 
-/* Compact round-history string used as part of the infoset key. */
+/** Compact round-history string used as part of the infoset key. */
 #[inline(always)]
 fn action_char(a: u8) -> char {
     match a {
@@ -38,14 +38,14 @@ pub struct LeducGame {
 }
 
 impl LeducGame {
-    /* Create a new shuffled game. Deals hole cards AND community card upfront. */
+    /** Create a new shuffled game. Deals hole cards AND community card upfront. */
     pub fn new_random<R: rand::Rng>(rng: &mut R) -> Self {
         let mut deck = ALL_CARDS;
         deck.shuffle(rng);
         LeducGame::new_with_cards(deck[0], deck[1], deck[2])
     }
 
-    /* Create a game with a specific card deal (for exploitability enumeration). */
+    /** Create a game with a specific card deal (for exploitability enumeration). */
     pub fn new_with_cards(hole0: Card, hole1: Card, board: Card) -> Self {
         LeducGame {
             hole: [hole0, hole1],
@@ -76,7 +76,7 @@ impl LeducGame {
         self.current_player
     }
 
-    /* Legal actions at the current node into a stack buffer. */
+    /** Legal actions at the current node into a stack buffer. */
     #[inline(always)]
     pub fn legal_actions_buf(&self, out: &mut [u8; 3]) -> usize {
         if self.terminal {
@@ -113,7 +113,7 @@ impl LeducGame {
         buf[..n].to_vec()
     }
 
-    /* Fast zero-allocation information set key into String buffer */
+    /** Fast zero-allocation information set key into String buffer */
     #[inline(always)]
     pub fn infoset_key_buf(&self, player: usize, out: &mut String) {
         out.clear();
@@ -135,14 +135,14 @@ impl LeducGame {
         }
     }
 
-    /* Information set key for player */
+    /** Information set key for player */
     pub fn infoset_key(&self, player: usize) -> String {
         let mut s = String::with_capacity(16);
         self.infoset_key_buf(player, &mut s);
         s
     }
 
-    /* Apply action and return resulting game state */
+    /** Apply action and return resulting game state */
     #[inline(always)]
     pub fn apply_action(&self, action: u8) -> LeducGame {
         let mut next = *self;
@@ -184,7 +184,7 @@ impl LeducGame {
         next
     }
 
-    /* Advance round if check-check or raise-call occurs */
+    /** Advance round if check-check or raise-call occurs */
     #[inline(always)]
     fn advance_round_if_done(mut self) -> LeducGame {
         let round_idx = (self.round - 1) as usize;

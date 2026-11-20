@@ -1,4 +1,4 @@
-/* Parallel External Sampling MCCFR Solver for 52-Card Texas Hold'em with Card Abstraction. */
+/*! Parallel External Sampling MCCFR Solver for 52-Card Texas Hold'em with Card Abstraction. */
 
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
@@ -14,7 +14,7 @@ use crate::game::holdem::{Card, TexasHoldemGame};
 
 pub use crate::game::config::HOLDEM_NUM_ACTIONS;
 
-/* Fast 64-bit SplitMix mixer for pre-hashed FNV-1a u64 keys (avoids 20-cycle SipHash-1-3 on every lookup). */
+/** Fast 64-bit SplitMix mixer for pre-hashed FNV-1a u64 keys (avoids 20-cycle SipHash-1-3 on every lookup). */
 #[derive(Default)]
 pub struct FastU64Hasher(u64);
 
@@ -170,7 +170,7 @@ impl HoldemMCCFRSolver {
         self
     }
 
-    /* Fast get or create node by u64 hash; key string generated lazily only on insertion */
+    /** Fast get or create node by u64 hash; key string generated lazily only on insertion */
     #[inline(always)]
     fn get_node<F>(&self, hash: u64, make_key: F) -> &InfosetNode
     where
@@ -188,12 +188,12 @@ impl HoldemMCCFRSolver {
         unsafe { &*ptr }
     }
 
-    /* Run iterations of parallel Bucketed External Sampling MCCFR */
+    /** Run iterations of parallel Bucketed External Sampling MCCFR */
     pub fn train(&self, iterations: u64, threads: usize, log_every: u64) {
         self.train_with_checkpoint(iterations, threads, log_every, 0, |_, _| {});
     }
 
-    /* Run iterations of parallel Bucketed External Sampling MCCFR with optional checkpointing */
+    /** Run iterations of parallel Bucketed External Sampling MCCFR with optional checkpointing */
     pub fn train_with_checkpoint<F>(
         &self,
         iterations: u64,
@@ -539,14 +539,14 @@ impl HoldemMCCFRSolver {
             .collect()
     }
 
-    /* Fast f32-quantized fixed-array strategy export */
+    /** Fast f32-quantized fixed-array strategy export */
     pub fn export_strategy_f32(
         &self,
     ) -> std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> {
         self.export_strategy_filtered_f32(false, 0)
     }
 
-    /* Strategy export with optional river pruning and turn action pruning */
+    /** Strategy export with optional river pruning and turn action pruning */
     pub fn export_strategy_filtered_f32(
         &self,
         prune_river: bool,
@@ -709,7 +709,7 @@ impl HoldemMCCFRSolver {
         Ok(strat)
     }
 
-    /* Save full raw checkpoint (hashes, keys, regret_sum, strategy_sum, global_iterations) for lossless resume */
+    /** Save full raw checkpoint (hashes, keys, regret_sum, strategy_sum, global_iterations) for lossless resume */
     pub fn save_raw_checkpoint(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
@@ -739,7 +739,7 @@ impl HoldemMCCFRSolver {
         Ok(count)
     }
 
-    /* Warm-start solver nodes from a raw checkpoint or strategy file (for resuming/extending training) */
+    /** Warm-start solver nodes from a raw checkpoint or strategy file (for resuming/extending training) */
     pub fn warm_start_from_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
         let raw_ckpt_path = format!("{}.ckpt", path);
         let try_raw_path = if std::path::Path::new(&raw_ckpt_path).exists() {

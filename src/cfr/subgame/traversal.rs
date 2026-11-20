@@ -1,11 +1,13 @@
-/*
+/*!
  * Depth-Limited CFR+ Subgame Tree Traversal (Shared Parallel & Local Single-Thread)
  * and Fast 7-Card Showdown Leaf Rollout Evaluation.
  */
 
 use super::solver::SubgameSolver;
 use crate::cfr::abstraction::{hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket};
-use crate::cfr::fallback::{get_holdem_fallback_strategy, get_postflop_fallback_by_bucket};
+use crate::cfr::fallback::{
+    get_holdem_fallback_strategy, get_postflop_fallback_by_bucket, FallbackRequest,
+};
 use crate::cfr::node::InfosetNode;
 use crate::game::config::*;
 use crate::game::holdem::TexasHoldemGame;
@@ -14,7 +16,7 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 
-/* Light regret-matching prior weight for newly expanded subgame child nodes.
+/** Light regret-matching prior weight for newly expanded subgame child nodes.
  * Strong enough to steer initial opponent/range play away from uniform 1/6 noise,
  * yet small enough that CFR+ chip regrets override it within a few iterations. */
 const CHILD_PRIOR_REGRET_WEIGHT: f64 = 25.0;
@@ -105,14 +107,15 @@ pub(super) fn create_prior_infoset_node(
     let mut prior = if let Some(bucket) = postflop_bucket {
         get_postflop_fallback_by_bucket(bucket, game.round, to_call, pot, legal)
     } else {
-        get_holdem_fallback_strategy(
-            &game.hole[cur_p],
-            &game.board,
-            game.round,
+        get_holdem_fallback_strategy(&FallbackRequest {
+            hole: game.hole[cur_p],
+            board: &game.board,
+            round: game.round,
             to_call,
             pot,
             legal,
-        )
+            ..Default::default()
+        })
     };
     /* Dampen call/raise prior weights when facing >2x pot jams with non-trips hands
      * so SubgameSolver does not hallucinate call-EV for massive overbet shoves. */
@@ -169,40 +172,44 @@ pub(super) fn create_prior_infoset_node(
     node
 }
 
+pub(super) struct TraversalCtx<'a> {
+    pub start_round: u8,
+    pub root_hash: u64,
+    pub my_player: usize,
+    pub opp_prior_bias: Option<(f64, f64)>,
+    pub updating_player: usize,
+    pub weight: f64,
+    pub precomputed_buckets: &'a [[u8; 2]; 3],
+}
+
 impl SubgameSolver {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn cfr_shared(
         &self,
         game: &TexasHoldemGame,
-        start_round: u8,
-        root_hash: u64,
-        my_player: usize,
-        opp_prior_bias: Option<(f64, f64)>,
-        updating_player: usize,
-        weight: f64,
-        precomputed_buckets: &[[u8; 2]; 3],
+        ctx: &TraversalCtx<'_>,
         nodes: &DashMap<u64, InfosetNode>,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
-            return game.get_returns()[updating_player];
+            return game.get_returns()[ctx.updating_player];
         }
 
         /* Depth-limited continuation leaf evaluation */
-        if game.round > start_round
-            && (game.round - start_round) >= self.max_depth_streets
+        if game.round > ctx.start_round
+            && (game.round - ctx.start_round) >= self.max_depth_streets
             && game.history[(game.round - 1) as usize].is_empty()
         {
-            return evaluate_leaf_continuation(game, updating_player, precomputed_buckets);
+            return evaluate_leaf_continuation(game, ctx.updating_player, ctx.precomputed_buckets);
         }
 
         let cur_p = game.current_player();
         let legal = filter_subgame_legal_actions(game, cur_p);
         if legal.is_empty() {
-            return game.get_returns()[updating_player];
+            return game.get_returns()[ctx.updating_player];
         }
 
-        let key_hash = compute_subgame_key_hash(game, start_round, cur_p, precomputed_buckets);
+        let key_hash =
+            compute_subgame_key_hash(game, ctx.start_round, cur_p, ctx.precomputed_buckets);
 
         let raw_strategy = if let Some(node) = nodes.get(&key_hash) {
             node.get_strategy()
@@ -211,34 +218,23 @@ impl SubgameSolver {
                 create_prior_infoset_node(
                     game,
                     cur_p,
-                    my_player,
-                    opp_prior_bias,
+                    ctx.my_player,
+                    ctx.opp_prior_bias,
                     &legal,
-                    precomputed_buckets,
+                    ctx.precomputed_buckets,
                 )
             });
             node.get_strategy()
         };
         let strategy = normalize_legal_strategy(&raw_strategy, &legal);
 
-        if cur_p == updating_player {
+        if cur_p == ctx.updating_player {
             let mut util = [0.0f64; HOLDEM_NUM_ACTIONS];
             let mut node_util = 0.0f64;
 
             for &a in &legal {
                 let next_game = game.apply_action(a);
-                let action_util = self.cfr_shared(
-                    &next_game,
-                    start_round,
-                    root_hash,
-                    my_player,
-                    opp_prior_bias,
-                    updating_player,
-                    weight,
-                    precomputed_buckets,
-                    nodes,
-                    rng,
-                );
+                let action_util = self.cfr_shared(&next_game, ctx, nodes, rng);
                 util[a as usize] = action_util;
                 node_util += strategy[a as usize] * action_util;
             }
@@ -250,102 +246,74 @@ impl SubgameSolver {
 
             if let Some(node) = nodes.get(&key_hash) {
                 node.update_regrets_cfr_plus(&regrets);
-                if key_hash == root_hash {
-                    node.accumulate_strategy(&strategy, weight);
+                if key_hash == ctx.root_hash {
+                    node.accumulate_strategy(&strategy, ctx.weight);
                 }
             }
 
             node_util
         } else {
-            if key_hash != root_hash {
+            if key_hash != ctx.root_hash {
                 if let Some(node) = nodes.get(&key_hash) {
-                    node.accumulate_strategy(&strategy, weight);
+                    node.accumulate_strategy(&strategy, ctx.weight);
                 }
             }
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
-            self.cfr_shared(
-                &next_game,
-                start_round,
-                root_hash,
-                my_player,
-                opp_prior_bias,
-                updating_player,
-                weight,
-                precomputed_buckets,
-                nodes,
-                rng,
-            )
+            self.cfr_shared(&next_game, ctx, nodes, rng)
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn cfr_local(
         &self,
         game: &TexasHoldemGame,
-        start_round: u8,
-        root_hash: u64,
-        my_player: usize,
-        opp_prior_bias: Option<(f64, f64)>,
-        updating_player: usize,
-        weight: f64,
-        precomputed_buckets: &[[u8; 2]; 3],
+        ctx: &TraversalCtx<'_>,
         nodes: &mut HashMap<u64, InfosetNode>,
         rng: &mut SmallRng,
     ) -> f64 {
         if game.is_terminal() {
-            return game.get_returns()[updating_player];
+            return game.get_returns()[ctx.updating_player];
         }
 
         /* Depth-limited continuation leaf evaluation */
-        if game.round > start_round
-            && (game.round - start_round) >= self.max_depth_streets
+        if game.round > ctx.start_round
+            && (game.round - ctx.start_round) >= self.max_depth_streets
             && game.history[(game.round - 1) as usize].is_empty()
         {
-            return evaluate_leaf_continuation(game, updating_player, precomputed_buckets);
+            return evaluate_leaf_continuation(game, ctx.updating_player, ctx.precomputed_buckets);
         }
 
         let cur_p = game.current_player();
         let legal = filter_subgame_legal_actions(game, cur_p);
         if legal.is_empty() {
-            return game.get_returns()[updating_player];
+            return game.get_returns()[ctx.updating_player];
         }
 
-        let key_hash = compute_subgame_key_hash(game, start_round, cur_p, precomputed_buckets);
+        let key_hash =
+            compute_subgame_key_hash(game, ctx.start_round, cur_p, ctx.precomputed_buckets);
 
         let raw_strategy = {
             let node = nodes.entry(key_hash).or_insert_with(|| {
                 create_prior_infoset_node(
                     game,
                     cur_p,
-                    my_player,
-                    opp_prior_bias,
+                    ctx.my_player,
+                    ctx.opp_prior_bias,
                     &legal,
-                    precomputed_buckets,
+                    ctx.precomputed_buckets,
                 )
             });
             node.get_strategy()
         };
         let strategy = normalize_legal_strategy(&raw_strategy, &legal);
 
-        if cur_p == updating_player {
+        if cur_p == ctx.updating_player {
             let mut util = [0.0f64; HOLDEM_NUM_ACTIONS];
             let mut node_util = 0.0f64;
 
             for &a in &legal {
                 let next_game = game.apply_action(a);
-                let action_util = self.cfr_local(
-                    &next_game,
-                    start_round,
-                    root_hash,
-                    my_player,
-                    opp_prior_bias,
-                    updating_player,
-                    weight,
-                    precomputed_buckets,
-                    nodes,
-                    rng,
-                );
+                let action_util = self.cfr_local(&next_game, ctx, nodes, rng);
                 util[a as usize] = action_util;
                 node_util += strategy[a as usize] * action_util;
             }
@@ -357,37 +325,26 @@ impl SubgameSolver {
 
             if let Some(node) = nodes.get_mut(&key_hash) {
                 node.update_regrets_cfr_plus(&regrets);
-                if key_hash == root_hash {
-                    node.accumulate_strategy(&strategy, weight);
+                if key_hash == ctx.root_hash {
+                    node.accumulate_strategy(&strategy, ctx.weight);
                 }
             }
 
             node_util
         } else {
-            if key_hash != root_hash {
+            if key_hash != ctx.root_hash {
                 if let Some(node) = nodes.get_mut(&key_hash) {
-                    node.accumulate_strategy(&strategy, weight);
+                    node.accumulate_strategy(&strategy, ctx.weight);
                 }
             }
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
-            self.cfr_local(
-                &next_game,
-                start_round,
-                root_hash,
-                my_player,
-                opp_prior_bias,
-                updating_player,
-                weight,
-                precomputed_buckets,
-                nodes,
-                rng,
-            )
+            self.cfr_local(&next_game, ctx, nodes, rng)
         }
     }
 }
 
-/* Continuation leaf evaluation: combines 7-card showdown rollout with a realizable future-street
+/** Continuation leaf evaluation: combines 7-card showdown rollout with a realizable future-street
  * value-extraction continuation term (inspired by Pluribus continuation leaves) so strong hands
  * with remaining stack behind do not undervalue future-street implied EV. */
 #[inline]

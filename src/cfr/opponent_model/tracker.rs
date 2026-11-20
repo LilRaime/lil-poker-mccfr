@@ -1,4 +1,4 @@
-/* Opponent Action Tracking and Statistical Metrics */
+/*! Opponent Action Tracking and Statistical Metrics */
 use super::classifier::OpponentStyle;
 use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
 use crate::game::config::*;
@@ -74,7 +74,7 @@ pub struct OpponentTracker {
     #[serde(default)]
     pub last_observed_bb: i32,
 
-    /* Optional guard ablation filter (reason codes disabled for benchmarking) */
+    /** Optional guard ablation filter (reason codes disabled for benchmarking) */
     #[serde(skip)]
     pub disabled_guards: Vec<String>,
 }
@@ -447,7 +447,7 @@ impl OpponentTracker {
             && self.postflop_overbet_ratio() >= 0.40
     }
 
-    /* Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)
+    /** Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)
      * to prevent abrupt archetype flips on small samples (5–20 hands). */
     pub fn smoothed_vpip(&self) -> f64 {
         let k = 8.0;
@@ -534,7 +534,7 @@ impl OpponentTracker {
         }
     }
 
-    /* Analyzes opponent's revealed cards at Showdown for deep range and tendency inference */
+    /** Analyzes opponent's revealed cards at Showdown for deep range and tendency inference */
     pub fn record_showdown_hand(
         &mut self,
         opp_hole: [Card; 2],
@@ -600,7 +600,7 @@ impl OpponentTracker {
         }
     }
 
-    /* Wilson score interval for statistical significance of frequency bounds.
+    /** Wilson score interval for statistical significance of frequency bounds.
      * Returns (lower_bound, upper_bound) at confidence level z (e.g. z=1.96 for 95%). */
     pub fn wilson_confidence(successes: u64, total: u64, z: f64) -> (f64, f64) {
         if total == 0 {
@@ -618,7 +618,7 @@ impl OpponentTracker {
         ((center - margin).max(0.0), (center + margin).min(1.0))
     }
 
-    /* Classifies opponent playstyle into a discrete archetype with confidence */
+    /** Classifies opponent playstyle into a discrete archetype with confidence */
     pub fn classify_style(&self) -> (OpponentStyle, f64) {
         if self.total_hands < 3 {
             return (OpponentStyle::Unknown, 0.0);
@@ -647,7 +647,7 @@ impl OpponentTracker {
         }
     }
 
-    /* Applies exponential session decay to historical counters so recent hands adapt faster */
+    /** Applies exponential session decay to historical counters so recent hands adapt faster */
     pub fn apply_session_decay(&mut self, factor: f64) {
         let f = factor.clamp(0.1, 1.0);
         let scale = |v: &mut u64| *v = (*v as f64 * f).round() as u64;
@@ -706,7 +706,7 @@ impl OpponentTracker {
         self.fold_to_3bet_count = self.fold_to_3bet_count.min(self.faced_3bet_count);
     }
 
-    /* Decay historical statistics when the table Big Blind steps up significantly (e.g. every 20 hands)
+    /** Decay historical statistics when the table Big Blind steps up significantly (e.g. every 20 hands)
      * so opponent profiling adapts rapidly to high-blind / short-stack strategy shifts. */
     pub fn observe_blind_level(&mut self, current_bb: i32) {
         if current_bb <= 0 {
@@ -722,7 +722,7 @@ impl OpponentTracker {
         self.last_observed_bb = current_bb;
     }
 
-    /* Persist opponent profile to disk JSON database keyed by opponent identifier,
+    /** Persist opponent profile to disk JSON database keyed by opponent identifier,
      * with automatic fallback to /tmp/opponent_profiles.json on read-only container roots */
     pub fn save_profile(
         &self,
@@ -782,7 +782,7 @@ impl OpponentTracker {
         Ok(())
     }
 
-    /* Load opponent profile from disk JSON database (checking /tmp runtime fallback first)
+    /** Load opponent profile from disk JSON database (checking /tmp runtime fallback first)
      * and apply mild session decay */
     pub fn load_profile(path: &str, opp_key: &str) -> Option<Self> {
         if opp_key.is_empty() {

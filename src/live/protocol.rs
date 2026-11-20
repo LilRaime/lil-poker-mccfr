@@ -1,4 +1,4 @@
-/* Live Client Network Protocols, Payloads, and Action Mappings */
+/*! Live Client Network Protocols, Payloads, and Action Mappings */
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -39,7 +39,7 @@ pub fn parse_json_i32(v: Option<&Value>) -> i32 {
     }
 }
 
-/* Parse Card from server string format ("As", "Ah", "A♠", "10c", etc.) */
+/** Parse Card from server string format ("As", "Ah", "A♠", "10c", etc.) */
 pub fn parse_card_str(s: &str) -> Option<Card> {
     let s = s.trim_matches('\'').trim();
     let mut chars = s.chars();
@@ -81,145 +81,90 @@ pub fn parse_card_str(s: &str) -> Option<Card> {
     Some(Card { rank, suit })
 }
 
-/* Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN) to server legal string */
-pub fn map_action_index(
-    idx: usize,
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-) -> Option<(String, i32)> {
-    map_action_index_round(idx, legal, to_call, pot, is_wet, 2)
+#[derive(Debug, Clone, Copy)]
+pub struct ActionMapRequest<'a> {
+    pub action_idx: usize,
+    pub legal: &'a [String],
+    pub to_call: i32,
+    pub pot: i32,
+    pub is_wet: bool,
+    pub round: u8,
+    pub table_bb: i32,
+    pub my_chips: i32,
+    pub current_bet: i32,
 }
 
-/* Street-aware CFR Action Index mapping with dynamic River/Turn bet sizing */
-pub fn map_action_index_round(
-    idx: usize,
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-    round: u8,
-) -> Option<(String, i32)> {
-    map_action_index_round_bb(idx, legal, to_call, pot, is_wet, round, BIG_BLIND)
+impl Default for ActionMapRequest<'_> {
+    fn default() -> Self {
+        Self {
+            action_idx: CALL_CHECK as usize,
+            legal: &[],
+            to_call: 0,
+            pot: 0,
+            is_wet: false,
+            round: 2,
+            table_bb: BIG_BLIND,
+            my_chips: 0,
+            current_bet: 0,
+        }
+    }
 }
 
-/* Blind-level and Street-aware CFR Action Index mapping with dynamic River/Turn bet sizing */
-pub fn map_action_index_round_bb(
-    idx: usize,
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-    round: u8,
-    table_bb: i32,
-) -> Option<(String, i32)> {
-    map_action_index_round_bb_chips(idx, legal, to_call, pot, is_wet, round, table_bb, 0)
-}
+/** Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN) to server legal string */
+pub fn map_action_index(req: &ActionMapRequest<'_>) -> Option<(String, i32)> {
+    let mut ctx = *req;
+    if ctx.table_bb <= 0 {
+        ctx.table_bb = BIG_BLIND;
+    }
 
-/* Blind-level, Street-aware, and Stack-aware CFR Action Index mapping */
-#[allow(clippy::too_many_arguments)]
-pub fn map_action_index_round_bb_chips(
-    idx: usize,
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-    round: u8,
-    table_bb: i32,
-    my_chips: i32,
-) -> Option<(String, i32)> {
-    map_action_index_full(
-        idx, legal, to_call, pot, is_wet, round, table_bb, my_chips, 0,
-    )
-}
-
-/* Full CFR Action Index mapping including explicit server `current_bet` when available */
-#[allow(clippy::too_many_arguments)]
-pub fn map_action_index_full(
-    idx: usize,
-    legal: &[String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-    round: u8,
-    table_bb: i32,
-    my_chips: i32,
-    current_bet: i32,
-) -> Option<(String, i32)> {
-    let bb = if table_bb > 0 { table_bb } else { BIG_BLIND };
-    let ctx = ActionMapCtx {
-        legal,
-        to_call,
-        pot,
-        is_wet,
-        round,
-        bb,
-        my_chips,
-        current_bet,
-    };
-
-    match idx as u8 {
+    match req.action_idx as u8 {
         FOLD => map_fold_action(&ctx),
         CALL_CHECK => map_call_check_action(&ctx),
-        RAISE_MIN..=RAISE_HALF_POT => map_raise_action(idx as u8, &ctx),
+        RAISE_MIN..=RAISE_HALF_POT => map_raise_action(req.action_idx as u8, &ctx),
         ALL_IN => map_allin_action(&ctx),
         _ => None,
     }
 }
 
-struct ActionMapCtx<'a> {
-    legal: &'a [String],
-    to_call: i32,
-    pot: i32,
-    is_wet: bool,
-    round: u8,
-    bb: i32,
-    my_chips: i32,
-    current_bet: i32,
+fn has_legal(legal: &[String], action: &str) -> bool {
+    legal.iter().any(|l| l.eq_ignore_ascii_case(action))
 }
 
-impl ActionMapCtx<'_> {
-    fn has(&self, a: &str) -> bool {
-        self.legal.iter().any(|l| l.eq_ignore_ascii_case(a))
-    }
-}
-
-fn map_fold_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+fn map_fold_action(c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     if c.to_call == 0 {
-        if c.has("check") {
+        if has_legal(c.legal, "check") {
             Some(("check".to_string(), 0))
-        } else if c.has("fold") {
+        } else if has_legal(c.legal, "fold") {
             Some(("fold".to_string(), 0))
         } else {
             None
         }
-    } else if c.has("fold") {
+    } else if has_legal(c.legal, "fold") {
         Some(("fold".to_string(), 0))
-    } else if c.has("check") {
+    } else if has_legal(c.legal, "check") {
         Some(("check".to_string(), 0))
     } else {
         None
     }
 }
 
-fn map_call_check_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+fn map_call_check_action(c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     if c.to_call > 0 {
-        if c.has("call") {
+        if has_legal(c.legal, "call") {
             Some(("call".to_string(), 0))
-        } else if c.has("all_in") {
+        } else if has_legal(c.legal, "all_in") {
             /* Action Bridge: when calling puts bot all-in and server only lists "all_in" */
             Some(("all_in".to_string(), 0))
-        } else if c.has("allin") {
+        } else if has_legal(c.legal, "allin") {
             Some(("allin".to_string(), 0))
-        } else if c.has("check") {
+        } else if has_legal(c.legal, "check") {
             Some(("check".to_string(), 0))
         } else {
             None
         }
-    } else if c.has("check") {
+    } else if has_legal(c.legal, "check") {
         Some(("check".to_string(), 0))
-    } else if c.has("call") {
+    } else if has_legal(c.legal, "call") {
         Some(("call".to_string(), 0))
     } else {
         None
@@ -227,14 +172,14 @@ fn map_call_check_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
 }
 
 fn compute_half_pot_raise(
-    c: &ActionMapCtx<'_>,
+    c: &ActionMapRequest<'_>,
     is_unopened_or_limped_pf: bool,
     is_preflop_4bet_plus: bool,
     opp_bet_pf: i32,
     min_raise: i32,
     base_bet: i32,
 ) -> i32 {
-    let bb = c.bb;
+    let bb = c.table_bb;
     let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
     if is_unopened_or_limped_pf {
         (bb * 7 / 2).max(preflop_open_min_total)
@@ -263,8 +208,8 @@ fn compute_half_pot_raise(
     }
 }
 
-fn compute_raise_amount(idx: u8, c: &ActionMapCtx<'_>) -> (i32, i32) {
-    let bb = c.bb;
+fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
+    let bb = c.table_bb;
     let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
 
     let is_unopened_or_limped_pf = c.round == 1
@@ -346,66 +291,66 @@ fn compute_raise_amount(idx: u8, c: &ActionMapCtx<'_>) -> (i32, i32) {
     (amt, my_posted_bet)
 }
 
-fn map_raise_action(idx: u8, c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+fn map_raise_action(idx: u8, c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     let (amt, my_posted_bet) = compute_raise_amount(idx, c);
     if c.round == 1
         && c.my_chips > 0
         && c.to_call > 0
-        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.bb * 3)
+        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.table_bb * 3)
     {
         /* If a preflop 3-bet/4-bet commits >= 55% of remaining stack or leaves <= 3 BB behind, jam all-in! */
-        if c.has("all_in") {
+        if has_legal(c.legal, "all_in") {
             return Some(("all_in".to_string(), 0));
-        } else if c.has("allin") {
+        } else if has_legal(c.legal, "allin") {
             return Some(("allin".to_string(), 0));
-        } else if c.has("raise") {
+        } else if has_legal(c.legal, "raise") {
             return Some(("raise".to_string(), c.my_chips + my_posted_bet));
         }
     }
-    if c.has("raise") {
+    if has_legal(c.legal, "raise") {
         Some(("raise".to_string(), amt))
-    } else if c.has("bet") {
+    } else if has_legal(c.legal, "bet") {
         Some(("bet".to_string(), amt))
-    } else if c.has("all_in") {
+    } else if has_legal(c.legal, "all_in") {
         Some(("all_in".to_string(), 0))
-    } else if c.has("allin") {
+    } else if has_legal(c.legal, "allin") {
         Some(("allin".to_string(), 0))
-    } else if c.to_call > 0 && c.has("call") {
+    } else if c.to_call > 0 && has_legal(c.legal, "call") {
         Some(("call".to_string(), 0))
-    } else if c.has("check") {
+    } else if has_legal(c.legal, "check") {
         Some(("check".to_string(), 0))
     } else {
         None
     }
 }
 
-fn map_allin_action(c: &ActionMapCtx<'_>) -> Option<(String, i32)> {
+fn map_allin_action(c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     let my_posted_bet = c.current_bet.saturating_sub(c.to_call);
     let allin_amt = if c.my_chips > 0 {
         c.my_chips + my_posted_bet
     } else {
-        (c.pot * 2).max(c.bb * 2)
+        (c.pot * 2).max(c.table_bb * 2)
     };
-    if c.to_call > 0 && c.my_chips > 0 && c.to_call >= c.my_chips && c.has("call") {
+    if c.to_call > 0 && c.my_chips > 0 && c.to_call >= c.my_chips && has_legal(c.legal, "call") {
         Some(("call".to_string(), 0))
-    } else if c.has("all_in") {
+    } else if has_legal(c.legal, "all_in") {
         Some(("all_in".to_string(), 0))
-    } else if c.has("allin") {
+    } else if has_legal(c.legal, "allin") {
         Some(("allin".to_string(), 0))
-    } else if c.has("raise") {
+    } else if has_legal(c.legal, "raise") {
         Some(("raise".to_string(), allin_amt))
-    } else if c.has("bet") {
+    } else if has_legal(c.legal, "bet") {
         Some(("bet".to_string(), allin_amt))
-    } else if c.to_call > 0 && c.has("call") {
+    } else if c.to_call > 0 && has_legal(c.legal, "call") {
         Some(("call".to_string(), 0))
-    } else if c.has("check") {
+    } else if has_legal(c.legal, "check") {
         Some(("check".to_string(), 0))
     } else {
         None
     }
 }
 
-/* Pseudo-Harmonic mapping between two discrete bet amounts s1 <= s2 for actual bet x:
+/** Pseudo-Harmonic mapping between two discrete bet amounts s1 <= s2 for actual bet x:
  * Returns probability of mapping to s1 (lower action) preserving pot odds and EV.
  * Ref: Ganzfried & Sandholm (2013). */
 #[inline]
@@ -425,7 +370,7 @@ pub fn pseudo_harmonic_prob(x: i32, s1: i32, s2: i32, pot: i32) -> f64 {
     w1.clamp(0.0, 1.0)
 }
 
-/* Pseudo-Harmonic action translation: maps an arbitrary continuous bet amount into
+/** Pseudo-Harmonic action translation: maps an arbitrary continuous bet amount into
  * a discrete action index (2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN)
  * preserving pot odds and expectation value.
  * Ref: Ganzfried & Sandholm (2013). */

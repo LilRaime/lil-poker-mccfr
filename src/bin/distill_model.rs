@@ -11,27 +11,27 @@ use std::time::Instant;
     about = "Distill & Compress Texas Hold'em MCCFR strategy under 400MB RAM"
 )]
 struct Args {
-    /* Input strategy path (.bin, .bincode, or .json) */
+    /** Input strategy path (.bin, .bincode, or .json) */
     #[arg(default_value = "models/holdem_abstract_strategy.bin")]
     input: String,
 
-    /* Output strategy path (.bin) */
+    /** Output strategy path (.bin) */
     #[arg(default_value = "models/holdem_strategy_distilled.bin")]
     output: String,
 
-    /* Prune river nodes (since Real-time Subgame Search solves River dynamically) */
+    /** Prune river nodes (since Real-time Subgame Search solves River dynamically) */
     #[arg(long, default_value_t = false)]
     prune_river: bool,
 
-    /* Maximum turn actions to retain in blueprint (default: 3) */
+    /** Maximum turn actions to retain in blueprint (default: 3) */
     #[arg(long, default_value_t = 3)]
     max_turn_actions: usize,
 
-    /* Maximum preflop action sequence length for postflop nodes (default: 4, allows 4-bet pots) */
+    /** Maximum preflop action sequence length for postflop nodes (default: 4, allows 4-bet pots) */
     #[arg(long, default_value_t = 4)]
     max_pf_len: usize,
 
-    /* Maximum river actions to retain in blueprint (default: 3) */
+    /** Maximum river actions to retain in blueprint (default: 3) */
     #[arg(long, default_value_t = 3)]
     max_river_actions: usize,
 }

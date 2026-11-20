@@ -1,4 +1,4 @@
-/* Live Round and Opponent Action Tracker */
+/*! Live Round and Opponent Action Tracker */
 use super::protocol::pseudo_harmonic_action_mapping;
 use super::state::LiveSnapshot;
 use crate::cfr::opponent_model::OpponentTracker;
@@ -117,7 +117,7 @@ impl LiveRoundTracker {
         round_idx
     }
 
-    /* Dynamically infer and track opponent prior actions on current street */
+    /** Dynamically infer and track opponent prior actions on current street */
     pub fn infer_and_record_opponent_action(
         &mut self,
         snapshot: &LiveSnapshot,
@@ -126,7 +126,7 @@ impl LiveRoundTracker {
         self.infer_opponent_action_inner(snapshot, Some(tracker));
     }
 
-    /* Update live_history only (used in 6-max where LiveTableTracker records per-seat stats) */
+    /** Update live_history only (used in 6-max where LiveTableTracker records per-seat stats) */
     pub fn infer_opponent_history_only(&mut self, snapshot: &LiveSnapshot) {
         self.infer_opponent_action_inner(snapshot, None);
     }
@@ -324,7 +324,7 @@ impl LiveRoundTracker {
         (engine_contributions, raises_this_round)
     }
 
-    /* Computes effective-stack scaled contributions for SubgameSolver so STACK_SIZE (10_000)
+    /** Computes effective-stack scaled contributions for SubgameSolver so STACK_SIZE (10_000)
      * inside TexasHoldemGame preserves the exact real-world Stack-to-Pot Ratio (SPR) and pot odds. */
     pub fn compute_scaled_subgame_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
         let (raw_contribs, raises) = self.compute_engine_contributions(snapshot);

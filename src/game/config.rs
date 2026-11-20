@@ -1,5 +1,5 @@
-/*
- *        Texas Hold'em Game Configuration
+/*!
+ * Texas Hold'em Game Configuration
  * Change values here to retune the bot for any game size
  *
  * All chip values are in integer chips (not big-blind units).

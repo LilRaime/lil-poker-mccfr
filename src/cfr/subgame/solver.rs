@@ -1,9 +1,10 @@
-/*
+/*!
  * Real-Time Subgame Search (Subgame Solving) for Texas Hold'em.
  * Solves depth-limited subgame online at Turn/River nodes during live play.
  */
 
-use super::reach::OpponentReachDistribution;
+use super::reach::{OpponentReachDistribution, ReachRequest};
+use super::traversal::TraversalCtx;
 use crate::cfr::abstraction::{hash_holdem_infoset_key, postflop_equity_bucket};
 use crate::cfr::node::InfosetNode;
 use crate::game::config::*;
@@ -27,7 +28,7 @@ struct SubgameIterContext<'a> {
     hero_reach_opt: Option<&'a OpponentReachDistribution>,
 }
 
-/* Sample one iteration's hole cards, board runout, and precomputed street buckets.
+/** Sample one iteration's hole cards, board runout, and precomputed street buckets.
  * - On Hero's update (`sample_hero_from_range == false`): 50% exact `*ctx.hole` for dense root
  *   convergence, 50% Bayesian `hero_reach`.
  * - On Opponent's update (`sample_hero_from_range == true`): ALWAYS sample from `hero_reach`
@@ -144,7 +145,7 @@ pub struct SubgameSolver {
     pub stack_size: i32,
 }
 
-/* Reusable context holding allocated InfosetNode maps across subgame solver invocations */
+/** Reusable context holding allocated InfosetNode maps across subgame solver invocations */
 #[derive(Default)]
 pub struct SubgameContext {
     pub nodes: HashMap<u64, InfosetNode>,
@@ -160,6 +161,33 @@ impl SubgameContext {
     #[inline]
     pub fn clear(&mut self) {
         self.nodes.clear();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubgameRequest<'a> {
+    pub hole: [Card; 2],
+    pub board: &'a [Card],
+    pub round: u8,
+    pub my_player: usize,
+    pub contributions: [i32; 2],
+    pub raises_this_round: u8,
+    pub opp_vpip: Option<f64>,
+    pub opp_pfr: Option<f64>,
+}
+
+impl Default for SubgameRequest<'_> {
+    fn default() -> Self {
+        Self {
+            hole: [Card::default(); 2],
+            board: &[],
+            round: 3,
+            my_player: 0,
+            contributions: [BIG_BLIND, BIG_BLIND],
+            raises_this_round: 0,
+            opp_vpip: None,
+            opp_pfr: None,
+        }
     }
 }
 
@@ -204,7 +232,7 @@ impl SubgameSolver {
         self
     }
 
-    /* Computes dynamic iteration budget based on pot size, street, and bet pressure */
+    /** Computes dynamic iteration budget based on pot size, street, and bet pressure */
     pub fn compute_budget(&self, round: u8, contributions: [i32; 2], my_player: usize) -> usize {
         if !self.adaptive {
             return self.num_iterations;
@@ -245,234 +273,91 @@ impl SubgameSolver {
         dynamic_iters.clamp(min_bound, max_bound)
     }
 
-    /* Solves subgame rooted at current board/hole state for my_player. */
+    /** Solves subgame rooted at the given request state without an external strategy table. */
     pub fn solve<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
+        req: &SubgameRequest<'_>,
         history: &H,
-        my_player: usize,
+        ctx: Option<&mut SubgameContext>,
     ) -> Vec<f64> {
-        self.solve_with_state(
-            hole,
-            board,
-            round,
-            history,
-            my_player,
-            [BIG_BLIND, BIG_BLIND],
-            0,
-        )
+        self.solve_with_strategy::<H, Vec<f64>>(req, history, None, ctx)
     }
 
-    /* Solves subgame with exact table contributions, pot odds, and raise limits. */
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve_with_state<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        my_player: usize,
-        contributions: [i32; 2],
-        raises_this_round: u8,
-    ) -> Vec<f64> {
-        let mut ctx = SubgameContext::new();
-        self.solve_with_context(
-            hole,
-            board,
-            round,
-            history,
-            my_player,
-            contributions,
-            raises_this_round,
-            &mut ctx,
-        )
-    }
-
-    /* Solves subgame reusing pre-allocated node buffer from SubgameContext. */
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve_with_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        my_player: usize,
-        contributions: [i32; 2],
-        raises_this_round: u8,
-        ctx: &mut SubgameContext,
-    ) -> Vec<f64> {
-        self.solve_with_context_and_strategy(
-            hole,
-            board,
-            round,
-            history,
-            my_player,
-            contributions,
-            raises_this_round,
-            ctx,
-            None,
-        )
-    }
-
-    /* Solves subgame with explicit blueprint-informed opponent reach ranges */
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve_with_context_and_strategy<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        my_player: usize,
-        contributions: [i32; 2],
-        raises_this_round: u8,
-        ctx: &mut SubgameContext,
-        strategy_map: Option<&HashMap<String, Vec<f64>>>,
-    ) -> Vec<f64> {
-        self.solve_with_stats(
-            hole,
-            board,
-            round,
-            history,
-            my_player,
-            contributions,
-            raises_this_round,
-            ctx,
-            strategy_map,
-            None,
-            None,
-        )
-    }
-
-    /* Solves subgame with explicit blueprint-informed and VPIP/PFR-adapted opponent reach ranges */
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve_with_stats<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
-        &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
-        history: &H,
-        my_player: usize,
-        contributions: [i32; 2],
-        raises_this_round: u8,
-        ctx: &mut SubgameContext,
-        strategy_map: Option<&HashMap<String, Vec<f64>>>,
-        opp_vpip: Option<f64>,
-        opp_pfr: Option<f64>,
-    ) -> Vec<f64> {
-        self.solve_with_stats_generic(
-            hole,
-            board,
-            round,
-            history,
-            my_player,
-            contributions,
-            raises_this_round,
-            ctx,
-            strategy_map,
-            opp_vpip,
-            opp_pfr,
-        )
-    }
-
-    /* Generic subgame solver accepting any `AsRef<[f64]>` strategy table (e.g. `Vec<f64>` or `[f64; N]`) */
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve_with_stats_generic<
+    /** Solves subgame with optional blueprint-informed reach ranges and `AsRef<[f64]>` strategy table. */
+    pub fn solve_with_strategy<
         H: crate::cfr::abstraction::HistoryActions + ?Sized,
         V: AsRef<[f64]> + Sync,
     >(
         &self,
-        hole: &[Card; 2],
-        board: &[Card],
-        round: u8,
+        req: &SubgameRequest<'_>,
         history: &H,
-        my_player: usize,
-        contributions: [i32; 2],
-        raises_this_round: u8,
-        ctx: &mut SubgameContext,
         strategy_map: Option<&HashMap<String, V>>,
-        opp_vpip: Option<f64>,
-        opp_pfr: Option<f64>,
+        ctx: Option<&mut SubgameContext>,
     ) -> Vec<f64> {
+        let mut local_ctx;
+        let ctx = match ctx {
+            Some(c) => c,
+            None => {
+                local_ctx = SubgameContext::new();
+                &mut local_ctx
+            }
+        };
         ctx.clear();
 
-        let seed = compute_subgame_seed(hole, board, round, contributions);
+        let seed = compute_subgame_seed(&req.hole, req.board, req.round, req.contributions);
         let mut rng = SmallRng::seed_from_u64(seed);
 
-        let is_used = |c: Card| hole.contains(&c) || board.contains(&c);
-        let remaining_deck: Vec<Card> = ALL_52_CARDS
-            .iter()
-            .copied()
-            .filter(|&c| !is_used(c))
-            .collect();
-        let board_only_deck: Vec<Card> = ALL_52_CARDS
-            .iter()
-            .copied()
-            .filter(|&c| !board.contains(&c))
-            .collect();
-
+        let (remaining_deck, board_only_deck) = build_subgame_decks(&req.hole, req.board);
         if remaining_deck.len() < 2 {
             let mut uniform = vec![0.0; HOLDEM_NUM_ACTIONS];
             uniform[CALL_CHECK as usize] = 1.0;
             return uniform;
         }
 
-        let effective_iterations = self.compute_budget(round, contributions, my_player);
-        let reach_dist = OpponentReachDistribution::build_for_target_generic(
+        let effective_iterations = self.compute_budget(req.round, req.contributions, req.my_player);
+        let (reach_dist, hero_reach) = build_reach_ranges(
+            req,
+            history,
+            strategy_map,
             &remaining_deck,
-            board,
-            round,
-            history,
-            strategy_map,
-            Some(1 - my_player),
-            Some(my_player),
-            opp_vpip,
-            opp_pfr,
-        );
-        let hero_reach_opt = Some(OpponentReachDistribution::build_for_target_generic(
             &board_only_deck,
-            board,
-            round,
-            history,
-            strategy_map,
-            Some(my_player),
-            Some(my_player),
-            None,
-            None,
-        ));
+        );
 
-        let root_hash = hash_holdem_infoset_key(hole, board, round, history);
+        let root_hash = hash_holdem_infoset_key(&req.hole, req.board, req.round, history);
         let eff_stack_bb = self.stack_size / BIG_BLIND.max(1);
-        let blueprint_root_opt =
-            lookup_blueprint_root(strategy_map, hole, board, round, history, eff_stack_bb);
+        let blueprint_root_opt = lookup_blueprint_root(
+            strategy_map,
+            &req.hole,
+            req.board,
+            req.round,
+            history,
+            eff_stack_bb,
+        );
 
-        let hist_rounds = [
-            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
-            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),
-            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
-            crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
-        ];
+        let hist_rounds = extract_hist_rounds(history);
         let available_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let eff_stack = self.stack_size.max(contributions[0]).max(contributions[1]);
+        let eff_stack = self
+            .stack_size
+            .max(req.contributions[0])
+            .max(req.contributions[1]);
         let iter_ctx = SubgameIterContext {
-            hole,
-            board,
-            round,
+            hole: &req.hole,
+            board: req.board,
+            round: req.round,
             hist_rounds: &hist_rounds,
-            contributions,
-            raises_this_round,
-            my_player,
+            contributions: req.contributions,
+            raises_this_round: req.raises_this_round,
+            my_player: req.my_player,
             stack_size: eff_stack,
             board_only_deck: &board_only_deck,
             reach_dist: &reach_dist,
-            hero_reach_opt: hero_reach_opt.as_ref(),
+            hero_reach_opt: Some(&hero_reach),
         };
         let run_params = SubgameRunParams {
             root_hash,
-            opp_prior_bias: compute_opp_prior_bias(opp_vpip, opp_pfr),
+            opp_prior_bias: compute_opp_prior_bias(req.opp_vpip, req.opp_pfr),
             effective_iterations,
             eff_threads: self.threads.min(available_threads),
             seed,
@@ -485,8 +370,12 @@ impl SubgameSolver {
             &mut rng,
         );
 
-        let (to_call, pot, legal) =
-            build_root_legal_actions(contributions, my_player, eff_stack, raises_this_round);
+        let (to_call, pot, legal) = build_root_legal_actions(
+            req.contributions,
+            req.my_player,
+            eff_stack,
+            req.raises_this_round,
+        );
         finalize_root_strategy(
             solved_strategy,
             blueprint_root_opt.as_deref(),
@@ -533,18 +422,16 @@ impl SubgameSolver {
                     let (game, precomputed_buckets) =
                         build_iteration_state(iter_ctx, sample_hero_from_range, &mut t_rng);
 
-                    self.cfr_shared(
-                        &game,
-                        iter_ctx.round,
-                        params.root_hash,
-                        iter_ctx.my_player,
-                        params.opp_prior_bias,
+                    let ctx = TraversalCtx {
+                        start_round: iter_ctx.round,
+                        root_hash: params.root_hash,
+                        my_player: iter_ctx.my_player,
+                        opp_prior_bias: params.opp_prior_bias,
                         updating_player,
-                        (iter_idx + 1) as f64,
-                        &precomputed_buckets,
-                        &shared_nodes,
-                        &mut t_rng,
-                    );
+                        weight: (iter_idx + 1) as f64,
+                        precomputed_buckets: &precomputed_buckets,
+                    };
+                    self.cfr_shared(&game, &ctx, &shared_nodes, &mut t_rng);
                 }
             });
 
@@ -563,18 +450,16 @@ impl SubgameSolver {
                 let (game, precomputed_buckets) =
                     build_iteration_state(iter_ctx, sample_hero_from_range, rng);
 
-                self.cfr_local(
-                    &game,
-                    iter_ctx.round,
-                    params.root_hash,
-                    iter_ctx.my_player,
-                    params.opp_prior_bias,
+                let ctx = TraversalCtx {
+                    start_round: iter_ctx.round,
+                    root_hash: params.root_hash,
+                    my_player: iter_ctx.my_player,
+                    opp_prior_bias: params.opp_prior_bias,
                     updating_player,
-                    (iter_idx + 1) as f64,
-                    &precomputed_buckets,
-                    nodes,
-                    rng,
-                );
+                    weight: (iter_idx + 1) as f64,
+                    precomputed_buckets: &precomputed_buckets,
+                };
+                self.cfr_local(&game, &ctx, nodes, rng);
             }
             nodes
                 .get(&params.root_hash)
@@ -758,14 +643,15 @@ fn finalize_root_strategy(
         }
         arr
     } else {
-        crate::cfr::fallback::get_holdem_fallback_strategy(
-            iter_ctx.hole,
-            iter_ctx.board,
-            iter_ctx.round,
+        crate::cfr::fallback::get_holdem_fallback_strategy(&crate::cfr::fallback::FallbackRequest {
+            hole: *iter_ctx.hole,
+            board: iter_ctx.board,
+            round: iter_ctx.round,
             to_call,
             pot,
             legal,
-        )
+            ..Default::default()
+        })
     };
 
     if let Some(solved) = solved_strategy {
@@ -780,4 +666,69 @@ fn finalize_root_strategy(
     } else {
         fallback.to_vec()
     }
+}
+
+fn build_subgame_decks(hole: &[Card; 2], board: &[Card]) -> (Vec<Card>, Vec<Card>) {
+    let remaining_deck = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|c| !hole.contains(c) && !board.contains(c))
+        .collect();
+    let board_only_deck = ALL_52_CARDS
+        .iter()
+        .copied()
+        .filter(|c| !board.contains(c))
+        .collect();
+    (remaining_deck, board_only_deck)
+}
+
+fn build_reach_ranges<H, V>(
+    req: &SubgameRequest<'_>,
+    history: &H,
+    strategy_map: Option<&HashMap<String, V>>,
+    remaining_deck: &[Card],
+    board_only_deck: &[Card],
+) -> (OpponentReachDistribution, OpponentReachDistribution)
+where
+    H: crate::cfr::abstraction::HistoryActions + ?Sized,
+    V: AsRef<[f64]>,
+{
+    let reach_dist = OpponentReachDistribution::build_with_strategy(
+        &ReachRequest {
+            remaining_deck,
+            board: req.board,
+            round: req.round,
+            target_player: Some(1 - req.my_player),
+            active_player: Some(req.my_player),
+            opp_vpip: req.opp_vpip,
+            opp_pfr: req.opp_pfr,
+        },
+        history,
+        strategy_map,
+    );
+    let hero_reach = OpponentReachDistribution::build_with_strategy(
+        &ReachRequest {
+            remaining_deck: board_only_deck,
+            board: req.board,
+            round: req.round,
+            target_player: Some(req.my_player),
+            active_player: Some(req.my_player),
+            opp_vpip: None,
+            opp_pfr: None,
+        },
+        history,
+        strategy_map,
+    );
+    (reach_dist, hero_reach)
+}
+
+fn extract_hist_rounds<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
+    history: &H,
+) -> [crate::game::holdem::RoundHistory; NUM_ROUNDS] {
+    [
+        crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(0)),
+        crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(1)),
+        crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(2)),
+        crate::game::holdem::RoundHistory::from_slice(history.actions_in_round(3)),
+    ]
 }

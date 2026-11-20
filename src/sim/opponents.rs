@@ -1,9 +1,9 @@
-/* Opponent Archetype Heuristics and Action Sampling */
+/*! Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
     detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
-use crate::cfr::fallback::get_holdem_fallback_strategy;
+use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
 use crate::game::config::BIG_BLIND;
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
@@ -43,10 +43,10 @@ pub fn sample_from_probs(probs: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 
     }
 }
 
-/* Sample an action according to opponent archetype */
+/** Sample an action according to opponent archetype */
 pub fn sample_opponent_action(
     opp_archetype: &str,
-    opp_strategy: &Option<HoldemStrategy>,
+    opp_strategy: Option<&HoldemStrategy>,
     game: &TexasHoldemGame,
     opp_player: usize,
     rng: &mut SmallRng,
@@ -290,7 +290,7 @@ fn sample_trapper_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 
 fn sample_model_action(
     c: &OppActionCtx<'_>,
-    opp_strategy: &Option<HoldemStrategy>,
+    opp_strategy: Option<&HoldemStrategy>,
     rng: &mut SmallRng,
 ) -> u8 {
     if let Some(strat) = opp_strategy {
@@ -303,26 +303,28 @@ fn sample_model_action(
         ) {
             s.to_vec()
         } else {
-            get_holdem_fallback_strategy(
-                c.hole,
-                c.board,
-                c.game.round,
-                c.opp_to_call,
-                c.pot,
-                c.legal,
-            )
+            get_holdem_fallback_strategy(&FallbackRequest {
+                hole: *c.hole,
+                board: c.board,
+                round: c.game.round,
+                to_call: c.opp_to_call,
+                pot: c.pot,
+                legal: c.legal,
+                ..Default::default()
+            })
             .to_vec()
         };
         sample_from_probs(&probs, c.legal, rng)
     } else {
-        let probs = get_holdem_fallback_strategy(
-            c.hole,
-            c.board,
-            c.game.round,
-            c.opp_to_call,
-            c.pot,
-            c.legal,
-        );
+        let probs = get_holdem_fallback_strategy(&FallbackRequest {
+            hole: *c.hole,
+            board: c.board,
+            round: c.game.round,
+            to_call: c.opp_to_call,
+            pot: c.pot,
+            legal: c.legal,
+            ..Default::default()
+        });
         sample_from_probs(&probs, c.legal, rng)
     }
 }

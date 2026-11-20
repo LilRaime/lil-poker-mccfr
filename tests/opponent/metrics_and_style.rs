@@ -1,4 +1,4 @@
-use lil_poker_mccfr::cfr::opponent_model::{OpponentStyle, OpponentTracker};
+use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentStyle, OpponentTracker};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -117,7 +117,13 @@ fn test_opponent_barrel_metrics_and_wilson() {
     let base_strat = [0.30, 0.40, 0.10, 0.10, 0.10, 0.0];
     let legal = [FOLD, CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT, RAISE_HALF_POT];
     // Weak hand (bucket 10) on Turn (round 3)
-    let adj_turn = tracker.adjust_strategy_full(&base_strat, &legal, 10, 3);
+    let adj_turn = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base_strat,
+        legal_actions: &legal,
+        bucket: 10,
+        round: 3,
+        ..Default::default()
+    });
     let orig_raise: f64 = base_strat[3] + base_strat[4];
     let adj_raise: f64 = adj_turn[3] + adj_turn[4];
     assert!(
@@ -314,7 +320,14 @@ fn test_showdown_trap_false_positive_filtering_and_exploit() {
         ALL_IN,
     ];
     let base: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.40, 0.10, 0.10, 0.30, 0.10];
-    let adj = tracker.adjust_strategy_context(&base, &legal, 32, 4, 0, 1000);
+    let adj = tracker.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &base,
+        legal_actions: &legal,
+        bucket: 32,
+        round: 4,
+        to_call: 0,
+        table_bb: 1000,
+    });
     assert!(
         adj[CALL_CHECK as usize] > base[CALL_CHECK as usize]
             && adj[RAISE_HALF_POT as usize] < base[RAISE_HALF_POT as usize],

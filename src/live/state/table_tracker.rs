@@ -13,7 +13,7 @@ use crate::game::holdem::{
 };
 use crate::live::protocol::parse_json_i32;
 
-/* Process showdown event: inspect each opponent's cards and record into their own OpponentTracker */
+/** Process showdown event: inspect each opponent's cards and record into their own OpponentTracker */
 pub fn process_showdown_multiway(
     state: &Value,
     player_id: &str,
@@ -68,7 +68,7 @@ pub fn process_showdown_multiway(
     }
 }
 
-/* Process showdown event: inspect opponent cards and record to OpponentTracker */
+/** Process showdown event: inspect opponent cards and record to OpponentTracker */
 pub fn process_showdown(
     state: &Value,
     player_id: &str,
@@ -104,7 +104,7 @@ pub fn process_showdown(
     }
 }
 
-/* In-place per-opponent multiway & 6-max hand state tracking */
+/** In-place per-opponent multiway & 6-max hand state tracking */
 #[derive(Debug, Clone, Default)]
 pub struct OppHandState {
     pub last_bet: i32,
@@ -397,7 +397,7 @@ impl LiveTableTracker {
         }
     }
 
-    /* Observe any WebSocket table update (even when not Hero's turn) so every 6-max
+    /** Observe any WebSocket table update (even when not Hero's turn) so every 6-max
      * opponent's actions, folds, 3-bet responses, and hand participation are tracked individually. */
     pub fn observe_state(
         &mut self,

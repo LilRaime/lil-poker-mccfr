@@ -1,4 +1,4 @@
-/*
+/*!
  * Fast O(1) Bitwise 7-Card Poker Hand Evaluator (Zero-allocation, no sorting, pure bitmasks).
  */
 

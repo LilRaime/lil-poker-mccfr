@@ -1,4 +1,4 @@
-/* Priority Tier 1: Soft Value / Sizing Shifts, Button Steals & River Nut Blocker Bluffs */
+/*! Priority Tier 1: Soft Value / Sizing Shifts, Button Steals & River Nut Blocker Bluffs */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, shift_action_to};

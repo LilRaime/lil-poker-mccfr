@@ -1,4 +1,4 @@
-/*
+/*!
  * Postflop 88-bucket (0..=87) equity mapping and category-specific evaluators.
  */
 
@@ -7,7 +7,7 @@ use crate::game::holdem::{evaluate_7cards, Card};
 
 use super::draws::detect_draws_detailed;
 
-/* Fast high-resolution draw-aware and texture-aware postflop equity bucketing (0..=87).
+/** Fast high-resolution draw-aware and texture-aware postflop equity bucketing (0..=87).
  * Differentiates:
  * - Unpaired High Card (0..=10), including board-pair / board-trips / board-2P kickers
  * - Weak Draws (11..=14) & Strong Draws (15..=27)
@@ -74,7 +74,7 @@ fn bucket_quads(score: u64, hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> us
     }
 }
 
-/* Checks if the board contains 4-to-a-straight for a higher straight than st_high,
+/** Checks if the board contains 4-to-a-straight for a higher straight than st_high,
  * and the player does not hold any higher straight card. */
 fn is_idiot_end_straight(hole: &[Card; NUM_HOLE_CARDS], board: &[Card], st_high: usize) -> bool {
     if board.len() < 4 || st_high >= 12 {

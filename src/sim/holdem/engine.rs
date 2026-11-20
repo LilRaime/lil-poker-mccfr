@@ -1,4 +1,4 @@
-/* Single-Hand Texas Hold'em Simulation Engine */
+/*! Single-Hand Texas Hold'em Simulation Engine */
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -6,95 +6,79 @@ use rand::rngs::SmallRng;
 
 use super::strategy::{find_strategy_or_fallback, HoldemStrategy};
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
-use crate::cfr::fallback::{get_holdem_fallback_strategy, StrategyLookupIndex};
-use crate::cfr::opponent_model::OpponentTracker;
-use crate::cfr::subgame::SubgameSolver;
+use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
+use crate::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
+use crate::cfr::subgame::{SubgameRequest, SubgameSolver};
 use crate::game::config::*;
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
 use crate::sim::opponents::sample_opponent_action;
 
-/* Simulate a single hand to completion */
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_holdem_hand(
-    game: TexasHoldemGame,
-    my_player: usize,
-    strategy: &Option<HoldemStrategy>,
-    strategy_index: Option<&StrategyLookupIndex>,
-    opp_archetype: &str,
-    opp_strategy: &Option<HoldemStrategy>,
-    subgame_solver: &SubgameSolver,
-    enable_subgame_search: bool,
-    opp_tracker: &mut OpponentTracker,
-    rng: &mut SmallRng,
-    delay_ms: u64,
-    show_logs: bool,
-    label: &str,
-) -> f64 {
-    simulate_holdem_hand_traced(
-        game,
-        my_player,
-        strategy,
-        strategy_index,
-        opp_archetype,
-        opp_strategy,
-        subgame_solver,
-        enable_subgame_search,
-        opp_tracker,
-        rng,
-        delay_ms,
-        show_logs,
-        label,
-    )
-    .0
+#[derive(Clone, Copy)]
+pub struct SimHandConfig<'a> {
+    pub my_player: usize,
+    pub strategy: Option<&'a HoldemStrategy>,
+    pub strategy_index: Option<&'a StrategyLookupIndex>,
+    pub opp_archetype: &'a str,
+    pub opp_strategy: Option<&'a HoldemStrategy>,
+    pub subgame_solver: Option<&'a SubgameSolver>,
+    pub enable_subgame_search: bool,
+    pub delay_ms: u64,
+    pub show_logs: bool,
+    pub label: &'a str,
 }
 
-/* Simulate a single hand to completion and return net chips along with triggered guard reasons */
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_holdem_hand_traced(
-    mut game: TexasHoldemGame,
-    my_player: usize,
-    strategy: &Option<HoldemStrategy>,
-    strategy_index: Option<&StrategyLookupIndex>,
-    opp_archetype: &str,
-    opp_strategy: &Option<HoldemStrategy>,
-    subgame_solver: &SubgameSolver,
-    enable_subgame_search: bool,
+impl Default for SimHandConfig<'_> {
+    fn default() -> Self {
+        Self {
+            my_player: 0,
+            strategy: None,
+            strategy_index: None,
+            opp_archetype: "random",
+            opp_strategy: None,
+            subgame_solver: None,
+            enable_subgame_search: false,
+            delay_ms: 0,
+            show_logs: false,
+            label: "",
+        }
+    }
+}
+
+/** Simulate a single hand to completion */
+pub fn simulate_holdem_hand(
+    game: TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
     opp_tracker: &mut OpponentTracker,
     rng: &mut SmallRng,
-    delay_ms: u64,
-    show_logs: bool,
-    label: &str,
+) -> f64 {
+    simulate_holdem_hand_traced(game, cfg, opp_tracker, rng).0
+}
+
+/** Simulate a single hand to completion and return net chips along with triggered guard reasons */
+pub fn simulate_holdem_hand_traced(
+    mut game: TexasHoldemGame,
+    cfg: &SimHandConfig<'_>,
+    opp_tracker: &mut OpponentTracker,
+    rng: &mut SmallRng,
 ) -> (f64, Vec<&'static str>) {
-    if show_logs {
-        println!("\n--- {} ---", label);
+    if cfg.show_logs {
+        println!("\n--- {} ---", cfg.label);
     }
 
-    let cfg = SimHandConfig {
-        my_player,
-        strategy,
-        strategy_index,
-        opp_archetype,
-        opp_strategy,
-        subgame_solver,
-        enable_subgame_search,
-        delay_ms,
-        show_logs,
-        label,
-    };
-    let hole = game.hole[my_player];
+    let hole = game.hole[cfg.my_player];
     let mut state = SimLoopState {
         initial_chips: game.stack_size,
         hole_str: format!("[{}, {}]", hole[0], hole[1]),
         step_count: 0,
         cumulative_reward: 0.0f64,
-        prev_my_contrib: game.contributions[my_player],
+        prev_my_contrib: game.contributions[cfg.my_player],
         hand_guard_reasons: Vec::new(),
         subgame_ctx: crate::cfr::subgame::SubgameContext::new(),
     };
     let mut pf_state = OppPreflopTrackerState {
-        opp_is_sb: my_player == 1,
+        opp_is_sb: cfg.my_player == 1,
         opp_acted_pf: false,
         opp_pf_vpip: false,
         opp_pf_pfr: false,
@@ -103,31 +87,18 @@ pub fn simulate_holdem_hand_traced(
 
     while !game.is_terminal() {
         let cp = game.current_player();
-        if cp == my_player {
-            step_bot_turn(&mut game, &cfg, &mut state, opp_tracker, rng);
-        } else if !step_opponent_turn(&mut game, &cfg, cp, opp_tracker, &mut pf_state, rng) {
+        if cp == cfg.my_player {
+            step_bot_turn(&mut game, cfg, &mut state, opp_tracker, rng);
+        } else if !step_opponent_turn(&mut game, cfg, cp, opp_tracker, &mut pf_state, rng) {
             break;
         }
     }
 
-    finalize_sim_hand_tracking(&game, my_player, opp_tracker, &pf_state);
-    let final_ret = game.get_returns()[my_player];
-    log_sim_terminal_summary(&game, &cfg, &mut state, final_ret);
+    finalize_sim_hand_tracking(&game, cfg.my_player, opp_tracker, &pf_state);
+    let final_ret = game.get_returns()[cfg.my_player];
+    log_sim_terminal_summary(&game, cfg, &mut state, final_ret);
 
     (final_ret, state.hand_guard_reasons)
-}
-
-struct SimHandConfig<'a> {
-    my_player: usize,
-    strategy: &'a Option<HoldemStrategy>,
-    strategy_index: Option<&'a StrategyLookupIndex>,
-    opp_archetype: &'a str,
-    opp_strategy: &'a Option<HoldemStrategy>,
-    subgame_solver: &'a SubgameSolver,
-    enable_subgame_search: bool,
-    delay_ms: u64,
-    show_logs: bool,
-    label: &'a str,
 }
 
 struct SimLoopState {
@@ -300,20 +271,29 @@ fn compute_bot_raw_probs(
         } else {
             game.contributions
         };
-        cfg.subgame_solver.solve_with_stats_generic(
-            &game.hole[cfg.my_player],
-            &game.board,
-            game.round,
+        let default_solver;
+        let subgame_solver = if let Some(s) = cfg.subgame_solver {
+            s
+        } else {
+            default_solver = SubgameSolver::default();
+            &default_solver
+        };
+        subgame_solver.solve_with_strategy(
+            &SubgameRequest {
+                hole: game.hole[cfg.my_player],
+                board: &game.board,
+                round: game.round,
+                my_player: cfg.my_player,
+                contributions: subgame_contribs,
+                raises_this_round: game.raises_this_round,
+                opp_vpip: obs_vpip,
+                opp_pfr: obs_pfr,
+            },
             &game.history,
-            cfg.my_player,
-            subgame_contribs,
-            game.raises_this_round,
-            subgame_ctx,
-            cfg.strategy.as_ref(),
-            obs_vpip,
-            obs_pfr,
+            cfg.strategy,
+            Some(subgame_ctx),
         )
-    } else if let Some(ref strat) = *cfg.strategy {
+    } else if let Some(strat) = cfg.strategy {
         let eff_stack_bb = (initial_chips / BIG_BLIND.max(1)).max(1);
         if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical_with_stack(
             |k| strat.get(k),
@@ -325,14 +305,15 @@ fn compute_bot_raw_probs(
         ) {
             s.to_vec()
         } else if let Some(idx) = cfg.strategy_index {
-            idx.get_blended_fallback(
-                &game.hole[cfg.my_player],
-                &game.board,
-                game.round,
+            idx.get_blended_fallback(&FallbackRequest {
+                hole: game.hole[cfg.my_player],
+                board: &game.board,
+                round: game.round,
                 to_call,
                 pot,
                 legal,
-            )
+                ..Default::default()
+            })
         } else {
             find_strategy_or_fallback(
                 strat,
@@ -345,14 +326,15 @@ fn compute_bot_raw_probs(
             )
         }
     } else {
-        get_holdem_fallback_strategy(
-            &game.hole[cfg.my_player],
-            &game.board,
-            game.round,
+        get_holdem_fallback_strategy(&FallbackRequest {
+            hole: game.hole[cfg.my_player],
+            board: &game.board,
+            round: game.round,
             to_call,
             pot,
             legal,
-        )
+            ..Default::default()
+        })
         .to_vec()
     };
     (raw_probs, used_subgame)
@@ -368,15 +350,14 @@ fn select_bot_sim_action(
 ) -> (u8, crate::cfr::opponent_model::DecisionTrace) {
     let short_choice =
         if game.round == 1 && turn.cur_my_chips > 0 && turn.cur_my_chips <= BIG_BLIND * 12 {
-            opp_tracker.select_short_stack_preflop_action(
-                turn.current_bucket,
-                turn.to_call,
-                turn.pot,
-                1,
-                BIG_BLIND,
-                turn.cur_my_chips,
-                turn.legal,
-            )
+            opp_tracker.select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: turn.current_bucket,
+                to_call: turn.to_call,
+                pot: turn.pot,
+                my_chips: turn.cur_my_chips,
+                legal_actions: turn.legal,
+                ..Default::default()
+            })
         } else {
             None
         };
@@ -397,19 +378,20 @@ fn select_bot_sim_action(
             },
         )
     } else {
-        opp_tracker.select_action_purified_traced_with_stack_ex(
-            raw_probs,
-            turn.legal,
-            turn.current_bucket,
-            game.round,
-            turn.to_call,
-            turn.pot,
-            Some(&game.hole[my_player]),
-            Some(&game.board),
-            1,
-            BIG_BLIND,
-            turn.cur_my_chips,
-            turn.used_subgame,
+        opp_tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs,
+                legal_actions: turn.legal,
+                bucket: turn.current_bucket,
+                round: game.round,
+                to_call: turn.to_call,
+                pot: turn.pot,
+                hole: Some(&game.hole[my_player]),
+                board: Some(&game.board),
+                my_chips: turn.cur_my_chips,
+                from_subgame: turn.used_subgame,
+                ..Default::default()
+            },
             rng,
         )
     }

@@ -1,4 +1,4 @@
-/* Precomputed Tactical Guard Input & Context */
+/*! Precomputed Tactical Guard Input & Context */
 use super::super::tracker::OpponentTracker;
 use super::helpers::{is_three_straight_board, river_nut_blocker_allowed};
 use crate::cfr::abstraction::{

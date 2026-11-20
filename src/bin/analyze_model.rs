@@ -1,4 +1,4 @@
-/*
+/*!
  * Model Analyzer for Texas Hold'em MCCFR Strategy.
  * Analyzes strategy files (.bin, .json), displaying:
  * - Street distribution (Preflop, Flop, Turn, River)
@@ -23,15 +23,15 @@ use std::time::Instant;
     about = "Analyze MCCFR Strategy Model: infoset counts per street, action distributions, and stats"
 )]
 struct Args {
-    /* Path to strategy file (.bin or .json) */
+    /** Path to strategy file (.bin or .json) */
     #[arg(default_value = "models/holdem_abstract_strategy.bin")]
     strategy: String,
 
-    /* Optional filter/search pattern for infoset keys (e.g. "P:AA", "F:B54") */
+    /** Optional filter/search pattern for infoset keys (e.g. "P:AA", "F:B54") */
     #[arg(short, long)]
     pattern: Option<String>,
 
-    /* Maximum number of matching infosets to display when searching */
+    /** Maximum number of matching infosets to display when searching */
     #[arg(long, default_value_t = 20)]
     limit: usize,
 }
