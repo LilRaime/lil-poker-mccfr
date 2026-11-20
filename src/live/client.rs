@@ -666,6 +666,7 @@ impl LiveSession {
         let my_player = snapshot.my_player;
         let active_opponents = snapshot.active_opponents;
         let big_blind = snapshot.big_blind;
+        let opp_chips = snapshot.opp_chips;
         let current_bet_now = snapshot.current_bet;
 
         tokio::task::spawn_blocking(move || {
@@ -685,6 +686,7 @@ impl LiveSession {
                     active_opponents,
                     big_blind,
                     my_chips: eff_chips,
+                    opp_chips,
                     current_bet: current_bet_now,
                     strategy_index: Some(&index_clone),
                     solver: Some(&solver_arc),
@@ -769,6 +771,42 @@ impl LiveSession {
             {
                 if r_retry.status().is_success() {
                     self.record_accepted_bot_action(&fb, fb_amt, snapshot);
+                    return;
+                }
+            }
+        }
+
+        /* Emergency pot-commit / all-in call rescue: never let a rejected 1-chip or priced-in call time out into an auto-fold */
+        let is_priced_in = snapshot.to_call > 0
+            && (snapshot.to_call <= snapshot.big_blind.max(1) / 2
+                || snapshot.to_call * 8 <= (snapshot.pot + snapshot.to_call).max(1)
+                || (my_chips > 0 && my_chips <= snapshot.to_call));
+        if is_priced_in || chosen_action == "call" {
+            for (cand, cand_amt) in [
+                ("all_in", 0),
+                ("allin", 0),
+                ("call", 0),
+                ("call", snapshot.to_call),
+                ("check", 0),
+            ] {
+                if cand == chosen_action && cand_amt == amount {
+                    continue;
+                }
+                if let Ok(r_em) = self
+                    .client
+                    .post(&act_url)
+                    .json(&ActPayload {
+                        player_id: self.player_id.clone(),
+                        action: cand.to_string(),
+                        amount: cand_amt,
+                    })
+                    .send()
+                    .await
+                {
+                    if r_em.status().is_success() {
+                        self.record_accepted_bot_action(cand, cand_amt, snapshot);
+                        return;
+                    }
                 }
             }
         }
@@ -806,6 +844,16 @@ impl LiveSession {
             && (err_text.contains("cannot check") || err_text.contains("call"))
         {
             Some(("call".to_string(), 0))
+        } else if chosen_action == "call" {
+            if has_legal("all_in") {
+                Some(("all_in".to_string(), 0))
+            } else if has_legal("allin") {
+                Some(("allin".to_string(), 0))
+            } else if snapshot.to_call == 0 || has_legal("check") {
+                Some(("check".to_string(), 0))
+            } else {
+                Some(("all_in".to_string(), 0))
+            }
         } else if chosen_action == "all_in" || chosen_action == "allin" {
             if snapshot.to_call > 0 && snapshot.to_call >= my_chips && has_legal("call") {
                 Some(("call".to_string(), 0))
@@ -855,6 +903,7 @@ impl LiveSession {
                     active_opponents: snapshot.active_opponents,
                     big_blind: snapshot.big_blind,
                     my_chips,
+                    opp_chips: snapshot.opp_chips,
                     current_bet: snapshot.current_bet,
                     strategy_index: Some(&self.strategy_index),
                     solver: None,

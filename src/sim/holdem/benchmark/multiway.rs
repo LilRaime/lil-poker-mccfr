@@ -304,6 +304,7 @@ fn apply_bot_seat_action(
             active_opponents: turn.active_now.saturating_sub(1).max(1),
             big_blind: BIG_BLIND,
             my_chips: turn.my_remaining,
+            opp_chips: 0,
             current_bet: street_current_bet,
             strategy_index: Some(res.strategy_index),
             solver: Some(res.subgame_solver),

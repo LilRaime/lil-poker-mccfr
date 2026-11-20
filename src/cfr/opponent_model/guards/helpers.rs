@@ -163,7 +163,13 @@ pub(super) fn apply_river_bluff_cap(
                 probs[c_i] += shifted;
             }
         }
-    } else if ctx.is_paired_board && (28..=43).contains(&ctx.bucket) {
+    } else if (28..=44).contains(&ctx.bucket)
+        || ((45..=66).contains(&ctx.bucket)
+            && (ctx.is_paired_board
+                || ctx.is_dangerous_board
+                || ctx.is_three_flush
+                || ctx.is_three_straight_board))
+    {
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| {
             a == RAISE_HALF_POT || a == ALL_IN
         });

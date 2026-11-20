@@ -21,6 +21,7 @@ pub struct PolicyRequest<'a> {
     pub active_opponents: usize,
     pub table_bb: i32,
     pub my_chips: i32,
+    pub opp_chips: i32,
     pub from_subgame: bool,
 }
 
@@ -38,6 +39,7 @@ impl Default for PolicyRequest<'_> {
             active_opponents: 1,
             table_bb: BIG_BLIND,
             my_chips: 0,
+            opp_chips: 0,
             from_subgame: false,
         }
     }
@@ -51,6 +53,7 @@ pub struct ShortStackRequest<'a> {
     pub active_opponents: usize,
     pub table_bb: i32,
     pub my_chips: i32,
+    pub opp_chips: i32,
     pub legal_actions: &'a [u8],
 }
 
@@ -63,6 +66,7 @@ impl Default for ShortStackRequest<'_> {
             active_opponents: 1,
             table_bb: BIG_BLIND,
             my_chips: 0,
+            opp_chips: 0,
             legal_actions: &[],
         }
     }
@@ -128,6 +132,7 @@ impl OpponentTracker {
         };
         let mut reasons: Vec<&'static str> = Vec::with_capacity(4);
         let is_three_flush = has_three_flush(req.board);
+        let eff_my_chips = effective_remaining_chips(req.my_chips, req.opp_chips, req.to_call);
 
         /* Priority Pipeline (Tier 1 Soft Shifts -> Tier 2 Hard Raise Caps -> Multiway -> Tier 3 Terminal Fold / Pot-Commit) */
         self.apply_preflop_and_postflop_guards(
@@ -142,7 +147,7 @@ impl OpponentTracker {
                 board: req.board,
                 active_opponents,
                 bb,
-                my_chips: req.my_chips,
+                my_chips: eff_my_chips,
                 eff_allin_threshold,
                 pot_odds,
                 is_three_flush,
@@ -175,7 +180,8 @@ impl OpponentTracker {
         } else {
             BIG_BLIND
         };
-        if req.my_chips <= 0 || req.my_chips > bb * 12 {
+        let eff_chips = effective_remaining_chips(req.my_chips, req.opp_chips, req.to_call);
+        if eff_chips <= 0 || eff_chips > bb * 12 {
             return None;
         }
         let active_opponents = req.active_opponents.max(1);
@@ -200,13 +206,13 @@ impl OpponentTracker {
             pot: req.pot,
             active_opponents,
             bb,
-            my_chips: req.my_chips,
+            my_chips: eff_chips,
             pf_tier,
             max_open_push_bb: nash_open_push_max_bb(req.bucket, active_opponents),
             max_call_bb: nash_call_shove_max_bb(req.bucket, active_opponents, is_maniac),
             is_maniac,
             pot_odds: req.to_call as f64 / (req.pot + req.to_call).max(1) as f64,
-            call_only_allin: req.to_call > 0 && req.to_call >= req.my_chips,
+            call_only_allin: req.to_call > 0 && req.to_call >= eff_chips,
             shove_action,
             call_action: if has_call_check { CALL_CHECK } else { ALL_IN },
             can_call: has_call_check || req.legal_actions.contains(&ALL_IN),
@@ -314,6 +320,20 @@ fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut 
     }
 }
 
+#[inline]
+fn effective_remaining_chips(my_chips: i32, opp_chips: i32, to_call: i32) -> i32 {
+    if my_chips > 0 && opp_chips > 0 {
+        let opp_max_callable = if to_call > opp_chips {
+            opp_chips + to_call.max(0)
+        } else {
+            opp_chips
+        };
+        my_chips.min(opp_max_callable)
+    } else {
+        my_chips
+    }
+}
+
 fn decide_short_stack_premium(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
     if c.call_only_allin && c.can_call {
         Some((c.call_action, "SHORT_STACK_NASH_PUSH"))
@@ -352,7 +372,7 @@ fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
         }
     } else if c.pot_odds <= 0.33
         || c.my_chips <= c.bb * 2
-        || (c.to_call <= c.max_call_bb * c.bb && (c.pf_tier == 4 || c.is_maniac))
+        || (c.to_call <= c.max_call_bb * c.bb && (c.pf_tier <= 5 || c.is_maniac))
     {
         if c.can_call {
             return Some((c.call_action, "SHORT_STACK_PRICED_IN_CALL"));
@@ -364,6 +384,7 @@ fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
 }
 
 fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+    let is_hu_sb_open = c.active_opponents == 1 && c.to_call <= c.bb / 2 && c.pot <= c.bb * 2;
     if c.to_call > 0
         && c.to_call <= c.bb / 2
         && c.pot <= c.bb * 2
@@ -375,15 +396,14 @@ fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
             return Some((sa, "SHORT_STACK_NASH_PUSH"));
         }
     } else if c.to_call > 0
-        && ((c.pot_odds <= 0.28 && c.pf_tier <= 6)
+        && ((!is_hu_sb_open && c.pot_odds <= 0.28 && c.pf_tier <= 6)
             || (c.active_opponents == 1
+                && !is_hu_sb_open
                 && c.to_call <= c.bb
                 && c.pot <= c.bb * 3
                 && c.pot_odds <= 0.28
-                && (c.pf_tier <= 6
-                    || (c.pf_tier == 7 && c.bucket < 91)
-                    || (c.my_chips <= c.bb * 7 && c.bucket < 135)))
-            || (c.pot_odds <= 0.22 && (c.pf_tier <= 6 || c.to_call <= c.bb * 2))
+                && (c.pf_tier <= 7 || (c.my_chips <= c.bb * 7 && c.bucket < 135)))
+            || (!is_hu_sb_open && c.pot_odds <= 0.22 && (c.pf_tier <= 6 || c.to_call <= c.bb * 2))
             || c.my_chips <= c.bb * 2
             || (c.is_maniac && c.to_call <= c.max_call_bb * c.bb && c.pf_tier <= 6))
     {

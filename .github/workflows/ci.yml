@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: ""
 
 jobs:
   check-and-test:
@@ -25,6 +26,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v2-generic-cpu"
 
       - name: Check formatting
         run: cargo fmt --check

@@ -26,6 +26,7 @@ pub struct LiveDecisionRequest<'a> {
     pub active_opponents: usize,
     pub big_blind: i32,
     pub my_chips: i32,
+    pub opp_chips: i32,
     pub current_bet: i32,
     pub strategy_index: Option<&'a StrategyLookupIndex>,
     pub solver: Option<&'a SubgameSolver>,
@@ -50,6 +51,7 @@ impl Default for LiveDecisionRequest<'_> {
             active_opponents: 1,
             big_blind: BIG_BLIND,
             my_chips: 0,
+            opp_chips: 0,
             current_bet: 0,
             strategy_index: None,
             solver: None,
@@ -92,6 +94,16 @@ pub fn decide_action_traced(
     } else {
         postflop_equity_bucket(&req.hole, req.board)
     };
+    let eff_chips = if req.my_chips > 0 && req.opp_chips > 0 {
+        let opp_max_callable = if to_call > req.opp_chips {
+            req.opp_chips + to_call.max(0)
+        } else {
+            req.opp_chips
+        };
+        req.my_chips.min(opp_max_callable)
+    } else {
+        req.my_chips
+    };
     let state = LiveDecisionState {
         hole: &req.hole,
         board: req.board,
@@ -103,6 +115,7 @@ pub fn decide_action_traced(
         pot,
         bb,
         my_chips: req.my_chips,
+        eff_chips,
         current_bet: req.current_bet,
         active_opponents,
         my_player: req.my_player,
@@ -143,7 +156,8 @@ pub fn decide_action_traced(
             board: Some(state.board),
             active_opponents: state.active_opponents,
             table_bb: state.bb,
-            my_chips: state.my_chips,
+            my_chips: state.eff_chips,
+            opp_chips: req.opp_chips,
             from_subgame: use_subgame,
         },
         &mut rng,
@@ -182,6 +196,7 @@ struct LiveDecisionState<'a> {
     pot: i32,
     bb: i32,
     my_chips: i32,
+    eff_chips: i32,
     current_bet: i32,
     active_opponents: usize,
     my_player: usize,
@@ -290,8 +305,8 @@ fn try_short_stack_nash_decision(
     s: &LiveDecisionState<'_>,
     tracker: &OpponentTracker,
 ) -> Option<(String, i32, DecisionTrace)> {
-    /* Short-Stack Nash Push/Fold Engine: <= 12 BB on preflop */
-    if s.round != 1 || s.my_chips <= 0 || s.my_chips > s.bb * 12 {
+    /* Short-Stack Nash Push/Fold Engine: <= 12 BB effective stack on preflop */
+    if s.round != 1 || s.eff_chips <= 0 || s.eff_chips > s.bb * 12 {
         return None;
     }
     let (short_act, reason) = tracker.select_short_stack_preflop_action(&ShortStackRequest {
@@ -300,7 +315,8 @@ fn try_short_stack_nash_decision(
         pot: s.pot,
         active_opponents: s.active_opponents,
         table_bb: s.bb,
-        my_chips: s.my_chips,
+        my_chips: s.eff_chips,
+        opp_chips: 0,
         legal_actions: &s.legal_u8,
     })?;
     let total_pot = (s.pot + s.to_call).max(1);
@@ -396,8 +412,8 @@ fn resolve_raw_strategy_probs(
         )
     } else {
         /* 2. Abstract Strategy Model Lookup (single-model multi-stack aware) with O(1) Fallback */
-        let eff_stack_bb = if s.my_chips > 0 && s.bb > 0 {
-            s.my_chips / s.bb
+        let eff_stack_bb = if s.eff_chips > 0 && s.bb > 0 {
+            s.eff_chips / s.bb
         } else {
             100
         };
@@ -502,10 +518,10 @@ fn apply_live_commit_and_spr_guards(
             trace.guard_reasons.push("POT_COMMIT_DECISION_RESCUE");
         }
     }
-    if s.round >= 2 && s.my_chips > 0 {
+    if s.round >= 2 && s.eff_chips > 0 {
         let is_four_board_pair = s.round >= 3 && matches!(s.bucket, 28 | 40 | 50 | 57);
         let is_bloated_flop_weak = s.round == 2
-            && ((s.bucket < 15 && (s.my_chips <= s.pot * 2 || s.pot >= s.bb * 8))
+            && ((s.bucket < 15 && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
                 || ((28..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
         if s.to_call == 0
             && *chosen_idx >= RAISE_MIN as usize
@@ -513,7 +529,7 @@ fn apply_live_commit_and_spr_guards(
                 || is_bloated_flop_weak
                 || (s.bucket < 11
                     && *chosen_idx >= RAISE_THIRD_POT as usize
-                    && (s.my_chips <= s.pot * 2 || s.pot >= s.bb * 8)))
+                    && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8)))
         {
             *chosen_idx = CALL_CHECK as usize;
             trace.guard_reasons.push("LOW_SPR_BLUFF_SUPPRESS");
@@ -521,10 +537,10 @@ fn apply_live_commit_and_spr_guards(
             && (s.bucket < 15 || s.bucket == 28)
             && *chosen_idx == CALL_CHECK as usize
         {
-            let remaining = s.my_chips - s.to_call;
+            let remaining = s.eff_chips - s.to_call;
             let new_pot = (s.pot + s.to_call).max(1);
             if s.to_call * 6 > new_pot
-                && (remaining * 2 < new_pot || s.to_call * 10 >= s.my_chips * 3)
+                && (remaining * 2 < new_pot || s.to_call * 10 >= s.eff_chips * 3)
             {
                 *chosen_idx = FOLD as usize;
                 trace.guard_reasons.push("LOW_SPR_AIR_CALL_FOLD");

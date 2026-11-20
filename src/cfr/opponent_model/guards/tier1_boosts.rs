@@ -85,12 +85,12 @@ impl OpponentTracker {
                 }
                 probs[ai_i] += shifted;
             }
-        } else if (21..=40).contains(&ctx.eff_stack_bb)
+        } else if (25..=40).contains(&ctx.eff_stack_bb)
             && ctx.to_call > 0
             && ctx.to_call <= steal_max_call
             && ctx.is_hyper_aggressor
             && (4..=5).contains(&pf_tier_now)
-            && ctx.bucket > 12
+            && ctx.bucket > 24
             && self.is_guard_enabled("PF_SB_AGGRESSOR_TRAP")
         {
             self.apply_sb_aggressor_limp_trap(probs, ctx, reasons);
@@ -155,10 +155,14 @@ impl OpponentTracker {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
             return;
         };
-        /* Only intervene when the raw strategy is overly passive; leave strong blueprint raises untouched. */
+        /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4; leave strong blueprint raises untouched. */
         let passive_mass =
             fold_idx.map(|i| probs[i]).unwrap_or(0.0) + call_idx.map(|i| probs[i]).unwrap_or(0.0);
-        if !(passive_mass > 0.65 || ctx.is_passive_station || ctx.is_tight_passive_bb) {
+        if !((ctx.to_call > 0 && pf_tier_now <= 4)
+            || passive_mass > 0.55
+            || ctx.is_passive_station
+            || ctx.is_tight_passive_bb)
+        {
             return;
         }
         reasons.push("PF_BUTTON_STEAL");
@@ -170,10 +174,10 @@ impl OpponentTracker {
         }
         if ctx.to_call > 0 {
             if let Some(c_i) = call_idx {
-                let limp_shift = if pf_tier_now <= 2 {
+                let limp_shift = if pf_tier_now <= 3 {
+                    0.98
+                } else if pf_tier_now == 4 {
                     0.90
-                } else if pf_tier_now <= 4 {
-                    0.75
                 } else if ctx.eff_stack_bb > 15 {
                     0.80
                 } else {

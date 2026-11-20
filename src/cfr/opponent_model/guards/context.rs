@@ -46,6 +46,7 @@ pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
     pub is_short_stack: bool,
     pub can_raise: bool,
     pub is_passive_station: bool,
+    pub is_sticky_caller: bool,
     pub is_overbet_bluffer: bool,
     pub is_known_maniac: bool,
     pub is_extreme_shove_bot: bool,
@@ -82,8 +83,13 @@ impl<'a> GuardContext<'a> {
         let sm_raise = tracker.smoothed_raise_ratio();
         let sm_pfr = tracker.smoothed_pfr();
         let sm_vpip = tracker.smoothed_vpip();
+        let sm_fold = tracker.smoothed_fold_ratio();
 
         let is_passive_station = tracker.is_passive_station();
+        let is_sticky_caller = tracker.total_actions() >= 10
+            && (sm_fold < 0.26
+                || (tracker.turn_cbet_faced + tracker.river_bet_faced >= 4
+                    && tracker.turn_fold_to_cbet_ratio() < 0.30));
         let is_overbet_bluffer = tracker.is_overbet_bluffer();
         let is_known_maniac = tracker.total_actions() >= 10
             && (sm_raise > 0.36
@@ -151,6 +157,7 @@ impl<'a> GuardContext<'a> {
             is_short_stack,
             can_raise,
             is_passive_station,
+            is_sticky_caller,
             is_overbet_bluffer,
             is_known_maniac,
             is_extreme_shove_bot,

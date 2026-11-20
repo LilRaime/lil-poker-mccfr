@@ -65,7 +65,7 @@ impl OpponentTracker {
             || (ctx.is_short_stack && ctx.to_call >= ctx.bb * 6))
             && ctx.to_call > 0
             && ctx.to_call <= max_nash_bb * ctx.bb
-            && (pf_tier <= 4 || (ctx.is_known_maniac && pf_tier <= 5));
+            && pf_tier <= 5;
 
         if ctx.to_call == 0 && pf_tier >= 6 {
             reasons.push("PF_DISCIPLINE_GUARD");
@@ -125,19 +125,29 @@ impl OpponentTracker {
                 }
                 probs[r_i] += shifted;
             }
-        } else if pf_tier == 8
-            || ctx.is_extreme_shove_bot
+        } else if ctx.is_extreme_shove_bot
             || (ctx.is_known_maniac && ctx.bucket >= 114)
+            || (pf_tier == 8
+                && !(ctx.active_opponents == 1
+                    && !ctx.is_known_maniac
+                    && matches!(ctx.bucket, 119..=123 | 128..=130 | 136)))
         {
             force_action(probs, ctx.legal_actions, FOLD);
         } else if !ctx.is_passive_station {
+            let is_playable_hu_steal = ctx.active_opponents == 1
+                && (ctx.bucket < 91
+                    || (111..=123).contains(&ctx.bucket)
+                    || (128..=130).contains(&ctx.bucket)
+                    || ctx.bucket == 136);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 let limp_w = probs[c_i];
                 probs[c_i] = 0.0;
-                let steal_share = if ctx.bucket < 91 || (111..=113).contains(&ctx.bucket) {
-                    0.35
+                let steal_share = if is_playable_hu_steal && pf_tier == 7 {
+                    0.65
+                } else if is_playable_hu_steal {
+                    0.45
                 } else {
-                    0.20
+                    0.35
                 };
                 if let Some(r_i) =
                     first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT])
@@ -146,6 +156,17 @@ impl OpponentTracker {
                 }
                 if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
                     probs[f_i] += limp_w * (1.0 - steal_share);
+                }
+            }
+            if is_playable_hu_steal {
+                if let (Some(f_i), Some(r_i)) = (
+                    action_idx(ctx.legal_actions, FOLD),
+                    first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]),
+                ) {
+                    let fold_shift = if pf_tier == 7 { 0.30 } else { 0.25 };
+                    let s = probs[f_i] * fold_shift;
+                    probs[f_i] -= s;
+                    probs[r_i] += s;
                 }
             }
         }
@@ -439,7 +460,7 @@ impl OpponentTracker {
         };
         let within_nash_rescue = ctx.to_call <= max_nash_bb * ctx.bb
             && ctx.to_call < ctx.bb * 40
-            && (pf_tier <= 4 || ctx.is_known_maniac || ctx.is_extreme_shove_bot);
+            && (pf_tier <= 5 || ctx.is_known_maniac || ctx.is_extreme_shove_bot);
 
         let should_rescue = if ctx.to_call >= ctx.bb * 40 {
             ctx.bucket <= 1 || (ctx.is_known_maniac && pf_tier <= 2)
@@ -496,6 +517,8 @@ impl OpponentTracker {
             }
         } else if ctx.to_call >= ctx.bb * 12 {
             ctx.to_call > max_call_bb * ctx.bb
+        } else if ctx.to_call <= max_call_bb * ctx.bb && pf_tier <= 5 {
+            false
         } else if ctx.is_extreme_shove_bot && ctx.pot_odds <= 0.46 {
             pf_tier > 6
         } else if ctx.is_known_maniac {
@@ -507,7 +530,11 @@ impl OpponentTracker {
 
     fn is_river_shove_trash(&self, ctx: &GuardContext<'_>) -> bool {
         let min_river_shove_bucket = if ctx.is_overbet_bluffer {
-            29
+            if ctx.pot_odds <= 0.26 {
+                29
+            } else {
+                34
+            }
         } else if ctx.is_known_maniac {
             40
         } else if ctx.hole.is_some() && ctx.board.is_some() {
@@ -553,7 +580,7 @@ impl OpponentTracker {
         if draw_can_call_shove {
             false
         } else if (ctx.is_known_maniac || ctx.is_overbet_bluffer) && !ctx.is_three_flush {
-            let min_b = if ctx.is_overbet_bluffer { 29 } else { 38 };
+            let min_b = if ctx.is_overbet_bluffer { 34 } else { 38 };
             ctx.bucket < min_b || (is_stack_commit_draw_bet && (15..=21).contains(&ctx.bucket))
         } else {
             (ctx.is_three_flush && ctx.bucket <= 50)
@@ -567,7 +594,7 @@ impl OpponentTracker {
         }
     }
 
-    fn is_range_equity_shove_trash(
+    pub(super) fn is_range_equity_shove_trash(
         &self,
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,

@@ -191,9 +191,9 @@ fn compute_half_pot_raise(
             .max(opp_bet_pf * 11 / 4)
             .max(min_raise)
     } else {
-        let s = if c.round == 4 {
+        let s = if c.round == 4 && base_bet == 0 {
             (c.pot * 5 / 4).max((bb * 5 / 2).max(bb))
-        } else if c.round == 3 {
+        } else if c.round >= 3 {
             (c.pot * 3 / 4).max((bb * 2).max(bb))
         } else if c.is_wet {
             (c.pot * 3 / 4).max((bb * 3 / 2).max(bb))
@@ -293,18 +293,21 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
 
 fn map_raise_action(idx: u8, c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     let (amt, my_posted_bet) = compute_raise_amount(idx, c);
-    if c.round == 1
+    let max_total = c.my_chips + my_posted_bet;
+    let leaves_tiny_postflop =
+        c.round >= 2 && c.my_chips > 0 && max_total > amt && max_total - amt <= c.table_bb.max(2);
+    let is_preflop_commit_jam = c.round == 1
         && c.my_chips > 0
         && c.to_call > 0
-        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.table_bb * 3)
-    {
-        /* If a preflop 3-bet/4-bet commits >= 55% of remaining stack or leaves <= 3 BB behind, jam all-in! */
+        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.table_bb * 3);
+    if is_preflop_commit_jam || leaves_tiny_postflop {
+        /* If a raise commits >= 55% preflop or leaves <= 1 BB behind on postflop, jam all-in! */
         if has_legal(c.legal, "all_in") {
             return Some(("all_in".to_string(), 0));
         } else if has_legal(c.legal, "allin") {
             return Some(("allin".to_string(), 0));
         } else if has_legal(c.legal, "raise") {
-            return Some(("raise".to_string(), c.my_chips + my_posted_bet));
+            return Some(("raise".to_string(), max_total));
         }
     }
     if has_legal(c.legal, "raise") {

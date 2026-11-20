@@ -1599,3 +1599,254 @@ fn test_subgame_postflop_safety_invariants() {
         bluff_catch_calls
     );
 }
+
+#[test]
+fn test_subgame_shove_defense_overbet_bluff_catch_and_low_spr_value() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+    use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(20261120);
+    let legal_full = [
+        FOLD,
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let legal_open = [
+        CALL_CHECK,
+        RAISE_MIN,
+        RAISE_THIRD_POT,
+        RAISE_HALF_POT,
+        ALL_IN,
+    ];
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
+
+    /* 1. As 4c top pair weak kicker on 5s 6c 2d Ah facing 8,314 (11.9x pot) turn shove from subgame must fold */
+    let hole_a4o = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let board_turn_overbet_jam = [
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Ace, Suit::Hearts),
+    ];
+    let b_a4o = postflop_equity_bucket(&hole_a4o, &board_turn_overbet_jam);
+    let (act_a4o, tr_a4o) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &legal_full,
+            bucket: b_a4o,
+            round: 3,
+            to_call: 8314,
+            pot: 9010,
+            hole: Some(&hole_a4o),
+            board: Some(&board_turn_overbet_jam),
+            table_bb: 100,
+            my_chips: 8314,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_a4o, FOLD,
+        "As 4c must fold to 11.9x pot turn jam in subgame (reasons: {:?})",
+        tr_a4o.guard_reasons
+    );
+
+    /* 2. Qh Qd underpair on Ks 9h 6c 5h 9s facing 4,648 river shove from subgame must fold */
+    let hole_qq = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Diamonds),
+    ];
+    let board_paired_king_river = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let b_qq = postflop_equity_bucket(&hole_qq, &board_paired_king_river);
+    let (act_qq, tr_qq) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &legal_full,
+            bucket: b_qq,
+            round: 4,
+            to_call: 4648,
+            pot: 9938,
+            hole: Some(&hole_qq),
+            board: Some(&board_paired_king_river),
+            table_bb: 200,
+            my_chips: 4648,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_qq, FOLD,
+        "Qh Qd underpair on Ks 9h 6c 5h 9s must fold to river jam in subgame (reasons: {:?})",
+        tr_qq.guard_reasons
+    );
+
+    /* 3. 7s 2c bottom pair on Jd 2d 9c Kh vs overbet bluffer turn 18 BB raise must fold */
+    let mut overbet_villain = OpponentTracker::new();
+    for _ in 0..5 {
+        overbet_villain.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
+        overbet_villain.end_hand();
+    }
+    let hole_72o = [
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let board_turn_bottom_pair = [
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::King, Suit::Hearts),
+    ];
+    let b_72o = postflop_equity_bucket(&hole_72o, &board_turn_bottom_pair);
+    let (act_72o, _) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &legal_full,
+            bucket: b_72o,
+            round: 3,
+            to_call: 3600,
+            pot: 6000,
+            hole: Some(&hole_72o),
+            board: Some(&board_turn_bottom_pair),
+            table_bb: 200,
+            my_chips: 5000,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_72o, FOLD,
+        "7s 2c bottom pair must fold to 18 BB turn raise even vs overbet bluffer"
+    );
+
+    /* 4. 6d 7h gutshot on 3s Kh 4c Js turn facing 1,247 into 3,157 in subgame must fold */
+    let hole_67o = [
+        Card::new(Rank::Six, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Hearts),
+    ];
+    let board_turn_gutshot = [
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let b_67o = postflop_equity_bucket(&hole_67o, &board_turn_gutshot);
+    let (act_67o, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &legal_full,
+            bucket: b_67o,
+            round: 3,
+            to_call: 1247,
+            pot: 3157,
+            hole: Some(&hole_67o),
+            board: Some(&board_turn_gutshot),
+            table_bb: 100,
+            my_chips: 9000,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_67o, FOLD,
+        "6d 7h gutshot must fold on turn facing 40% pot bet in subgame"
+    );
+
+    /* 5. 9s 6c Top Two Pair on 6s 9d 5h 2c at SPR = 0.88 must value-bet instead of checking */
+    let hole_96o = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Six, Suit::Clubs),
+    ];
+    let board_low_spr_two_pair = [
+        Card::new(Rank::Six, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let b_96o = postflop_equity_bucket(&hole_96o, &board_low_spr_two_pair);
+    let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.88, 0.0, 0.12, 0.0, 0.0];
+    let mut low_spr_two_pair_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &passive_check,
+                legal_actions: &legal_open,
+                bucket: b_96o,
+                round: 3,
+                pot: 2152,
+                hole: Some(&hole_96o),
+                board: Some(&board_low_spr_two_pair),
+                table_bb: 200,
+                my_chips: 15000,
+                opp_chips: 1894,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            low_spr_two_pair_bets += 1;
+        }
+    }
+    assert!(
+        low_spr_two_pair_bets >= 45,
+        "Top Two Pair at effective SPR 0.88 must value-bet majority of the time, got {}/80",
+        low_spr_two_pair_bets
+    );
+
+    /* 6. Td 9h middle pair on Jh 9c 2d 6h Ks river must never fire 125% pot overbet (RAISE_HALF_POT) */
+    let hole_t9o = [
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let board_unpaired_river = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let b_t9o = postflop_equity_bucket(&hole_t9o, &board_unpaired_river);
+    let overbet_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.0, 0.0, 0.90, 0.0];
+    for _ in 0..40 {
+        let (act_t9o, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &overbet_raw,
+                legal_actions: &legal_open,
+                bucket: b_t9o,
+                round: 4,
+                pot: 1320,
+                hole: Some(&hole_t9o),
+                board: Some(&board_unpaired_river),
+                table_bb: 150,
+                my_chips: 14000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act_t9o != RAISE_HALF_POT && act_t9o != ALL_IN,
+            "Td 9h middle pair must never 125% overbet river, got {}",
+            act_t9o
+        );
+    }
+}

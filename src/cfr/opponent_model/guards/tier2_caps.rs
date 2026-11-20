@@ -149,6 +149,7 @@ impl OpponentTracker {
                 ctx.bb * 18
             };
             let should_cap_bluff = (ctx.is_passive_station
+                || ctx.is_sticky_caller
                 || ctx.active_opponents >= 2
                 || ctx.pot >= air_pot_cap
                 || (ctx.is_three_flush && ctx.bucket < 15))
