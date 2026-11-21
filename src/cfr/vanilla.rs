@@ -108,9 +108,8 @@ impl VanillaCFRSolver {
         };
 
         /* Accumulate average strategy */
-        let node_ref = self.nodes.get_mut(&key).unwrap();
         for (idx, &act) in actions.iter().enumerate() {
-            node_ref.strategy_sum[act as usize] += reach[cp] * weight * legal_probs[idx];
+            node.strategy_sum[act as usize] += reach[cp] * weight * legal_probs[idx];
         }
 
         let mut util = 0.0;
@@ -133,7 +132,7 @@ impl VanillaCFRSolver {
         }
 
         /* Update counterfactual regrets */
-        let node_ref = self.nodes.get_mut(&key).unwrap();
+        let node_ref = self.nodes.entry(key).or_default();
         for (idx, &act) in actions.iter().enumerate() {
             let regret = reach[opp] * (action_utils[idx] - util);
             node_ref.regret_sum[act as usize] += regret;

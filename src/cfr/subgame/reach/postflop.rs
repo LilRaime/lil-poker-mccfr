@@ -1,10 +1,10 @@
 use super::ReachContext;
 use crate::cfr::abstraction::detect_draws;
-use crate::game::config::{ALL_IN, RAISE_HALF_POT};
+use crate::game::config::{ALL_IN, RAISE_HALF_POT, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::{evaluate_7cards, Card, Rank};
 
-fn effective_category(cand: &[Card; 2], street_board: &[Card], board_paired: bool) -> u64 {
-    let score = evaluate_7cards(cand, street_board);
+fn effective_category(cand: [Card; 2], street_board: &[Card], board_paired: bool) -> u64 {
+    let score = evaluate_7cards(&cand, street_board);
     let cand_hits = cand[0].rank == cand[1].rank
         || street_board
             .iter()
@@ -18,17 +18,17 @@ fn effective_category(cand: &[Card; 2], street_board: &[Card], board_paired: boo
 
 /** 2. Flop Bayesian Likelihood Update (active on Flop once opponent acts, and on Turn/River) */
 pub(super) fn flop_likelihood(
-    cand: &[Card; 2],
+    cand: [Card; 2],
     board: &[Card],
     round: u8,
     ctx: &ReachContext,
 ) -> f64 {
-    if board.len() < 3 || (round < 3 && !ctx.has_flop_actions) {
+    if board.len() < 3 || (round < ROUND_TURN && !ctx.has_flop_actions) {
         return 1.0;
     }
     let flop_board = &board[..3];
     let f_cat = effective_category(cand, flop_board, ctx.flop_board_paired);
-    let (fd, sd) = detect_draws(cand, flop_board);
+    let (fd, sd) = detect_draws(&cand, flop_board);
 
     if ctx.opp_raised_flop {
         /* Bet-size aware Flop likelihood: larger sizing polarizes range toward 2P+ and combo draws */
@@ -77,17 +77,17 @@ pub(super) fn flop_likelihood(
 
 /** 3. Turn Bayesian Likelihood Update (active on Turn once opponent acts, and on River) */
 pub(super) fn turn_likelihood(
-    cand: &[Card; 2],
+    cand: [Card; 2],
     board: &[Card],
     round: u8,
     ctx: &ReachContext,
 ) -> f64 {
-    if board.len() < 4 || (round < 4 && !ctx.has_turn_actions) {
+    if board.len() < 4 || (round < ROUND_RIVER && !ctx.has_turn_actions) {
         return 1.0;
     }
     let turn_board = &board[..4];
     let t_cat = effective_category(cand, turn_board, ctx.turn_board_paired);
-    let (fd, sd) = detect_draws(cand, turn_board);
+    let (fd, sd) = detect_draws(&cand, turn_board);
 
     if ctx.opp_raised_turn {
         /* Bet-size aware Turn barrel likelihood */
@@ -135,12 +135,12 @@ pub(super) fn turn_likelihood(
 
 /** 3b. River Bayesian Likelihood Update (active when facing a River bet/raise) */
 pub(super) fn river_likelihood(
-    cand: &[Card; 2],
+    cand: [Card; 2],
     board: &[Card],
     round: u8,
     ctx: &ReachContext,
 ) -> f64 {
-    if round < 4 || board.len() < 5 || !ctx.opp_raised_river {
+    if round < ROUND_RIVER || board.len() < 5 || !ctx.opp_raised_river {
         return 1.0;
     }
     let r_cat = effective_category(cand, &board[..5], ctx.river_board_paired);
@@ -162,7 +162,7 @@ pub(super) fn river_likelihood(
 }
 
 /** 4. Monotone Texture Blocker Adjustment */
-pub(super) fn monotone_texture_multiplier(cand: &[Card; 2], ctx: &ReachContext) -> f64 {
+pub(super) fn monotone_texture_multiplier(cand: [Card; 2], ctx: &ReachContext) -> f64 {
     let Some(mono_suit) = ctx.monotone_suit else {
         return 1.0;
     };

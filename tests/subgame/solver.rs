@@ -2,7 +2,10 @@ use lil_poker_mccfr::cfr::fallback::get_postflop_fallback_by_bucket;
 use lil_poker_mccfr::cfr::subgame::{
     OpponentReachDistribution, ReachRequest, SubgameContext, SubgameRequest, SubgameSolver,
 };
-use lil_poker_mccfr::game::config::*;
+use lil_poker_mccfr::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, SMALL_BLIND,
+    SUBGAME_BET_PRESSURE, SUBGAME_POT_LG,
+};
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
 
 #[test]
@@ -36,8 +39,7 @@ fn test_subgame_solver_with_state() {
     let sum: f64 = probs.iter().sum();
     assert!(
         (sum - 1.0).abs() < 1e-4,
-        "Subgame probs must sum to 1.0, got {}",
-        sum
+        "Subgame probs must sum to 1.0, got {sum}"
     );
 }
 
@@ -50,21 +52,18 @@ fn test_subgame_solver_adaptive_budget() {
     let small_budget = solver.compute_budget(2, [SMALL_BLIND, SMALL_BLIND], 0);
     assert!(
         small_budget < 2000,
-        "Small pot should use less than base budget, got {}",
-        small_budget
+        "Small pot should use less than base budget, got {small_budget}"
     );
 
     /* 2. Big pot on river -> scaled up for maximum precision */
     let big_river_budget = solver.compute_budget(4, [SUBGAME_POT_LG / 2, SUBGAME_POT_LG / 2], 0);
     assert!(
         big_river_budget > 2000,
-        "Big river pot should exceed base budget, got {}",
-        big_river_budget
+        "Big river pot should exceed base budget, got {big_river_budget}"
     );
     assert!(
         big_river_budget >= 4000,
-        "Big river pot should get >= 4000 iters, got {}",
-        big_river_budget
+        "Big river pot should get >= 4000 iters, got {big_river_budget}"
     );
 
     /* 3. Facing bet -> precision boost */
@@ -73,9 +72,7 @@ fn test_subgame_solver_adaptive_budget() {
     let passive_budget = solver.compute_budget(3, [SUBGAME_BET_PRESSURE, SUBGAME_BET_PRESSURE], 0);
     assert!(
         facing_bet_budget > passive_budget,
-        "Facing bet budget ({}) should exceed passive budget ({})",
-        facing_bet_budget,
-        passive_budget
+        "Facing bet budget ({facing_bet_budget}) should exceed passive budget ({passive_budget})"
     );
 
     /* 4. Non-adaptive solver should always return base iterations */
@@ -117,8 +114,7 @@ fn test_subgame_solver_multithreaded() {
     let sum: f64 = probs.iter().sum();
     assert!(
         (sum - 1.0).abs() < 1e-4,
-        "Parallel subgame probs must sum to 1.0, got {}",
-        sum
+        "Parallel subgame probs must sum to 1.0, got {sum}"
     );
     /* Nut straight in position facing small bet should have very low fold probability */
     assert!(
@@ -162,8 +158,7 @@ fn test_subgame_solver_single_threaded() {
     let sum: f64 = probs.iter().sum();
     assert!(
         (sum - 1.0).abs() < 1e-4,
-        "Single-threaded subgame probs must sum to 1.0, got {}",
-        sum
+        "Single-threaded subgame probs must sum to 1.0, got {sum}"
     );
     assert!(
         probs[FOLD as usize] < 0.15,
@@ -271,16 +266,14 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
     assert!(
         strong_prior[RAISE_THIRD_POT as usize] + strong_prior[RAISE_HALF_POT as usize]
             > strong_prior[CALL_CHECK as usize],
-        "Strong postflop bucket prior must favor value-betting over pure check: {:?}",
-        strong_prior
+        "Strong postflop bucket prior must favor value-betting over pure check: {strong_prior:?}"
     );
 
     /* Weak postflop bucket facing a full pot bet should favor FOLD over ALL_IN */
     let air_prior = get_postflop_fallback_by_bucket(2, 3, 1000, 1000, &legal);
     assert!(
         air_prior[FOLD as usize] > air_prior[ALL_IN as usize] * 5.0,
-        "Weak postflop bucket facing a full-pot bet must fold far more than jam: {:?}",
-        air_prior
+        "Weak postflop bucket facing a full-pot bet must fold far more than jam: {air_prior:?}"
     );
 
     /* Now solve a Turn subgame with symmetric 50/50 hero_reach sampling under a modest budget */
@@ -312,15 +305,13 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
     let sum: f64 = probs.iter().sum();
     assert!(
         (sum - 1.0).abs() < 1e-6,
-        "Solver probs must sum to 1.0, got {}",
-        sum
+        "Solver probs must sum to 1.0, got {sum}"
     );
     assert!(
         probs[FOLD as usize] < 0.01
             && probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.45
             && (1..=5usize).map(|i| probs[i]).sum::<f64>() > 0.99,
-        "Top two pair checked to on Turn should never fold and lean toward value betting: {:?}",
-        probs
+        "Top two pair checked to on Turn should never fold and lean toward value betting: {probs:?}"
     );
 }
 
@@ -355,12 +346,10 @@ fn test_subgame_filters_extreme_overbet_allin() {
     );
     assert!(
         probs[ALL_IN as usize] < 1e-6,
-        "SubgameSolver must filter extreme >3x pot ALL_IN shoves from tree/root: {:?}",
-        probs
+        "SubgameSolver must filter extreme >3x pot ALL_IN shoves from tree/root: {probs:?}"
     );
     assert!(
         probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.30,
-        "Turn flush should value-bet with standard sizing instead of checking/shoving: {:?}",
-        probs
+        "Turn flush should value-bet with standard sizing instead of checking/shoving: {probs:?}"
     );
 }

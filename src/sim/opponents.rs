@@ -2,9 +2,10 @@
 use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
     detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
 };
 use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
-use crate::game::config::BIG_BLIND;
+use crate::game::config::{BIG_BLIND, ROUND_PREFLOP, ROUND_TURN};
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -37,7 +38,7 @@ pub fn sample_from_probs(probs: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 
                 return legal[i];
             }
         }
-        *legal.last().unwrap()
+        legal.last().copied().unwrap_or(CALL_CHECK)
     } else {
         legal[rng.gen_range(0..legal.len())]
     }
@@ -88,7 +89,7 @@ struct OppActionCtx<'a> {
 }
 
 fn sample_tag_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
-    if c.game.round == 1 {
+    if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
         if tier <= 2 {
@@ -162,7 +163,7 @@ fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         } else {
             CALL_CHECK
         }
-    } else if c.game.round == 1 {
+    } else if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
         if (c.opp_to_call > BIG_BLIND * 8 && tier >= 7 && rng.gen_bool(0.85))
@@ -174,7 +175,7 @@ fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         }
     } else {
         let bucket = postflop_equity_bucket(c.hole, c.board);
-        if (c.opp_to_call > BIG_BLIND && bucket < 15 && rng.gen_bool(0.35))
+        if (c.opp_to_call > BIG_BLIND && bucket < BUCKET_STRONG_DRAW_MIN && rng.gen_bool(0.35))
             || (c.opp_to_call > BIG_BLIND * 3 && bucket < 30 && rng.gen_bool(0.60))
         {
             H_FOLD
@@ -208,7 +209,7 @@ fn sample_maniac_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 }
 
 fn sample_nit_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
-    if c.game.round == 1 {
+    if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
         if tier == 1 {
@@ -231,7 +232,7 @@ fn sample_nit_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 }
 
 fn sample_shove_bot_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
-    if c.game.round == 1 {
+    if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
         if tier <= 5 || rng.gen_bool(0.35) {
@@ -244,7 +245,7 @@ fn sample_shove_bot_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     } else {
         let bucket = postflop_equity_bucket(c.hole, c.board);
         let (has_fd, has_sd) = detect_draws(c.hole, c.board);
-        if bucket >= 28 || has_fd || has_sd || rng.gen_bool(0.25) {
+        if bucket >= BUCKET_WEAK_PAIR_MIN || has_fd || has_sd || rng.gen_bool(0.25) {
             pick_preferred_action(c.legal, &[ALL_IN, RAISE_HALF_POT, RAISE_MIN], rng)
         } else if c.opp_to_call == 0 {
             CALL_CHECK
@@ -255,7 +256,7 @@ fn sample_shove_bot_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 }
 
 fn sample_trapper_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
-    if c.game.round == 1 {
+    if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
         if tier <= 3 {
@@ -273,14 +274,16 @@ fn sample_trapper_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         let bucket = postflop_equity_bucket(c.hole, c.board);
         let (has_fd, has_sd) = detect_draws(c.hole, c.board);
         if c.opp_to_call == 0 {
-            if c.game.round >= 3 && (bucket >= 40 || (bucket < 20 && rng.gen_bool(0.30))) {
+            if c.game.round >= ROUND_TURN
+                && (bucket >= BUCKET_TOP_PAIR_MIN || (bucket < 20 && rng.gen_bool(0.30)))
+            {
                 pick_preferred_action(c.legal, &[RAISE_HALF_POT, ALL_IN, RAISE_THIRD_POT], rng)
             } else {
                 CALL_CHECK
             }
         } else if bucket >= 36 || has_fd || has_sd || rng.gen_bool(0.20) {
             pick_preferred_action(c.legal, &[RAISE_HALF_POT, ALL_IN, CALL_CHECK], rng)
-        } else if bucket >= 28 && c.opp_to_call <= BIG_BLIND * 3 {
+        } else if bucket >= BUCKET_WEAK_PAIR_MIN && c.opp_to_call <= BIG_BLIND * 3 {
             CALL_CHECK
         } else {
             H_FOLD

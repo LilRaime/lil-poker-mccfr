@@ -74,8 +74,8 @@ pub(super) fn preflop_prior_weight<V: AsRef<[f64]>>(
     let Some(strat_map) = strategy_map else {
         return fallback_preflop_weight(pf_idx, ctx);
     };
-    let pf_key_facing_raise = format!("P:{}/r", pf_name);
-    let pf_key_root = format!("P:{}/", pf_name);
+    let pf_key_facing_raise = format!("P:{pf_name}/r");
+    let pf_key_root = format!("P:{pf_name}/");
     let probs_opt = if target_player == Some(1) && (ctx.opp_3bet_pf || ctx.opp_called_pf) {
         strat_map
             .get(&pf_key_facing_raise)

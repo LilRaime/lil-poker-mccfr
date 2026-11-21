@@ -71,7 +71,7 @@ impl std::fmt::Display for Card {
             Suit::Hearts => "♥",
             Suit::Spades => "♠",
         };
-        write!(f, "'{}{}'", r, s)
+        write!(f, "'{r}{s}'")
     }
 }
 

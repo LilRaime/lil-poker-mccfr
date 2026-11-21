@@ -220,7 +220,10 @@ impl LeducGame {
 
     fn resolve_showdown(&mut self) {
         let pot = self.contributions[0] + self.contributions[1];
-        let board_rank = self.board.unwrap().rank;
+        let board_rank = self
+            .board
+            .expect("showdown requires a dealt board card")
+            .rank;
 
         let rank0 = self.hole[0].rank;
         let rank1 = self.hole[1].rank;

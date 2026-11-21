@@ -3,8 +3,15 @@
  * Used when an Information Set key is not present in the offline strategy model.
  */
 
-use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
-use crate::game::config::*;
+use crate::cfr::abstraction::{
+    postflop_equity_bucket, preflop_bucket, preflop_strength_tier, BUCKET_SECOND_NUT_FLUSH,
+    BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN, BUCKET_TOP_PAIR_MIN,
+    BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+};
+use crate::game::config::{
+    BIG_BLIND, HOLDEM_NUM_ACTIONS, NUM_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER,
+    ROUND_TURN, SMALL_BLIND,
+};
 use crate::game::holdem::{
     Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -28,7 +35,7 @@ impl Default for FallbackRequest<'_> {
                 Card::new(Rank::King, Suit::Spades),
             ],
             board: &[],
-            round: 1,
+            round: ROUND_PREFLOP,
             to_call: 0,
             pot: 0,
             legal: &[],
@@ -38,11 +45,11 @@ impl Default for FallbackRequest<'_> {
 }
 
 /**
- * Returns a robust probability distribution [p_fold, p_call, p_raise_min, p_raise_third_pot, p_raise_half_pot, p_all_in]
+ * Returns a robust probability distribution `[p_fold, p_call, p_raise_min, p_raise_third_pot, p_raise_half_pot, p_all_in]`
  * tailored to hand strength, equity tier, pot odds, and legal actions.
  */
 pub fn get_holdem_fallback_strategy(req: &FallbackRequest<'_>) -> [f64; HOLDEM_NUM_ACTIONS] {
-    let raw = if req.round == 1 {
+    let raw = if req.round == ROUND_PREFLOP {
         let (pf_idx, _) = preflop_bucket(req.hole[0], req.hole[1]);
         preflop_fallback(pf_idx, req.to_call, req.pot, req.table_bb)
     } else {
@@ -219,40 +226,83 @@ fn postflop_fallback(
     to_call: i32,
     pot: i32,
 ) -> [f64; HOLDEM_NUM_ACTIONS] {
-    let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
+    if to_call == 0 {
+        return postflop_checked_to_fallback(bucket, round);
+    }
     let total_pot = (pot + to_call).max(1);
     let pot_odds = to_call as f64 / total_pot as f64;
+    postflop_facing_bet_fallback(bucket, round, pot_odds)
+}
 
-    if bucket >= 82 {
-        /* True Nuts / Monsters (Nut/2nd-Nut Flush, Full House, Quads, Straight Flush: 82..=87) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.10; /* Trap / Slowplay */
-            s[RAISE_THIRD_POT as usize] = 0.20;
-            s[RAISE_HALF_POT as usize] = 0.45;
-            s[ALL_IN as usize] = 0.25;
-        } else {
-            s[CALL_CHECK as usize] = 0.25;
-            s[RAISE_HALF_POT as usize] = 0.35;
-            s[ALL_IN as usize] = 0.40;
+fn postflop_checked_to_fallback(bucket: usize, round: u8) -> [f64; HOLDEM_NUM_ACTIONS] {
+    let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
+    if bucket >= BUCKET_SECOND_NUT_FLUSH {
+        s[CALL_CHECK as usize] = 0.10;
+        s[RAISE_THIRD_POT as usize] = 0.20;
+        s[RAISE_HALF_POT as usize] = 0.45;
+        s[ALL_IN as usize] = 0.25;
+    } else if bucket >= BUCKET_STRAIGHT_MIN {
+        s[CALL_CHECK as usize] = 0.20;
+        s[RAISE_THIRD_POT as usize] = 0.35;
+        s[RAISE_HALF_POT as usize] = 0.35;
+        s[ALL_IN as usize] = 0.10;
+    } else if bucket >= BUCKET_TRIPS_MIN {
+        s[CALL_CHECK as usize] = 0.15;
+        s[RAISE_THIRD_POT as usize] = 0.30;
+        s[RAISE_HALF_POT as usize] = 0.40;
+        s[ALL_IN as usize] = 0.15;
+    } else if bucket >= BUCKET_TOP_PAIR_MIN {
+        s[CALL_CHECK as usize] = 0.35;
+        s[RAISE_THIRD_POT as usize] = 0.35;
+        s[RAISE_HALF_POT as usize] = 0.25;
+        s[RAISE_MIN as usize] = 0.05;
+    } else if round < ROUND_RIVER && (bucket == 33 || bucket == 38) {
+        s[CALL_CHECK as usize] = 0.75;
+        s[RAISE_THIRD_POT as usize] = 0.20;
+        s[RAISE_HALF_POT as usize] = 0.05;
+    } else if bucket >= BUCKET_WEAK_PAIR_MIN {
+        s[CALL_CHECK as usize] = 0.95;
+        s[RAISE_THIRD_POT as usize] = 0.05;
+    } else if round < ROUND_RIVER && bucket >= BUCKET_STRONG_DRAW_MIN {
+        s[CALL_CHECK as usize] = 0.40;
+        s[RAISE_THIRD_POT as usize] = 0.40;
+        s[RAISE_HALF_POT as usize] = 0.15;
+        if round == ROUND_FLOP || bucket >= 24 {
+            s[ALL_IN as usize] = 0.05;
         }
-    } else if bucket >= 73 {
-        /* Straights and Non-Nut Flushes (73..=81) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.20;
-            s[RAISE_THIRD_POT as usize] = 0.35;
-            s[RAISE_HALF_POT as usize] = 0.35;
-            s[ALL_IN as usize] = 0.10;
-        } else if bucket == 73 {
-            /* Board Straight / Idiot-End Dummy Straight: call cheap bets, fold to heavy pressure */
-            if pot_odds <= 0.28 {
-                s[CALL_CHECK as usize] = 0.85;
-                s[FOLD as usize] = 0.15;
-            } else {
-                s[CALL_CHECK as usize] = 0.35;
-                s[FOLD as usize] = 0.65;
-            }
-        } else if bucket >= 80 && pot_odds > 0.35 {
-            /* Mid/High 2-card flush (80..=81): call heavy bets rather than folding away equity */
+    } else if round < ROUND_RIVER && bucket >= BUCKET_WEAK_DRAW_MIN {
+        s[CALL_CHECK as usize] = 0.80;
+        s[RAISE_THIRD_POT as usize] = 0.20;
+    } else {
+        s[CALL_CHECK as usize] = 0.90;
+        s[RAISE_THIRD_POT as usize] = 0.10;
+    }
+    s
+}
+
+fn postflop_facing_bet_fallback(
+    bucket: usize,
+    round: u8,
+    pot_odds: f64,
+) -> [f64; HOLDEM_NUM_ACTIONS] {
+    if round < ROUND_RIVER && (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&bucket) {
+        return strong_draw_facing_bet_fallback(bucket, round, pot_odds);
+    }
+    let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
+    if bucket >= BUCKET_SECOND_NUT_FLUSH {
+        s[CALL_CHECK as usize] = 0.25;
+        s[RAISE_HALF_POT as usize] = 0.35;
+        s[ALL_IN as usize] = 0.40;
+    } else if bucket == BUCKET_STRAIGHT_MIN {
+        if pot_odds <= 0.28 {
+            s[CALL_CHECK as usize] = 0.85;
+            s[FOLD as usize] = 0.15;
+        } else {
+            s[CALL_CHECK as usize] = 0.35;
+            s[FOLD as usize] = 0.65;
+        }
+    } else if bucket >= 74 {
+        if bucket >= BUCKET_STRONG_FLUSH_MIN && pot_odds > 0.35 {
             s[CALL_CHECK as usize] = 0.85;
             s[RAISE_HALF_POT as usize] = 0.15;
         } else if pot_odds <= 0.35 {
@@ -260,31 +310,16 @@ fn postflop_fallback(
             s[RAISE_HALF_POT as usize] = 0.25;
             s[ALL_IN as usize] = 0.15;
         } else {
-            /* Facing a large bet/overbet with a straight or 4-flush board flush (74..=79): prefer calling over jamming */
             s[CALL_CHECK as usize] = 0.70;
             s[FOLD as usize] = 0.20;
             s[RAISE_HALF_POT as usize] = 0.10;
         }
-    } else if bucket >= 65 {
-        /* Very Strong (Trips & Sets: 65..=72) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.15;
-            s[RAISE_THIRD_POT as usize] = 0.30;
-            s[RAISE_HALF_POT as usize] = 0.40;
-            s[ALL_IN as usize] = 0.15;
-        } else {
-            s[CALL_CHECK as usize] = 0.45;
-            s[RAISE_HALF_POT as usize] = 0.30;
-            s[ALL_IN as usize] = 0.25;
-        }
-    } else if bucket >= 40 {
-        /* Strong (Genuine Two Pair 57..=64, Overpairs 50..=56, Top Pair 40..=49) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.35;
-            s[RAISE_THIRD_POT as usize] = 0.35;
-            s[RAISE_HALF_POT as usize] = 0.25;
-            s[RAISE_MIN as usize] = 0.05;
-        } else if pot_odds <= 0.30 {
+    } else if bucket >= BUCKET_TRIPS_MIN {
+        s[CALL_CHECK as usize] = 0.45;
+        s[RAISE_HALF_POT as usize] = 0.30;
+        s[ALL_IN as usize] = 0.25;
+    } else if bucket >= BUCKET_TOP_PAIR_MIN {
+        if pot_odds <= 0.30 {
             s[CALL_CHECK as usize] = 0.70;
             s[RAISE_HALF_POT as usize] = 0.15;
             s[RAISE_MIN as usize] = 0.10;
@@ -294,13 +329,8 @@ fn postflop_fallback(
             s[FOLD as usize] = 0.30;
             s[RAISE_HALF_POT as usize] = 0.15;
         }
-    } else if round < 4 && (bucket == 33 || bucket == 38) {
-        /* Pair + Strong Draw (Bottom/Middle/Pocket Pair + Flush Draw or OESD: 10-14 outs + pair showdown value) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.75;
-            s[RAISE_THIRD_POT as usize] = 0.20;
-            s[RAISE_HALF_POT as usize] = 0.05;
-        } else if pot_odds <= 0.35 {
+    } else if round < ROUND_RIVER && (bucket == 33 || bucket == 38) {
+        if pot_odds <= 0.35 {
             s[CALL_CHECK as usize] = 0.85;
             s[FOLD as usize] = 0.10;
             s[RAISE_THIRD_POT as usize] = 0.05;
@@ -308,107 +338,77 @@ fn postflop_fallback(
             s[CALL_CHECK as usize] = 0.35;
             s[FOLD as usize] = 0.65;
         }
-    } else if bucket >= 28 {
-        /* Marginal / Bluff Catcher (Weak & Middle Pairs: 28..=39) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.95;
-            s[RAISE_THIRD_POT as usize] = 0.05; /* Rare small probe bet */
-        } else if pot_odds <= 0.15 {
-            /* Very cheap call / exceptional pot odds */
+    } else if bucket >= BUCKET_WEAK_PAIR_MIN {
+        if pot_odds <= 0.15 {
             s[CALL_CHECK as usize] = 0.65;
             s[FOLD as usize] = 0.35;
         } else if pot_odds <= 0.25 {
             s[CALL_CHECK as usize] = 0.35;
             s[FOLD as usize] = 0.65;
         } else {
-            /* Facing significant bet/raise: fold weak one-pair hands */
             s[CALL_CHECK as usize] = 0.10;
             s[FOLD as usize] = 0.90;
         }
-    } else if round < 4 && bucket >= 15 {
-        /* Strong Draws on Flop & Turn (OESD 15..=18, Flush Draw 19..=23, Combo Draw 24..=27) */
-        let max_call_odds = if round == 3 {
-            /* Turn (1 card to come): strict direct equity thresholds */
-            if bucket >= 24 {
-                0.31 /* Combo Draw (~30-34% equity) */
-            } else if bucket >= 19 {
-                0.22 /* Flush Draw (~19.6% equity) */
-            } else {
-                0.19 /* OESD (~17.4% equity) */
-            }
-        } else {
-            /* Flop (2 cards to come): higher implied + two-card equity */
-            if bucket >= 24 {
-                0.42
-            } else {
-                0.28
-            }
-        };
-
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.40;
-            s[RAISE_THIRD_POT as usize] = 0.40; /* Standard 33% semi-bluff c-bet! */
-            s[RAISE_HALF_POT as usize] = 0.15;
-            if round == 2 || bucket >= 24 {
-                s[ALL_IN as usize] = 0.05;
-            }
-        } else if pot_odds <= max_call_odds {
-            s[CALL_CHECK as usize] = 0.75;
-            s[RAISE_THIRD_POT as usize] = if round == 2 { 0.15 } else { 0.05 };
-            s[FOLD as usize] = if round == 2 { 0.10 } else { 0.20 };
-        } else if round == 2 && pot_odds <= max_call_odds + 0.07 {
-            s[CALL_CHECK as usize] = 0.45;
-            s[FOLD as usize] = 0.50;
-            s[RAISE_THIRD_POT as usize] = 0.05;
-        } else {
-            /* Overpriced draw (especially on the Turn): fold */
-            s[FOLD as usize] = 0.95;
-            s[CALL_CHECK as usize] = 0.05;
-        }
-    } else if round < 4 && bucket >= 11 {
-        /* Weak Draws on Flop & Turn (Gutshots) */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.80;
-            s[RAISE_THIRD_POT as usize] = 0.20;
-        } else if pot_odds <= 0.18 {
+    } else if round < ROUND_RIVER && bucket >= BUCKET_WEAK_DRAW_MIN {
+        if pot_odds <= 0.18 {
             s[CALL_CHECK as usize] = 0.65;
             s[FOLD as usize] = 0.35;
         } else if pot_odds <= 0.24 {
             s[CALL_CHECK as usize] = 0.20;
             s[FOLD as usize] = 0.80;
         } else {
-            /* Strict Odds Guard: never call large bets or overbets with a bare gutshot! */
             s[FOLD as usize] = 1.0;
-            s[CALL_CHECK as usize] = 0.0;
         }
-    } else if round == 4 && bucket >= 8 {
-        /* River Ace-High / King-High Bluff Catchers */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.90;
-            s[RAISE_THIRD_POT as usize] = 0.10; /* Small thin value/bluff */
-        } else if pot_odds <= 0.18 {
-            /* Cheap river bet / great pot odds: call down as bluff catcher */
+    } else if round == ROUND_RIVER && bucket >= 8 {
+        if pot_odds <= 0.18 {
             s[CALL_CHECK as usize] = 0.60;
             s[FOLD as usize] = 0.40;
         } else if pot_odds <= 0.28 {
             s[CALL_CHECK as usize] = 0.25;
             s[FOLD as usize] = 0.75;
         } else {
-            /* Large bet / shove: fold Ace-high */
             s[FOLD as usize] = 0.98;
             s[CALL_CHECK as usize] = 0.02;
         }
     } else {
-        /* Weak / Air / Missed draw */
-        if to_call == 0 {
-            s[CALL_CHECK as usize] = 0.90;
-            s[RAISE_THIRD_POT as usize] = 0.10; /* Small c-bet bluff */
-        } else {
-            s[FOLD as usize] = 0.99;
-            s[RAISE_THIRD_POT as usize] = 0.01;
-        }
+        s[FOLD as usize] = 0.99;
+        s[RAISE_THIRD_POT as usize] = 0.01;
     }
+    s
+}
 
+fn strong_draw_facing_bet_fallback(
+    bucket: usize,
+    round: u8,
+    pot_odds: f64,
+) -> [f64; HOLDEM_NUM_ACTIONS] {
+    let mut s = [0.0f64; HOLDEM_NUM_ACTIONS];
+    let max_call_odds = if round == ROUND_TURN {
+        if bucket >= 24 {
+            0.31
+        } else if bucket >= 19 {
+            0.22
+        } else {
+            0.19
+        }
+    } else if bucket >= 24 {
+        0.42
+    } else {
+        0.28
+    };
+
+    if pot_odds <= max_call_odds {
+        s[CALL_CHECK as usize] = 0.75;
+        s[RAISE_THIRD_POT as usize] = if round == ROUND_FLOP { 0.15 } else { 0.05 };
+        s[FOLD as usize] = if round == ROUND_FLOP { 0.10 } else { 0.20 };
+    } else if round == ROUND_FLOP && pot_odds <= max_call_odds + 0.07 {
+        s[CALL_CHECK as usize] = 0.45;
+        s[FOLD as usize] = 0.50;
+        s[RAISE_THIRD_POT as usize] = 0.05;
+    } else {
+        s[FOLD as usize] = 0.95;
+        s[CALL_CHECK as usize] = 0.05;
+    }
     s
 }
 
@@ -429,7 +429,7 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         get_holdem_infoset_key_with_bucket, postflop_equity_bucket,
     };
 
-    let tex_opt = if round >= 2 && !board.is_empty() {
+    let tex_opt = if round >= ROUND_FLOP && !board.is_empty() {
         Some(compact_board_texture_char(board))
     } else {
         None
@@ -456,7 +456,7 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         return Some(v);
     }
 
-    if round >= 2 {
+    if round >= ROUND_FLOP {
         let bucket = postflop_equity_bucket(hole, board) as i32;
 
         /* 3. Adjacent bucket search (+1, -1, +2, -2) preserving exact street history and active player */
@@ -476,25 +476,25 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         }
 
         /* 4. Canonical preflop line with exact current street action (same player turn) */
-        if round == 2 {
-            let rc_key = format!("P:rc|{}", exact_key);
+        if round == ROUND_FLOP {
+            let rc_key = format!("P:rc|{exact_key}");
             if let Some(v) = try_get(&rc_key) {
                 return Some(v);
             }
-            let cc_key = format!("P:cc|{}", exact_key);
+            let cc_key = format!("P:cc|{exact_key}");
             if let Some(v) = try_get(&cc_key) {
                 return Some(v);
             }
-        } else if round == 3 {
-            let rc_f_c = format!("P:rc|F:cc|{}", exact_key);
+        } else if round == ROUND_TURN {
+            let rc_f_c = format!("P:rc|F:cc|{exact_key}");
             if let Some(v) = try_get(&rc_f_c) {
                 return Some(v);
             }
-            let rc_f_rc = format!("P:rc|F:rc|{}", exact_key);
+            let rc_f_rc = format!("P:rc|F:rc|{exact_key}");
             if let Some(v) = try_get(&rc_f_rc) {
                 return Some(v);
             }
-            let cc_f_c = format!("P:cc|F:cc|{}", exact_key);
+            let cc_f_c = format!("P:cc|F:cc|{exact_key}");
             if let Some(v) = try_get(&cc_f_c) {
                 return Some(v);
             }
@@ -505,27 +505,27 @@ pub fn lookup_strategy_hierarchical<'a, V>(
         if let Some(slash_idx) = exact_key.find('/') {
             let street_prefix = &exact_key[..slash_idx];
             let acts = &exact_key[slash_idx + 1..];
-            let orig_facing_bet = acts.chars().last().map(|c| c != 'c').unwrap_or(false);
+            let orig_facing_bet = acts.chars().last().is_some_and(|c| c != 'c');
             let mut end = acts.len();
             while end >= 2 {
                 end -= 2;
                 let sub_acts = &acts[..end];
-                let sub_facing_bet = sub_acts.chars().last().map(|c| c != 'c').unwrap_or(false);
+                let sub_facing_bet = sub_acts.chars().last().is_some_and(|c| c != 'c');
                 if orig_facing_bet != sub_facing_bet {
                     continue;
                 }
-                let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
-                if round == 3 {
-                    let t_rc_f_c = format!("P:rc|F:cc|{}", truncated_exact);
+                let truncated_exact = format!("{street_prefix}/{sub_acts}");
+                if round == ROUND_TURN {
+                    let t_rc_f_c = format!("P:rc|F:cc|{truncated_exact}");
                     if let Some(v) = try_get(&t_rc_f_c) {
                         return Some(v);
                     }
                 }
-                let t_rc = format!("P:rc|{}", truncated_exact);
+                let t_rc = format!("P:rc|{truncated_exact}");
                 if let Some(v) = try_get(&t_rc) {
                     return Some(v);
                 }
-                let t_cc = format!("P:cc|{}", truncated_exact);
+                let t_cc = format!("P:cc|{truncated_exact}");
                 if let Some(v) = try_get(&t_cc) {
                     return Some(v);
                 }
@@ -552,7 +552,7 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         get_holdem_infoset_key_with_bucket, postflop_equity_bucket,
     };
 
-    let tex_opt = if round >= 2 && !board.is_empty() {
+    let tex_opt = if round >= ROUND_FLOP && !board.is_empty() {
         Some(compact_board_texture_char(board))
     } else {
         None
@@ -577,7 +577,7 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         return Some(v);
     }
 
-    if round >= 2 {
+    if round >= ROUND_FLOP {
         let bucket = postflop_equity_bucket(hole, board) as i32;
         for delta in [1i32, -1, 2, -2] {
             let nb = bucket + delta;
@@ -594,25 +594,25 @@ pub fn lookup_strategy_hierarchical_owned<V>(
             }
         }
 
-        if round == 3 {
-            let rc_f_c = format!("P:rc|F:cc|{}", exact_key);
+        if round == ROUND_TURN {
+            let rc_f_c = format!("P:rc|F:cc|{exact_key}");
             if let Some(v) = try_get(&rc_f_c) {
                 return Some(v);
             }
-            let rc_f_rc = format!("P:rc|F:rc|{}", exact_key);
+            let rc_f_rc = format!("P:rc|F:rc|{exact_key}");
             if let Some(v) = try_get(&rc_f_rc) {
                 return Some(v);
             }
-            let cc_f_c = format!("P:cc|F:cc|{}", exact_key);
+            let cc_f_c = format!("P:cc|F:cc|{exact_key}");
             if let Some(v) = try_get(&cc_f_c) {
                 return Some(v);
             }
         }
-        let rc_key = format!("P:rc|{}", exact_key);
+        let rc_key = format!("P:rc|{exact_key}");
         if let Some(v) = try_get(&rc_key) {
             return Some(v);
         }
-        let cc_key = format!("P:cc|{}", exact_key);
+        let cc_key = format!("P:cc|{exact_key}");
         if let Some(v) = try_get(&cc_key) {
             return Some(v);
         }
@@ -620,27 +620,27 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         if let Some(slash_idx) = exact_key.find('/') {
             let street_prefix = &exact_key[..slash_idx];
             let acts = &exact_key[slash_idx + 1..];
-            let orig_facing_bet = acts.chars().last().map(|c| c != 'c').unwrap_or(false);
+            let orig_facing_bet = acts.chars().last().is_some_and(|c| c != 'c');
             let mut end = acts.len();
             while end >= 2 {
                 end -= 2;
                 let sub_acts = &acts[..end];
-                let sub_facing_bet = sub_acts.chars().last().map(|c| c != 'c').unwrap_or(false);
+                let sub_facing_bet = sub_acts.chars().last().is_some_and(|c| c != 'c');
                 if orig_facing_bet != sub_facing_bet {
                     continue;
                 }
-                let truncated_exact = format!("{}/{}", street_prefix, sub_acts);
-                if round == 3 {
-                    let t_rc_f_c = format!("P:rc|F:cc|{}", truncated_exact);
+                let truncated_exact = format!("{street_prefix}/{sub_acts}");
+                if round == ROUND_TURN {
+                    let t_rc_f_c = format!("P:rc|F:cc|{truncated_exact}");
                     if let Some(v) = try_get(&t_rc_f_c) {
                         return Some(v);
                     }
                 }
-                let t_rc = format!("P:rc|{}", truncated_exact);
+                let t_rc = format!("P:rc|{truncated_exact}");
                 if let Some(v) = try_get(&t_rc) {
                     return Some(v);
                 }
-                let t_cc = format!("P:cc|{}", truncated_exact);
+                let t_cc = format!("P:cc|{truncated_exact}");
                 if let Some(v) = try_get(&t_cc) {
                     return Some(v);
                 }
@@ -669,7 +669,7 @@ pub fn lookup_strategy_hierarchical_with_stack<'a, V>(
     if !prefix.is_empty() {
         if let Some(v) = lookup_strategy_hierarchical(
             |k| {
-                let prefixed = format!("{}{}", prefix, k);
+                let prefixed = format!("{prefix}{k}");
                 get_fn(&prefixed)
             },
             hole,
@@ -695,7 +695,7 @@ pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
     if !prefix.is_empty() {
         if let Some(v) = lookup_strategy_hierarchical_owned(
             |k| {
-                let prefixed = format!("{}{}", prefix, k);
+                let prefixed = format!("{prefix}{k}");
                 get_fn(&prefixed)
             },
             hole,

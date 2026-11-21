@@ -1,5 +1,7 @@
 use clap::Parser;
-use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
+use lil_poker_mccfr::game::config::{
+    HOLDEM_NUM_ACTIONS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
+};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -46,13 +48,13 @@ fn strip_stack_prefix(key: &str) -> &str {
 fn get_street(key: &str) -> u8 {
     let key = strip_stack_prefix(key);
     if key.starts_with("R:B") || key.contains("|R:B") {
-        4
+        ROUND_RIVER
     } else if key.starts_with("T:B") || key.contains("|T:B") {
-        3
+        ROUND_TURN
     } else if key.starts_with("F:B") || key.contains("|F:B") {
-        2
+        ROUND_FLOP
     } else {
-        1
+        ROUND_PREFLOP
     }
 }
 
@@ -93,12 +95,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (k, v) in raw {
         let street = get_street(&k);
         match street {
-            1 => {
+            ROUND_PREFLOP => {
                 /* 1. 100% Preflop (always retained) */
                 distilled.insert(k, v);
                 pf_count += 1;
             }
-            2 => {
+            ROUND_FLOP => {
                 /* 2. Flop: require preflop length <= max_pf_len */
                 let base_k = strip_stack_prefix(&k);
                 if base_k.starts_with("P:") {
@@ -112,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 distilled.insert(k, v);
                 flop_count += 1;
             }
-            3 => {
+            ROUND_TURN => {
                 /* 3. Turn: preflop length <= max_pf_len, turn actions <= max_turn_actions */
                 if k.starts_with("P:") {
                     if let Some(end) = k.find('|') {
@@ -134,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 distilled.insert(k, v);
                 turn_count += 1;
             }
-            4 => {
+            ROUND_RIVER => {
                 /* 4. River: completely pruned if prune_river is enabled */
                 if args.prune_river {
                     continue;
@@ -172,15 +174,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let est_ram_mb = (distilled.len() * 140) as f64 / (1024.0 * 1024.0);
 
     println!("\n=== Distillation Summary ===");
-    println!("Total Input Infosets : {}", total_in);
+    println!("Total Input Infosets : {total_in}");
     println!(
         "Retained Infosets    : {} ({:.1}%)",
         distilled.len(),
         (distilled.len() as f64 / total_in as f64) * 100.0
     );
-    println!("  - Preflop          : {}", pf_count);
-    println!("  - Flop             : {}", flop_count);
-    println!("  - Turn             : {}", turn_count);
+    println!("  - Preflop          : {pf_count}");
+    println!("  - Flop             : {flop_count}");
+    println!("  - Turn             : {turn_count}");
     println!(
         "  - River            : {} {}",
         river_count,
@@ -194,10 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Output File Size     : {:.1} MB",
         out_file_size as f64 / (1024.0 * 1024.0)
     );
-    println!(
-        "Estimated RAM Footprint: {:.1} MB (Target: <= 400 MB)",
-        est_ram_mb
-    );
+    println!("Estimated RAM Footprint: {est_ram_mb:.1} MB (Target: <= 400 MB)");
     println!("Done in {:.2?}.", start.elapsed());
 
     Ok(())

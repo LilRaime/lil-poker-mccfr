@@ -122,7 +122,7 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     }
 }
 
-/** Backward-compatible draw detection returning (is_flush_draw, is_straight_draw) */
+/** Backward-compatible draw detection returning (`is_flush_draw`, `is_straight_draw`) */
 #[inline(always)]
 pub fn detect_draws(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, bool) {
     let d = detect_draws_detailed(hole, board);

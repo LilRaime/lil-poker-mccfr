@@ -23,10 +23,10 @@ fn main() {
     let elapsed = start.elapsed();
 
     let strat = solver.export_strategy();
-    println!("Training complete in {:.2?}", elapsed);
+    println!("Training complete in {elapsed:.2?}");
     println!("Infosets: {}", strat.len());
 
-    let json = serde_json::to_string_pretty(&strat).unwrap();
-    std::fs::write(&args.save_path, json).unwrap();
+    let json = serde_json::to_string_pretty(&strat).expect("failed to serialize strategy");
+    std::fs::write(&args.save_path, json).expect("failed to write strategy file");
     println!("Saved strategy to {}", args.save_path);
 }

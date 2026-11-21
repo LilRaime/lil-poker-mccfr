@@ -139,17 +139,17 @@ fn test_strategy_lookup_index() {
 
     let index = StrategyLookupIndex::build_from_map(&map);
 
-    // 1. Preflop lookup
+    /* 1. Preflop lookup */
     let pf_avg = index
         .query_bucket_avg(1, &hole_aa, &[], 0)
         .expect("preflop bucket avg");
-    // Average of [0.0, 0.2, 0.4, 0.2, 0.2, 0.0] and [0.0, 0.0, 0.2, 0.4, 0.3, 0.1]
+    /* Average of [0.0, 0.2, 0.4, 0.2, 0.2, 0.0] and [0.0, 0.0, 0.2, 0.4, 0.3, 0.1] */
     assert!((pf_avg[0] - 0.0).abs() < 1e-6);
     assert!((pf_avg[1] - 0.1).abs() < 1e-6);
     assert!((pf_avg[2] - 0.3).abs() < 1e-6);
     assert!((pf_avg[3] - 0.3).abs() < 1e-6);
 
-    // 2. Blended fallback
+    /* 2. Blended fallback */
     let legal = [
         FOLD,
         CALL_CHECK,
@@ -335,7 +335,7 @@ fn test_fallback_high_blinds_and_turn_owned_lookup() {
     history[1].push(RAISE_MIN);
 
     let bucket = postflop_equity_bucket(&hole_ak, &board_turn);
-    let canonical_turn_key = format!("P:rc|F:cc|T:B{}/", bucket);
+    let canonical_turn_key = format!("P:rc|F:cc|T:B{bucket}/");
     let mut map: HashMap<String, Vec<f64>> = HashMap::new();
     map.insert(canonical_turn_key, vec![0.0, 0.2, 0.3, 0.3, 0.2, 0.0]);
 
@@ -376,7 +376,7 @@ fn test_tier5_truncation_preserves_facing_bet_parity() {
     history[1].push(RAISE_HALF_POT);
 
     let bucket = postflop_equity_bucket(&hole, &board_flop);
-    let check_node_key = format!("P:rc|F:B{}/", bucket);
+    let check_node_key = format!("P:rc|F:B{bucket}/");
     let mut map: HashMap<String, Vec<f64>> = HashMap::new();
     /* Only a check-node (0% fold) exists in the map; Tier-5 truncation must NOT return it for "rh"! */
     map.insert(check_node_key, vec![0.0, 0.90, 0.10, 0.0, 0.0, 0.0]);
@@ -506,19 +506,18 @@ fn test_v2_board_texture_keys_hash_parity_and_fallback() {
     assert_eq!(
         hash_from_infoset_key_str(&tex_key),
         expected_h,
-        "hash_from_infoset_key_str must match incremental stack+texture hash for {}",
-        tex_key
+        "hash_from_infoset_key_str must match incremental stack+texture hash for {tex_key}"
     );
 
     /* 2. Lookup prefers textured key when present and falls back to untextured v1 key when absent */
     let b_mono = postflop_equity_bucket(&hole, &mono_board);
     let mut map: HashMap<String, Vec<f64>> = HashMap::new();
     map.insert(
-        format!("S15|P:rc|F:B{:02}m/", b_mono),
+        format!("S15|P:rc|F:B{b_mono:02}m/"),
         vec![0.0, 0.80, 0.20, 0.0, 0.0, 0.0],
     );
     map.insert(
-        format!("P:rc|F:B{:02}/", b_mono),
+        format!("P:rc|F:B{b_mono:02}/"),
         vec![0.0, 0.10, 0.0, 0.90, 0.0, 0.0],
     );
 

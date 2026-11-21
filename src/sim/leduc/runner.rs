@@ -21,7 +21,7 @@ pub type Strategy = LeducStrategy;
 /** Load Strategy */
 pub fn load_strategy(path: &str) -> Strategy {
     let data = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("Cannot read strategy file: {}", path));
+        .unwrap_or_else(|_| panic!("Cannot read strategy file: {path}"));
     let json: Value = serde_json::from_str(&data).expect("Invalid JSON format");
 
     json.as_object()
@@ -29,7 +29,11 @@ pub fn load_strategy(path: &str) -> Strategy {
         .iter()
         .map(|(k, v)| {
             let arr = v.as_array().expect("Expected array");
-            let p = |i: usize| arr.get(i).and_then(|x| x.as_f64()).unwrap_or(1.0 / 3.0);
+            let p = |i: usize| {
+                arr.get(i)
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0 / 3.0)
+            };
             (k.clone(), [p(0), p(1), p(2)])
         })
         .collect()
@@ -45,7 +49,7 @@ pub fn format_card(card: Card) -> String {
         crate::game::card::Rank::Queen => "Q",
         crate::game::card::Rank::King => "K",
     };
-    format!("'{}{}'", rank_str, suit_symbol)
+    format!("'{rank_str}{suit_symbol}'")
 }
 
 pub fn action_rl_name(action: u8, round: u8) -> &'static str {
@@ -75,7 +79,7 @@ pub fn action_name(action: u8) -> &'static str {
 pub fn prompt_action(legal: &[u8]) -> u8 {
     loop {
         print!("Select action (1-{}): ", legal.len());
-        io::stdout().flush().unwrap();
+        let _ = io::stdout().flush();
 
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_ok() {
@@ -130,7 +134,7 @@ pub fn run_episodes_log_mode(
     let mut pos_stats = [SimStats::default(), SimStats::default()];
 
     for ep in 1..=total_episodes {
-        println!("\n--- Episode {} ---", ep);
+        println!("\n--- Episode {ep} ---");
 
         let mut game = LeducGame::new_random(&mut rng);
         let my_player = match player_arg {
@@ -187,8 +191,7 @@ pub fn run_episodes_log_mode(
                 cumulative_reward += step_reward;
 
                 println!(
-                    "Step {} | Phase: {} | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
-                    step_count, phase_str, card_str, board_str, act_name, pot, my_chips, step_reward
+                    "Step {step_count} | Phase: {phase_str} | Cards: {card_str} | Board: {board_str} | Action: {act_name} | Pot: {pot} | My Chips: {my_chips} | Reward: {step_reward:+.4}"
                 );
 
                 if delay_ms > 0 {
@@ -217,8 +220,7 @@ pub fn run_episodes_log_mode(
             cumulative_reward += term_reward;
 
             println!(
-                "Step {} | Phase: Waiting | Cards: {} | Board: {} | Action: FOLD | Pot: {} | My Chips: {} | Reward: {:+.4}",
-                step_count, card_str, board_str, pot, my_chips, term_reward
+                "Step {step_count} | Phase: Waiting | Cards: {card_str} | Board: {board_str} | Action: FOLD | Pot: {pot} | My Chips: {my_chips} | Reward: {term_reward:+.4}"
             );
         }
 
@@ -251,7 +253,7 @@ pub fn run_episodes_log_mode(
     );
     let avg = total_stats.avg_chips();
     let se = total_stats.se_chips();
-    println!("Average Profit      : {:+.3} chips/hand (±{:.3})", avg, se);
+    println!("Average Profit      : {avg:+.3} chips/hand (±{se:.3})");
     println!(
         "Win Rate (mbb/hand) : {:+.1} mbb/hand (±{:.1})",
         avg * 1000.0,
@@ -268,7 +270,7 @@ pub fn run_episodes_log_mode(
             };
             let p_avg = stat.avg_chips();
             let p_se = stat.se_chips();
-            println!("{}:", pos_name);
+            println!("{pos_name}:");
             println!("  Hands Played    : {}", stat.hands);
             println!("  Win Percentage  : {:.1}%", stat.win_pct());
             println!("  Net Profit      : {:+.1} chips", stat.total_chips);
@@ -287,14 +289,11 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
     let mut rng = SmallRng::from_entropy();
     let mut score = [0.0f64; 2];
 
-    println!(
-        "\n>>> Starting Spectator Mode (Bot vs Random) — {} hands <<<\n",
-        total_hands
-    );
+    println!("\n>>> Starting Spectator Mode (Bot vs Random) — {total_hands} hands <<<\n");
 
     for hand_num in 1..=total_hands {
         println!("------------------------------------------------------------");
-        println!("  🎴 HAND #{}", hand_num);
+        println!("  🎴 HAND #{hand_num}");
         println!("------------------------------------------------------------");
 
         let mut game = LeducGame::new_random(&mut rng);
@@ -379,7 +378,7 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
         score[0] += rets[0];
         score[1] += rets[1];
 
-        println!("\n🏆 HAND #{} RESULT:", hand_num);
+        println!("\n🏆 HAND #{hand_num} RESULT:");
         if let Some(board) = game.board {
             println!("  Board revealed: {}", format_card(board));
             println!(
@@ -406,7 +405,7 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
     }
 
     println!("============================================================");
-    println!("FINAL SCORE after {} hands:", total_hands);
+    println!("FINAL SCORE after {total_hands} hands:");
     println!(
         "  🤖 Model  (P0): {:+.1} chips ({:+.1} mbb/hand)",
         score[0],
@@ -496,30 +495,27 @@ pub fn run_human_mode(strategy: &Strategy, total_hands: u64) {
         human_score += h_ret;
         bot_score += b_ret;
 
-        println!("\n🏆 HAND #{}/{} RESULT:", hand_num, total_hands);
+        println!("\n🏆 HAND #{hand_num}/{total_hands} RESULT:");
         println!("  Bot's Hole Card: {}", format_card(game.hole[bot_p]));
         if let Some(board) = game.board {
             println!("  Board: {}", format_card(board));
         }
 
         if h_ret > 0.0 {
-            println!("  --> 🎉 YOU WIN +{:.0} chips!", h_ret);
+            println!("  --> 🎉 YOU WIN +{h_ret:.0} chips!");
         } else if b_ret > 0.0 {
-            println!("  --> 🤖 BOT WINS +{:.0} chips!", b_ret);
+            println!("  --> 🤖 BOT WINS +{b_ret:.0} chips!");
         } else {
             println!("  --> TIE / SPLIT POT!");
         }
 
-        println!(
-            "Total Score: YOU = {:+.1} chips | BOT = {:+.1} chips\n",
-            human_score, bot_score
-        );
+        println!("Total Score: YOU = {human_score:+.1} chips | BOT = {bot_score:+.1} chips\n");
     }
 
     println!("============================================================");
-    println!("MATCH COMPLETE ({}/{} hands):", total_hands, total_hands);
-    println!("  YOU : {:+.1} chips", human_score);
-    println!("  BOT : {:+.1} chips", bot_score);
+    println!("MATCH COMPLETE ({total_hands}/{total_hands} hands):");
+    println!("  YOU : {human_score:+.1} chips");
+    println!("  BOT : {bot_score:+.1} chips");
     if human_score > bot_score {
         println!("  🎉 CONGRATULATIONS! You beat the Nash Bot!");
     } else if bot_score > human_score {

@@ -7,8 +7,8 @@ pub use crate::game::config::{
 };
 
 /** Calculates geometric bet sizing to smoothly commit remaining stack over remaining streets.
- * SPR = remaining_stack / pot.
- * Multiplier per street = ((1 + 2 * SPR)^(1 / streets_left) - 1) / 2. */
+ * SPR = `remaining_stack` / pot.
+ * Multiplier per street = ((1 + 2 * SPR)^(1 / `streets_left`) - 1) / 2. */
 #[inline]
 pub fn calculate_geometric_bet_size(pot: i32, remaining_stack: i32, streets_left: u32) -> i32 {
     use crate::game::config::BIG_BLIND;

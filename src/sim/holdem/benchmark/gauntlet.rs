@@ -164,12 +164,9 @@ pub fn run_holdem_ablation_benchmark(
     ];
 
     println!("============================================================");
-    println!(
-        "     🔬  Guard Ablation Study (Identical Seed={:?})      ",
-        seed
-    );
+    println!("     🔬  Guard Ablation Study (Identical Seed={seed:?})      ");
     println!("============================================================");
-    println!("Baseline Gauntlet Average : {:+.2} bb/100", base_avg);
+    println!("Baseline Gauntlet Average : {base_avg:+.2} bb/100");
     println!(
         "{:<32} | {:>14} | {:>18}",
         "Disabled Guard Family", "Ablated bb/100", "Guard Value (Δ bb)"
@@ -186,10 +183,7 @@ pub fn run_holdem_ablation_benchmark(
         let ablated_avg: f64 = ablated.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>()
             / ablated.len().max(1) as f64;
         let guard_value = base_avg - ablated_avg;
-        println!(
-            "{:<32} | {:>+11.2} bb | {:>+15.2} bb",
-            g, ablated_avg, guard_value
-        );
+        println!("{g:<32} | {ablated_avg:>+11.2} bb | {guard_value:>+15.2} bb");
     }
     println!("============================================================\n");
 }

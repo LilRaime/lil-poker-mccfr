@@ -24,9 +24,7 @@ struct Args {
 }
 
 fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+    std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
 }
 
 fn main() {
@@ -48,10 +46,7 @@ fn main() {
     let strategy = solver.export_strategy();
     let node_count = strategy.len();
 
-    println!(
-        "Training complete! {} nodes visited in {:.2?}",
-        node_count, elapsed
-    );
+    println!("Training complete! {node_count} nodes visited in {elapsed:.2?}");
 
     /* Export strategy to JSON */
     let json_map: std::collections::HashMap<String, Vec<f64>> = strategy

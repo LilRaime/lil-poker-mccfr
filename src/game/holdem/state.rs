@@ -1,12 +1,21 @@
 /*!
- * TexasHoldemGame state machine, transitions, betting logic, and payoffs.
+ * `TexasHoldemGame` state machine, transitions, betting logic, and payoffs.
  */
 
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, MAX_RAISES_PER_ROUND, NUM_CARDS_DECK,
+    NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_PLAYERS, NUM_ROUNDS, PREFLOP_OPEN_MIN_TOTAL,
+    RAISE_HALF_POT, RAISE_HALF_POT_FLOOR_DRY, RAISE_HALF_POT_FLOOR_RIVER,
+    RAISE_HALF_POT_FLOOR_TURN, RAISE_HALF_POT_FLOOR_WET, RAISE_MIN, RAISE_MIN_AMT, RAISE_THIRD_POT,
+    RAISE_THIRD_POT_FLOOR, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND,
+    STACK_SIZE,
+};
 use rand::Rng;
 
 use super::eval::evaluate_7cards;
 use super::types::{Board, Card, DeckRemaining, RoundHistory, ALL_52_CARDS};
+
+const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexasHoldemGame {
@@ -34,16 +43,15 @@ impl TexasHoldemGame {
 
     pub fn new_random<R: Rng>(rng: &mut R) -> Self {
         let mut deck = ALL_52_CARDS;
-        const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
-        /* Partial Fisher-Yates shuffle: only CARDS_NEEDED (9 cards) needed per episode */
-        for i in 0..CARDS_NEEDED {
+        /* Partial Fisher-Yates shuffle: only CARDS_PER_DEAL (9 cards) needed per episode */
+        for i in 0..CARDS_PER_DEAL {
             let j = rng.gen_range(i..NUM_CARDS_DECK);
             deck.swap(i, j);
         }
 
         let hole0 = [deck[0], deck[1]];
         let hole1 = [deck[2], deck[3]];
-        let runout = &deck[4..CARDS_NEEDED];
+        let runout = &deck[4..CARDS_PER_DEAL];
         let deck_rem = DeckRemaining::from_slice(runout);
         let s0 = evaluate_7cards(&hole0, runout);
         let s1 = evaluate_7cards(&hole1, runout);
@@ -63,7 +71,7 @@ impl TexasHoldemGame {
             board: Board::new(),
             deck_remaining: deck_rem,
             current_player: 0,
-            round: 1,
+            round: ROUND_PREFLOP,
             raises_this_round: 0,
             stack_size: STACK_SIZE,
             contributions: [SMALL_BLIND, BIG_BLIND],
@@ -113,7 +121,7 @@ impl TexasHoldemGame {
             board: Board::new(),
             deck_remaining: deck_rem,
             current_player: 0,
-            round: 1,
+            round: ROUND_PREFLOP,
             raises_this_round: 0,
             stack_size: eff_stack,
             contributions: [SMALL_BLIND.min(eff_stack), BIG_BLIND.min(eff_stack)],
@@ -232,12 +240,12 @@ impl TexasHoldemGame {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 let pot_with_call = pot + diff;
-                let raise_amt = if next.round == 1 && next.raises_this_round == 0 {
+                let raise_amt = if next.round == ROUND_PREFLOP && next.raises_this_round == 0 {
                     /* Preflop initial open-raise: 2.5x BB (250 chips total) */
                     PREFLOP_OPEN_MIN_TOTAL
                         .saturating_sub(next.contributions[next.current_player] + diff)
                         .max(BIG_BLIND)
-                } else if next.round == 1 {
+                } else if next.round == ROUND_PREFLOP {
                     RAISE_MIN_AMT
                 } else {
                     /* Postflop small bet / min-raise: 25% pot (floored at BIG_BLIND, or RAISE_MIN_AMT on raises) */
@@ -263,12 +271,12 @@ impl TexasHoldemGame {
             RAISE_HALF_POT => {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
-                let is_wet = next.round == 2 && next.is_wet_flop;
+                let is_wet = next.round == ROUND_FLOP && next.is_wet_flop;
                 let pot_with_call = pot + diff;
-                let raise_amt = if next.round == 4 {
+                let raise_amt = if next.round == ROUND_RIVER {
                     /* River: Polarized 125% pot overbet */
                     (pot_with_call * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER)
-                } else if next.round == 3 {
+                } else if next.round == ROUND_TURN {
                     /* Turn: 75% pot bet for geometric pot growth */
                     (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)
                 } else if is_wet {
@@ -309,21 +317,21 @@ impl TexasHoldemGame {
                 next.resolve_showdown();
                 return next;
             }
-            if next.round == 1 {
+            if next.round == ROUND_PREFLOP {
                 /* Deal Flop (3 cards). Postflop BB (player 1) acts first! */
-                next.round = 2;
+                next.round = ROUND_FLOP;
                 next.board.push(next.deck_remaining.deal_one());
                 next.board.push(next.deck_remaining.deal_one());
                 next.board.push(next.deck_remaining.deal_one());
                 next.current_player = 1;
-            } else if next.round == 2 {
+            } else if next.round == ROUND_FLOP {
                 /* Deal Turn (1 card). Postflop BB (player 1) acts first! */
-                next.round = 3;
+                next.round = ROUND_TURN;
                 next.board.push(next.deck_remaining.deal_one());
                 next.current_player = 1;
-            } else if next.round == 3 {
+            } else if next.round == ROUND_TURN {
                 /* Deal River (1 card). Postflop BB (player 1) acts first! */
-                next.round = 4;
+                next.round = ROUND_RIVER;
                 next.board.push(next.deck_remaining.deal_one());
                 next.current_player = 1;
             } else {

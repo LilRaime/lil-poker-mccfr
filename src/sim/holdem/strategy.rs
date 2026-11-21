@@ -3,16 +3,19 @@ use std::collections::HashMap;
 
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
-use crate::game::config::*;
+use crate::game::config::{HOLDEM_NUM_ACTIONS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::Card as HCard;
 
-/** Hold'em strategy: 6 actions [fold, call_check, raise_min, raise_third_pot, raise_half_pot, all_in] */
+/** Hold'em strategy: 6 actions [`fold`, `call_check`, `raise_min`, `raise_third_pot`, `raise_half_pot`, `all_in`] */
 pub type HoldemStrategy = HashMap<String, [f64; HOLDEM_NUM_ACTIONS]>;
 
 /** Hold'em Strategy Loader (supports both legacy 4-action, modern 6-action JSON, and .bin/.bincode formats) */
 pub fn load_holdem_strategy(path: &str) -> Option<HoldemStrategy> {
-    let prefer_json =
-        path.ends_with(".json") || path.contains(".json.") || path.contains(".tmp.json");
+    let prefer_json = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        || path.contains(".json.")
+        || path.contains(".tmp.json");
 
     if !prefer_json {
         let file_bincode = std::fs::File::open(path).ok()?;
@@ -99,24 +102,24 @@ pub fn find_strategy_or_fallback(
         ..Default::default()
     });
 
-    let prefix = if round == 1 {
+    let prefix = if round == ROUND_PREFLOP {
         let (_, name) = preflop_bucket(hole[0], hole[1]);
-        format!("P:{}/", name)
+        format!("P:{name}/")
     } else {
         let bucket = postflop_equity_bucket(hole, board);
         let r_code = match round {
-            2 => "F",
-            3 => "T",
-            4 => "R",
+            ROUND_FLOP => "F",
+            ROUND_TURN => "T",
+            ROUND_RIVER => "R",
             _ => "X",
         };
-        format!("{}:B{:02}", r_code, bucket)
+        format!("{r_code}:B{bucket:02}")
     };
 
     let matches: Vec<&[f64; HOLDEM_NUM_ACTIONS]> = strategy
         .iter()
         .filter(|(k, _)| {
-            if round == 1 {
+            if round == ROUND_PREFLOP {
                 k.starts_with(&prefix)
             } else {
                 k.contains(&prefix)

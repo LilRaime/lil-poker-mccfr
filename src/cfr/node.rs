@@ -1,11 +1,11 @@
 /*!
  * Lock-free information set node for parallel MCCFR.
- * Stores regret and strategy sums as scaled integers (× SCALE) in AtomicI64.
+ * Stores regret and strategy sums as scaled integers (× `SCALE`) in `AtomicI64`.
  * Uses atomic CAS clamping for true CFR+ (regrets floored at 0).
  */
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/** Fixed-point scale: 1.0 → 1_000_000 in integer storage. */
+/** Fixed-point scale: 1.0 → `1_000_000` in integer storage. */
 const SCALE: f64 = 1_000_000.0;
 pub const MAX_ACTIONS: usize = crate::game::config::HOLDEM_NUM_ACTIONS;
 pub const REGRET_FLOOR_I64: i64 = -200_000_000_000;
@@ -132,7 +132,7 @@ impl InfosetNode {
         }
     }
 
-    /** Fast lock-free regret update via fetch_add (used in epoch-based DCFR / Linear CFR). */
+    /** Fast lock-free regret update via `fetch_add` (used in epoch-based DCFR / Linear CFR). */
     #[inline(always)]
     pub fn update_regrets_linear(&self, regrets: &[f64]) {
         for (i, &r) in regrets.iter().take(self.num_actions).enumerate() {
@@ -186,8 +186,8 @@ impl InfosetNode {
     }
 
     /** Discounted CFR (DCFR, Brown & Sandholm 2019):
-     * Discounts positive regrets by pos_discount = t^alpha / (t^alpha + 1),
-     * and negative regrets by neg_discount = t^beta / (t^beta + 1). */
+     * Discounts positive regrets by `pos_discount` = t^alpha / (t^alpha + 1),
+     * and negative regrets by `neg_discount` = t^beta / (t^beta + 1). */
     #[inline(always)]
     pub fn update_regrets_dcfr(&self, regrets: &[f64], pos_discount: f64, neg_discount: f64) {
         if (pos_discount - 1.0).abs() < 1e-9 && (neg_discount - 1.0).abs() < 1e-9 {

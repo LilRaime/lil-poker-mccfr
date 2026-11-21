@@ -5,11 +5,17 @@ use std::time::Duration;
 use rand::rngs::SmallRng;
 
 use super::strategy::{find_strategy_or_fallback, HoldemStrategy};
-use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+use crate::cfr::abstraction::{
+    postflop_equity_bucket, preflop_bucket, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
+    BUCKET_TRIPS_MIN,
+};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
 use crate::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
 use crate::cfr::subgame::{SubgameRequest, SubgameSolver};
-use crate::game::config::*;
+use crate::game::config::{
+    BIG_BLIND, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND, STACK_SIZE,
+    SUBGAME_FLOP_TRIGGER_POT,
+};
 use crate::game::holdem::{
     TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -130,10 +136,10 @@ struct SimBotTurn<'a> {
 
 fn phase_name(round: u8) -> &'static str {
     match round {
-        1 => "Preflop",
-        2 => "Flop",
-        3 => "Turn",
-        4 => "River",
+        ROUND_PREFLOP => "Preflop",
+        ROUND_FLOP => "Flop",
+        ROUND_TURN => "Turn",
+        ROUND_RIVER => "River",
         _ => "Waiting",
     }
 }
@@ -143,7 +149,7 @@ fn format_board_str(board: &[crate::game::holdem::Card]) -> String {
         "[{}]",
         board
             .iter()
-            .map(|c| c.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -178,7 +184,7 @@ fn step_bot_turn(
 
     let (raw_probs, used_subgame) =
         compute_bot_raw_probs(game, cfg, opp_tracker, state, &legal, to_call, pot);
-    let current_bucket = if game.round == 1 {
+    let current_bucket = if game.round == ROUND_PREFLOP {
         preflop_bucket(game.hole[cfg.my_player][0], game.hole[cfg.my_player][1]).0
     } else {
         postflop_equity_bucket(&game.hole[cfg.my_player], &game.board)
@@ -246,7 +252,8 @@ fn compute_bot_raw_probs(
     let initial_chips = state.initial_chips;
     let subgame_ctx = &mut state.subgame_ctx;
     let used_subgame = cfg.enable_subgame_search
-        && (game.round >= 3 || (game.round == 2 && pot >= SUBGAME_FLOP_TRIGGER_POT));
+        && (game.round >= ROUND_TURN
+            || (game.round == ROUND_FLOP && pot >= SUBGAME_FLOP_TRIGGER_POT));
     let raw_probs = if used_subgame {
         let obs_vpip = if opp_tracker.total_hands >= 6 || opp_tracker.is_overbet_bluffer() {
             Some(opp_tracker.vpip_ratio())
@@ -348,19 +355,21 @@ fn select_bot_sim_action(
     opp_tracker: &OpponentTracker,
     rng: &mut SmallRng,
 ) -> (u8, crate::cfr::opponent_model::DecisionTrace) {
-    let short_choice =
-        if game.round == 1 && turn.cur_my_chips > 0 && turn.cur_my_chips <= BIG_BLIND * 12 {
-            opp_tracker.select_short_stack_preflop_action(&ShortStackRequest {
-                bucket: turn.current_bucket,
-                to_call: turn.to_call,
-                pot: turn.pot,
-                my_chips: turn.cur_my_chips,
-                legal_actions: turn.legal,
-                ..Default::default()
-            })
-        } else {
-            None
-        };
+    let short_choice = if game.round == ROUND_PREFLOP
+        && turn.cur_my_chips > 0
+        && turn.cur_my_chips <= BIG_BLIND * 12
+    {
+        opp_tracker.select_short_stack_preflop_action(&ShortStackRequest {
+            bucket: turn.current_bucket,
+            to_call: turn.to_call,
+            pot: turn.pot,
+            my_chips: turn.cur_my_chips,
+            legal_actions: turn.legal,
+            ..Default::default()
+        })
+    } else {
+        None
+    };
 
     if let Some((short_act, short_reason)) = short_choice {
         let total_p = (turn.pot + turn.to_call).max(1);
@@ -370,7 +379,7 @@ fn select_bot_sim_action(
             short_act,
             crate::cfr::opponent_model::DecisionTrace {
                 bucket: turn.current_bucket,
-                round: 1,
+                round: ROUND_PREFLOP,
                 pot_odds_bps: po_bps,
                 raw_top_action: short_act,
                 final_action: short_act,
@@ -406,7 +415,11 @@ fn apply_sim_post_selection_guards(
     reasons: &mut Vec<&'static str>,
 ) {
     /* Live-parity post-selection guardrails */
-    if game.round == 4 && turn.to_call == 0 && turn.current_bucket < 65 && *act >= RAISE_MIN {
+    if game.round == ROUND_RIVER
+        && turn.to_call == 0
+        && turn.current_bucket < BUCKET_TRIPS_MIN
+        && *act >= RAISE_MIN
+    {
         let turn_hist = game.history[2].as_slice();
         let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
         let opp_was_last_turn_raiser = turn_hist
@@ -414,21 +427,20 @@ fn apply_sim_post_selection_guards(
             .enumerate()
             .rev()
             .find(|&(_, &a)| a >= RAISE_MIN)
-            .map(|(idx, _)| {
+            .is_some_and(|(idx, _)| {
                 let is_oop_action = idx % 2 == 0;
                 (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
-            })
-            .unwrap_or(false);
+            });
         if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
             *act = CALL_CHECK;
             reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
         }
     }
-    if game.round == 2
+    if game.round == ROUND_FLOP
         && turn.to_call == 0
         && my_player == 1
         && *act == RAISE_MIN
-        && turn.current_bucket < 40
+        && turn.current_bucket < BUCKET_TOP_PAIR_MIN
         && opp_tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
     {
         let pf_hist = game.history[0].as_slice();
@@ -442,13 +454,13 @@ fn apply_sim_post_selection_guards(
     }
     if turn.to_call > 0 && *act == H_FOLD && turn.legal.contains(&CALL_CHECK) {
         let new_pot = (turn.pot + turn.to_call).max(1);
-        let is_postflop_micro_commit = game.round >= 2
+        let is_postflop_micro_commit = game.round >= ROUND_FLOP
             && (turn.to_call * 8 <= new_pot
-                || (turn.to_call * 6 <= new_pot && turn.current_bucket >= 15)
+                || (turn.to_call * 6 <= new_pot && turn.current_bucket >= BUCKET_STRONG_DRAW_MIN)
                 || (turn.cur_my_chips > 0
                     && turn.cur_my_chips <= BIG_BLIND
                     && turn.pot >= BIG_BLIND * 4));
-        let is_preflop_priced_in = game.round == 1
+        let is_preflop_priced_in = game.round == ROUND_PREFLOP
             && (turn.to_call <= BIG_BLIND * 2
                 || crate::cfr::abstraction::preflop_strength_tier(turn.current_bucket) <= 6)
             && turn.to_call * 6 <= new_pot;
@@ -471,18 +483,18 @@ fn step_opponent_turn(
     if legal.is_empty() {
         return false;
     }
-    let facing_cbet = game.round == 2 && game.raises_this_round > 0;
+    let facing_cbet = game.round == ROUND_FLOP && game.raises_this_round > 0;
     let prev_opp_contrib = game.contributions[cp];
     let opp_to_call_before = (game.contributions[1 - cp] - prev_opp_contrib).max(0);
     let prev_pot = game.contributions[0] + game.contributions[1];
     let round_before = game.round;
-    let prior_pf_raises = if round_before == 1 {
+    let prior_pf_raises = if round_before == ROUND_PREFLOP {
         game.history[0].iter().filter(|&&a| a >= RAISE_MIN).count()
     } else {
         0
     };
     let act = sample_opponent_action(cfg.opp_archetype, cfg.opp_strategy, game, cp, rng);
-    if round_before == 1 {
+    if round_before == ROUND_PREFLOP {
         if pf_state.opp_pf_pfr && prior_pf_raises >= 2 && !pf_state.opp_faced_3bet_recorded {
             opp_tracker.record_facing_3bet(act == H_FOLD);
             pf_state.opp_faced_3bet_recorded = true;

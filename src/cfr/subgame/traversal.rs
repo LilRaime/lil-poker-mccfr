@@ -4,16 +4,23 @@
  */
 
 use super::solver::SubgameSolver;
-use crate::cfr::abstraction::{hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket};
+use crate::cfr::abstraction::{
+    hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket, BUCKET_TRIPS_MIN,
+    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+};
 use crate::cfr::fallback::{
     get_holdem_fallback_strategy, get_postflop_fallback_by_bucket, FallbackRequest,
 };
 use crate::cfr::node::InfosetNode;
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, NUM_COMMUNITY_CARDS, RAISE_MIN, ROUND_FLOP,
+    ROUND_PREFLOP, ROUND_RIVER,
+};
 use crate::game::holdem::TexasHoldemGame;
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use std::collections::HashMap;
 
 /** Light regret-matching prior weight for newly expanded subgame child nodes.
@@ -26,9 +33,9 @@ fn compute_subgame_key_hash(
     game: &TexasHoldemGame,
     start_round: u8,
     cur_p: usize,
-    precomputed_buckets: &[[u8; 2]; 3],
+    precomputed_buckets: [[u8; 2]; 3],
 ) -> u64 {
-    let mut h = if game.round >= 2 && game.round <= 4 {
+    let mut h = if (ROUND_FLOP..=ROUND_RIVER).contains(&game.round) {
         let bucket = precomputed_buckets[(game.round - 2) as usize][cur_p];
         hash_holdem_infoset_key_with_bucket(&game.hole[cur_p], bucket, game.round, &game.history)
     } else {
@@ -36,7 +43,7 @@ fn compute_subgame_key_hash(
     };
     /* Mix prior street actions on deeper streets of 2-street subgames so distinct branches
      * (e.g. Flop c-c vs Flop r-c leading into the same Turn) never alias in the node table. */
-    if game.round > start_round && (1..=4).contains(&start_round) {
+    if game.round > start_round && (ROUND_PREFLOP..=ROUND_RIVER).contains(&start_round) {
         let prev_acts = game.history[(start_round - 1) as usize].as_slice();
         for &a in prev_acts {
             h ^= (a as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -94,12 +101,12 @@ pub(super) fn create_prior_infoset_node(
     my_player: usize,
     opp_prior_bias: Option<(f64, f64)>,
     legal: &[u8],
-    precomputed_buckets: &[[u8; 2]; 3],
+    precomputed_buckets: [[u8; 2]; 3],
 ) -> InfosetNode {
     let opp = 1 - cur_p;
     let to_call = (game.contributions[opp] - game.contributions[cur_p]).max(0);
     let pot = game.contributions[0] + game.contributions[1];
-    let postflop_bucket = if game.round >= 2 && game.round <= 4 {
+    let postflop_bucket = if (ROUND_FLOP..=ROUND_RIVER).contains(&game.round) {
         Some(precomputed_buckets[(game.round - 2) as usize][cur_p] as usize)
     } else {
         None
@@ -120,7 +127,7 @@ pub(super) fn create_prior_infoset_node(
     /* Dampen call/raise prior weights when facing >2x pot jams with non-trips hands
      * so SubgameSolver does not hallucinate call-EV for massive overbet shoves. */
     if let Some(bucket) = postflop_bucket {
-        if to_call > 0 && legal.contains(&FOLD) && bucket < 65 {
+        if to_call > 0 && legal.contains(&FOLD) && bucket < BUCKET_TRIPS_MIN {
             let pre_bet_pot = (pot - to_call).max(1);
             if to_call > pre_bet_pot * 2 {
                 let mut added_fold = 0.0f64;
@@ -172,21 +179,21 @@ pub(super) fn create_prior_infoset_node(
     node
 }
 
-pub(super) struct TraversalCtx<'a> {
+pub(super) struct TraversalCtx {
     pub start_round: u8,
     pub root_hash: u64,
     pub my_player: usize,
     pub opp_prior_bias: Option<(f64, f64)>,
     pub updating_player: usize,
     pub weight: f64,
-    pub precomputed_buckets: &'a [[u8; 2]; 3],
+    pub precomputed_buckets: [[u8; 2]; 3],
 }
 
 impl SubgameSolver {
     pub(super) fn cfr_shared(
         &self,
         game: &TexasHoldemGame,
-        ctx: &TraversalCtx<'_>,
+        ctx: &TraversalCtx,
         nodes: &DashMap<u64, InfosetNode>,
         rng: &mut SmallRng,
     ) -> f64 {
@@ -267,7 +274,7 @@ impl SubgameSolver {
     pub(super) fn cfr_local(
         &self,
         game: &TexasHoldemGame,
-        ctx: &TraversalCtx<'_>,
+        ctx: &TraversalCtx,
         nodes: &mut HashMap<u64, InfosetNode>,
         rng: &mut SmallRng,
     ) -> f64 {
@@ -351,24 +358,27 @@ impl SubgameSolver {
 pub(super) fn evaluate_leaf_continuation(
     game: &TexasHoldemGame,
     updating_player: usize,
-    precomputed_buckets: &[[u8; 2]; 3],
+    precomputed_buckets: [[u8; 2]; 3],
 ) -> f64 {
     let base_ev = evaluate_leaf_rollout(game, updating_player);
     let max_c = game.contributions[0].max(game.contributions[1]);
     let eff_rem = (game.stack_size - max_c).max(0) as f64;
-    if eff_rem <= 1.0 || game.round < 2 || game.round > 4 {
+    if eff_rem <= 1.0 || game.round < ROUND_FLOP || game.round > ROUND_RIVER {
         return base_ev;
     }
     let pot = (game.contributions[0] + game.contributions[1]) as f64;
     let street_idx = (game.round - 2) as usize;
-    let b0 = precomputed_buckets[street_idx][0];
-    let b1 = precomputed_buckets[street_idx][1];
+    let b0 = precomputed_buckets[street_idx][0] as usize;
+    let b1 = precomputed_buckets[street_idx][1] as usize;
     /* Value-betting continuation bonus: when one player holds 2P+ (>= 57) and the other holds
      * a bluff-catcher/pair (28..=56), the stronger hand extracts additional chips on average. */
     let cont_scale = (pot * 0.20).min(eff_rem * 0.35);
-    let cont_p0 = if b0 >= 57 && (28..=56).contains(&b1) {
+    let cont_p0 = if b0 >= BUCKET_TWO_PAIR_MIN
+        && (BUCKET_WEAK_PAIR_MIN..BUCKET_TWO_PAIR_MIN).contains(&b1)
+    {
         cont_scale
-    } else if b1 >= 57 && (28..=56).contains(&b0) {
+    } else if b1 >= BUCKET_TWO_PAIR_MIN && (BUCKET_WEAK_PAIR_MIN..BUCKET_TWO_PAIR_MIN).contains(&b0)
+    {
         -cont_scale
     } else {
         0.0
@@ -418,13 +428,12 @@ pub(super) fn evaluate_leaf_rollout(game: &TexasHoldemGame, updating_player: usi
 }
 
 pub(super) fn sample_action(strategy: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 {
-    use rand::Rng;
     let mut sum = 0.0f64;
     let legal_probs: Vec<f64> = legal.iter().map(|&a| strategy[a as usize]).collect();
     let total: f64 = legal_probs.iter().sum();
 
     if total <= 0.0 {
-        return *legal.choose(rng).unwrap();
+        return legal.choose(rng).copied().unwrap_or(CALL_CHECK);
     }
 
     let r: f64 = rng.gen();
@@ -435,5 +444,5 @@ pub(super) fn sample_action(strategy: &[f64], legal: &[u8], rng: &mut SmallRng) 
         }
     }
 
-    *legal.last().unwrap()
+    legal.last().copied().unwrap_or(CALL_CHECK)
 }

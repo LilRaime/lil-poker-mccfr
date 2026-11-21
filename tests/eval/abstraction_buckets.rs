@@ -23,8 +23,7 @@ fn test_draw_detection_and_equity_buckets() {
     let bucket_fd = postflop_equity_bucket(&hole_fd, &board_fd);
     assert!(
         bucket_fd >= 15,
-        "Flush draw with Ace should be high tier draw (bucket >= 15), got {}",
-        bucket_fd
+        "Flush draw with Ace should be high tier draw (bucket >= 15), got {bucket_fd}"
     );
 
     /* One Pair AA vs One Pair 22 should NOT have the same bucket! */
@@ -47,9 +46,7 @@ fn test_draw_detection_and_equity_buckets() {
     let bucket_22 = postflop_equity_bucket(&hole_22, &board_2);
     assert!(
         bucket_aa > bucket_22,
-        "Pair of Aces ({}) must be in higher bucket than Pair of Twos ({})",
-        bucket_aa,
-        bucket_22
+        "Pair of Aces ({bucket_aa}) must be in higher bucket than Pair of Twos ({bucket_22})"
     );
 }
 
@@ -115,8 +112,7 @@ fn test_postflop_pair_hierarchy_and_board_pairs() {
     let bucket_board_pair = postflop_equity_bucket(&hole_junk, &board_aa_k);
     assert!(
         bucket_board_pair <= 10,
-        "7-2 on A-A-K board must be evaluated as unpaired high card (<= 10, got {})",
-        bucket_board_pair
+        "7-2 on A-A-K board must be evaluated as unpaired high card (<= 10, got {bucket_board_pair})"
     );
 }
 
@@ -161,9 +157,7 @@ fn test_board_texture_and_redraw_potential() {
 
     assert!(
         bucket_with_fd > bucket_dry,
-        "TPTK with Nut Flush Draw ({}) must have higher bucket than dry TPTK ({})",
-        bucket_with_fd,
-        bucket_dry
+        "TPTK with Nut Flush Draw ({bucket_with_fd}) must have higher bucket than dry TPTK ({bucket_dry})"
     );
 }
 
@@ -237,9 +231,7 @@ fn test_kicker_aware_flush_and_straight_abstraction() {
 
     assert!(
         b_nut_st > b_board_st,
-        "Holding Ten must produce higher straight bucket ({}) than playing board ({})",
-        b_nut_st,
-        b_board_st
+        "Holding Ten must produce higher straight bucket ({b_nut_st}) than playing board ({b_board_st})"
     );
     assert_eq!(
         b_board_st, 73,
@@ -263,8 +255,7 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     let bucket_aa = postflop_equity_bucket(&hole_aa, &board_paired);
     assert_eq!(
         bucket_aa, 52,
-        "AA on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {}",
-        bucket_aa
+        "AA on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {bucket_aa}"
     );
 
     /* Underpair to board pair: 55 on 8-8-2 */
@@ -275,8 +266,7 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     let bucket_55 = postflop_equity_bucket(&hole_55, &board_paired);
     assert_eq!(
         bucket_55, 37,
-        "55 on 8-8-2 must be bucket 37 (Pocket pair below 1 board overcard rank), got {}",
-        bucket_55
+        "55 on 8-8-2 must be bucket 37 (Pocket pair below 1 board overcard rank), got {bucket_55}"
     );
 
     /* Overpair KK on 8-8-2 */
@@ -287,8 +277,7 @@ fn test_pocket_pair_above_and_below_board_pair_buckets() {
     let bucket_kk = postflop_equity_bucket(&hole_kk, &board_paired);
     assert_eq!(
         bucket_kk, 52,
-        "KK on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {}",
-        bucket_kk
+        "KK on 8-8-2 must be bucket 52 (Vulnerable High Overpair on paired board), got {bucket_kk}"
     );
 }
 
@@ -312,18 +301,14 @@ fn test_range_equity_and_nash_short_stack_thresholds() {
     let eq_vs_tight_bet = calculate_range_equity(&hole_tp, &board_river, 0.20, true, 1);
     assert!(
         eq_vs_loose > eq_vs_tight_bet,
-        "Equity against wide passive range ({:.3}) must exceed equity against tight aggressive range ({:.3})",
-        eq_vs_loose,
-        eq_vs_tight_bet
+        "Equity against wide passive range ({eq_vs_loose:.3}) must exceed equity against tight aggressive range ({eq_vs_tight_bet:.3})"
     );
 
     /* Multi-way equity discount must reduce expected equity compared to heads-up */
     let eq_multiway = calculate_range_equity(&hole_tp, &board_river, 0.50, false, 3);
     assert!(
         eq_multiway < eq_vs_loose,
-        "Multi-way equity ({:.3}) must be lower than heads-up equity ({:.3})",
-        eq_multiway,
-        eq_vs_loose
+        "Multi-way equity ({eq_multiway:.3}) must be lower than heads-up equity ({eq_vs_loose:.3})"
     );
 
     /* 2. Nash short-stack push/fold thresholds */
@@ -367,8 +352,7 @@ fn test_backdoor_draws_and_trips_vs_set_bucket_separation() {
     let b_flop = postflop_equity_bucket(&hole_bdfd, &board_flop);
     assert!(
         (11..=14).contains(&b_flop),
-        "Flop Nut Backdoor FD + Overcard must be in weak draw range 11..=14, got {}",
-        b_flop
+        "Flop Nut Backdoor FD + Overcard must be in weak draw range 11..=14, got {b_flop}"
     );
 
     let board_turn_brick = [
@@ -380,8 +364,7 @@ fn test_backdoor_draws_and_trips_vs_set_bucket_separation() {
     let b_turn = postflop_equity_bucket(&hole_bdfd, &board_turn_brick);
     assert!(
         b_turn <= 10,
-        "Bricked backdoor draw on Turn must revert to High Card (<= 10), got {}",
-        b_turn
+        "Bricked backdoor draw on Turn must revert to High Card (<= 10), got {b_turn}"
     );
 
     /* 2. Strict separation between Visible Trips (65..=67) and Disguised Sets (68..=72) */
@@ -408,19 +391,15 @@ fn test_backdoor_draws_and_trips_vs_set_bucket_separation() {
     let b_set = postflop_equity_bucket(&hole_low_set, &board_unpaired);
     assert!(
         (65..=67).contains(&b_trips),
-        "Visible trips without flush redraw must be in 65..=67, got {}",
-        b_trips
+        "Visible trips without flush redraw must be in 65..=67, got {b_trips}"
     );
     assert!(
         (68..=72).contains(&b_set),
-        "Disguised pocket-pair set must be in 68..=72, got {}",
-        b_set
+        "Disguised pocket-pair set must be in 68..=72, got {b_set}"
     );
     assert!(
         b_set > b_trips,
-        "Disguised low set ({}) must rank strictly higher than visible top-kicker trips ({})",
-        b_set,
-        b_trips
+        "Disguised low set ({b_set}) must rank strictly higher than visible top-kicker trips ({b_trips})"
     );
 }
 
@@ -445,13 +424,11 @@ fn test_postflop_board_quads_and_double_paired_draw() {
     let ace_quad_bucket = postflop_equity_bucket(&hole_ace, &board_quads);
     assert!(
         weak_quad_bucket < 15,
-        "Board quads with weak 5-4 kicker must be trash bucket < 15, got {}",
-        weak_quad_bucket
+        "Board quads with weak 5-4 kicker must be trash bucket < 15, got {weak_quad_bucket}"
     );
     assert!(
         ace_quad_bucket >= 50,
-        "Board quads with Ace-high kicker must remain strong >= 50, got {}",
-        ace_quad_bucket
+        "Board quads with Ace-high kicker must remain strong >= 50, got {ace_quad_bucket}"
     );
 
     let board_double_paired = [
@@ -515,7 +492,6 @@ fn test_full_house_pair_rank_and_counterfeited_pocket_pair_buckets() {
     let b_22 = postflop_equity_bucket(&hole_22, &board_double_pair);
     assert!(
         b_22 <= 10,
-        "Counterfeited pocket pair 22 on KKQQ7 must be bucket <= 10, got {}",
-        b_22
+        "Counterfeited pocket pair 22 on KKQQ7 must be bucket <= 10, got {b_22}"
     );
 }

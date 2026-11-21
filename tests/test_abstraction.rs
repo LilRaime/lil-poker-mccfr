@@ -18,7 +18,7 @@ fn test_holdem_infoset_key_consistency() {
     ];
     let history_dummy = [vec![1u8, 2u8], vec![], vec![], vec![]];
     let key = get_holdem_infoset_key(&hole, &board, 2, &history_dummy);
-    assert!(key.starts_with("F:B"), "Key should be for Flop: {}", key);
+    assert!(key.starts_with("F:B"), "Key should be for Flop: {key}");
     assert!(key.ends_with("/"), "History for round 2 was empty");
 
     let hash = hash_holdem_infoset_key(&hole, &board, 2, &history_dummy);

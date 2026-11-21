@@ -1,5 +1,5 @@
 /*!
- * Fast board texture analysis (Monotone, TwoTone, Rainbow, Paired, Connected).
+ * Fast board texture analysis (`Monotone`, `TwoTone`, `Rainbow`, Paired, Connected).
  */
 
 use crate::game::holdem::Card;

@@ -9,9 +9,13 @@ use super::{deal_cards_prefix, HoldemBenchmarkResult};
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::SubgameSolver;
-use crate::game::config::*;
+use crate::game::config::{
+    BIG_BLIND, BIG_BLIND_F64, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_PLAYERS,
+};
 use crate::game::holdem::TexasHoldemGame;
 use crate::sim::stats::SimStats;
+
+const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BlindScheduleConfig<'a> {
@@ -135,7 +139,6 @@ pub fn run_holdem_blind_schedule_benchmark(cfg: &BlindScheduleConfig<'_>) -> Hol
     let mut total_matches = 0u64;
     let mut last_lvl_idx: Option<usize> = None;
 
-    const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
     for ep in 0..total_deals {
         let match_offset = ep % deals_per_match;
         if match_offset == 0 {
@@ -152,10 +155,10 @@ pub fn run_holdem_blind_schedule_benchmark(cfg: &BlindScheduleConfig<'_>) -> Hol
             last_lvl_idx = Some(lvl_idx);
         }
 
-        let deck = deal_cards_prefix(&mut rng, CARDS_NEEDED);
+        let deck = deal_cards_prefix(&mut rng, CARDS_PER_DEAL);
         let hole_a = [deck[0], deck[1]];
         let hole_b = [deck[2], deck[3]];
-        let runout = &deck[4..CARDS_NEEDED];
+        let runout = &deck[4..CARDS_PER_DEAL];
         let stack_chips = (level.stack_bb as i32) * BIG_BLIND;
 
         let game1 = TexasHoldemGame::new_dealt_with_stack(hole_a, hole_b, runout, stack_chips);
@@ -256,8 +259,7 @@ fn summarize_blind_schedule_result(
         }
         println!("------------------------------------------------------------");
         println!(
-            "Overall Average   : {:>+8.2} bb/100 (95% CI [{:>+7.2}, {:>+7.2}])",
-            win_rate_bb100, ci_low, ci_high
+            "Overall Average   : {win_rate_bb100:>+8.2} bb/100 (95% CI [{ci_low:>+7.2}, {ci_high:>+7.2}])"
         );
         if s.total_matches > 0 {
             println!(

@@ -32,10 +32,7 @@ pub(super) fn print_guard_telemetry(telemetry: &HashMap<String, (u64, f64)>, tot
     for (reason, cnt, net) in rows {
         let pct = (cnt as f64 / total_hands.max(1) as f64) * 100.0;
         let avg_bb100 = ((net / cnt.max(1) as f64) / BIG_BLIND_F64) * 100.0;
-        println!(
-            "{:<32} | {:>9} | {:>7.1}% | {:>+13.2} bb",
-            reason, cnt, pct, avg_bb100
-        );
+        println!("{reason:<32} | {cnt:>9} | {pct:>7.1}% | {avg_bb100:>+13.2} bb");
     }
 }
 
@@ -108,11 +105,11 @@ pub(super) fn print_positional_breakdown(pos_stats: &[SimStats; 2]) {
         };
         let p_avg = stat.avg_chips();
         let p_se = stat.se_chips();
-        println!("{}:", pos_name);
+        println!("{pos_name}:");
         println!("  Hands Played    : {}", stat.hands);
         println!("  Win Percentage  : {:.1}%", stat.win_pct());
         println!("  Net Profit      : {:+.1} chips", stat.total_chips);
-        println!("  Avg Profit/Hand : {:+.3} chips (±{:.3})", p_avg, p_se);
+        println!("  Avg Profit/Hand : {p_avg:+.3} chips (±{p_se:.3})");
         println!(
             "  Win Rate        : {:+.2} bb/100",
             (p_avg / BIG_BLIND_F64) * 100.0

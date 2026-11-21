@@ -180,9 +180,7 @@ fn test_opponent_reach_distribution_position_aware() {
     /* Raiser has full weight on AA (1.0), whereas caller has discounted slowplay weight (0.35) */
     assert!(
         w_aa_raiser > w_aa_caller,
-        "AA weight for raiser ({}) must exceed AA weight for caller ({})",
-        w_aa_raiser,
-        w_aa_caller
+        "AA weight for raiser ({w_aa_raiser}) must exceed AA weight for caller ({w_aa_caller})"
     );
     assert_eq!(w_aa_raiser, 1.0);
     assert_eq!(w_aa_caller, 0.35);
@@ -419,13 +417,11 @@ fn test_opponent_reach_distribution_raiser_ako_weight() {
     /* AKo is Tier 1, so for raiser it must have weight 1.0 (not 0.25 as in buggy index matching!) */
     assert_eq!(
         w_ako, 1.0,
-        "AKo for preflop raiser must have full 1.0 weight, got {}",
-        w_ako
+        "AKo for preflop raiser must have full 1.0 weight, got {w_ako}"
     );
     assert_eq!(
         w_72, 0.04,
-        "72o for preflop raiser must have trash 0.04 weight, got {}",
-        w_72
+        "72o for preflop raiser must have trash 0.04 weight, got {w_72}"
     );
 }
 
@@ -490,15 +486,12 @@ fn test_subgame_reach_active_street_actor_separation() {
                 (c[0].rank == Rank::Eight && c[1].rank == Rank::Three)
                     || (c[0].rank == Rank::Three && c[1].rank == Rank::Eight)
             })
-            .map(|(_, &w)| w)
-            .unwrap_or(0.0)
+            .map_or(0.0, |(_, &w)| w)
     };
     let w_check = air_weight(&target0_as_checker);
     let w_bet = air_weight(&target0_as_bettor);
     assert!(
         w_check > w_bet * 2.0 && target0_as_checker.total_weight > target0_as_bettor.total_weight,
-        "Active-street parity must assign idx 0 (check, air w={:.4}) to target=0 when active=0 rather than idx 1 (bet, air w={:.4})",
-        w_check,
-        w_bet
+        "Active-street parity must assign idx 0 (check, air w={w_check:.4}) to target=0 when active=0 rather than idx 1 (bet, air w={w_bet:.4})"
     );
 }

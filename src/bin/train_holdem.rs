@@ -88,7 +88,7 @@ fn get_checkpoint_path(save_path: &str, done: u64) -> String {
         format!("{}k", done / 1_000)
     };
 
-    let filename = format!("{}_{}.{}", stem, suffix, ext);
+    let filename = format!("{stem}_{suffix}.{ext}");
     if parent.as_os_str().is_empty() {
         filename
     } else {
@@ -102,7 +102,10 @@ fn save_atomic(
     prune_river: bool,
     max_turn_actions: usize,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let ext = if target_path.ends_with(".json") {
+    let ext = if std::path::Path::new(target_path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    {
         "tmp.json"
     } else {
         "tmp.bin"
@@ -172,11 +175,8 @@ fn main() {
     .with_board_texture(args.board_texture);
     if let Some(ref resume_path) = args.resume {
         match solver.warm_start_from_file(resume_path) {
-            Ok(loaded) => println!(
-                "Warm-started solver from {} ({} infosets).",
-                resume_path, loaded
-            ),
-            Err(e) => eprintln!("WARNING: Failed to warm-start from {}: {}", resume_path, e),
+            Ok(loaded) => println!("Warm-started solver from {resume_path} ({loaded} infosets)."),
+            Err(e) => eprintln!("WARNING: Failed to warm-start from {resume_path}: {e}"),
         }
     }
     let start = std::time::Instant::now();
@@ -204,7 +204,7 @@ fn main() {
                     }
                     if args.save_raw_ckpt {
                         let raw_tmp = format!("{}.ckpt.{}.tmp", save_path, std::process::id());
-                        let raw_dst = format!("{}.ckpt", save_path);
+                        let raw_dst = format!("{save_path}.ckpt");
                         if s.save_raw_checkpoint(&raw_tmp).is_ok() {
                             let _ = std::fs::rename(&raw_tmp, &raw_dst);
                         }
@@ -216,14 +216,12 @@ fn main() {
                         format!("{}K", done / 1_000)
                     };
                     eprintln!(
-                        "  >>> [Checkpoint {:>5}] Saved to {} ({} infosets) in {:.2}s",
-                        done_label, ckpt_path, count, ckpt_secs
+                        "  >>> [Checkpoint {done_label:>5}] Saved to {ckpt_path} ({count} infosets) in {ckpt_secs:.2}s"
                     );
                 }
                 Err(err) => {
                     eprintln!(
-                        "  [WARN] Failed to save checkpoint to {}: {}",
-                        ckpt_path, err
+                        "  [WARN] Failed to save checkpoint to {ckpt_path}: {err}"
                     );
                 }
             }
@@ -242,12 +240,9 @@ fn main() {
     if args.save_raw_ckpt {
         let raw_ckpt_path = format!("{}.ckpt", args.save_path);
         if let Err(e) = solver.save_raw_checkpoint(&raw_ckpt_path) {
-            eprintln!(
-                "WARNING: Failed to save raw checkpoint to {}: {}",
-                raw_ckpt_path, e
-            );
+            eprintln!("WARNING: Failed to save raw checkpoint to {raw_ckpt_path}: {e}");
         } else {
-            println!("Saved lossless raw checkpoint to {}", raw_ckpt_path);
+            println!("Saved lossless raw checkpoint to {raw_ckpt_path}");
         }
     }
 

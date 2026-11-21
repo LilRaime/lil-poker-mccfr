@@ -13,9 +13,13 @@ use super::{deal_cards_prefix, HoldemBenchmarkResult};
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::SubgameSolver;
-use crate::game::config::*;
+use crate::game::config::{
+    BIG_BLIND, BIG_BLIND_F64, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_PLAYERS, STACK_SIZE,
+};
 use crate::game::holdem::TexasHoldemGame;
 use crate::sim::stats::SimStats;
+
+const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HoldemBenchmarkConfig<'a> {
@@ -74,7 +78,7 @@ fn load_strategies_and_log(
         let loaded = load_holdem_strategy(path);
         if !cfg.quiet {
             if loaded.is_some() {
-                println!("[holdem] Loaded opponent strategy from '{}'", path);
+                println!("[holdem] Loaded opponent strategy from '{path}'");
             } else {
                 eprintln!(
                     "[holdem] WARNING: Strategy file '{}' not found or invalid JSON — opponent falls back to '{}' archetype.",
@@ -141,7 +145,7 @@ fn summarize_duplicate_result(
         println!("        ♠️  Texas Hold'em: Duplicate Poker Benchmark  ♥️      ");
         println!("============================================================");
         if let (Some(_), Some(opp_path)) = (opp_strategy, opp_strategy_path) {
-            println!("A/B Matchup           : Bot vs '{}'", opp_path);
+            println!("A/B Matchup           : Bot vs '{opp_path}'");
         } else if opp_archetype.eq_ignore_ascii_case("self") {
             println!("A/B Matchup           : Self-Play (Bot vs Self)");
         } else {
@@ -162,22 +166,10 @@ fn summarize_duplicate_result(
             duplicate_stats.ties,
             duplicate_stats.tie_pct(),
         );
-        println!(
-            "Skill Edge per Hand   : {:+.3} chips (±{:.3})",
-            edge_per_hand, se_per_hand
-        );
-        println!(
-            "Duplicate Win Rate    : {:+.2} bb/100 (±{:.2})",
-            win_rate_bb100, se_bb100,
-        );
-        println!(
-            "95% Confidence Interval: [{:+.2}, {:+.2}] bb/100",
-            ci_low, ci_high
-        );
-        println!(
-            "Duplicate Win Rate    : {:+.1} mbb/hand (±{:.1})",
-            win_rate_mbb, se_mbb,
-        );
+        println!("Skill Edge per Hand   : {edge_per_hand:+.3} chips (±{se_per_hand:.3})");
+        println!("Duplicate Win Rate    : {win_rate_bb100:+.2} bb/100 (±{se_bb100:.2})",);
+        println!("95% Confidence Interval: [{ci_low:+.2}, {ci_high:+.2}] bb/100");
+        println!("Duplicate Win Rate    : {win_rate_mbb:+.1} mbb/hand (±{se_mbb:.1})",);
         if ci_low > 0.0 {
             println!("Statistical Verdict   : ✅ STATISTICALLY SIGNIFICANT +EV (p < 0.05)");
         } else if ci_high < 0.0 {
@@ -240,19 +232,10 @@ fn summarize_standard_result(
             total_stats.ties,
             total_stats.tie_pct(),
         );
-        println!("Average Profit      : {:+.3} chips/hand (±{:.3})", avg, se);
-        println!(
-            "Win Rate (BB/100)   : {:+.2} bb/100 (±{:.2})",
-            win_rate_bb100, se_bb100,
-        );
-        println!(
-            "95% Confidence Interval: [{:+.2}, {:+.2}] bb/100",
-            ci_low, ci_high
-        );
-        println!(
-            "Win Rate (mbb/hand) : {:+.1} mbb/hand (±{:.1})",
-            win_rate_mbb, se_mbb,
-        );
+        println!("Average Profit      : {avg:+.3} chips/hand (±{se:.3})");
+        println!("Win Rate (BB/100)   : {win_rate_bb100:+.2} bb/100 (±{se_bb100:.2})",);
+        println!("95% Confidence Interval: [{ci_low:+.2}, {ci_high:+.2}] bb/100");
+        println!("Win Rate (mbb/hand) : {win_rate_mbb:+.1} mbb/hand (±{se_mbb:.1})",);
     }
 
     HoldemBenchmarkResult {
@@ -289,12 +272,11 @@ fn run_duplicate_deals(
     st: &mut BenchmarkLoopState<'_>,
 ) {
     let show_logs = !cfg.quiet && (cfg.delay_ms > 0 || cfg.total_episodes <= 10);
-    const CARDS_NEEDED: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
     for ep in 1..=cfg.total_episodes {
-        let deck = deal_cards_prefix(st.rng, CARDS_NEEDED);
+        let deck = deal_cards_prefix(st.rng, CARDS_PER_DEAL);
         let hole_a = [deck[0], deck[1]];
         let hole_b = [deck[2], deck[3]];
-        let runout = &deck[4..CARDS_NEEDED];
+        let runout = &deck[4..CARDS_PER_DEAL];
 
         if show_logs {
             println!("\n=== Deal {}/{} (Duplicate) ===", ep, cfg.total_episodes);
@@ -358,7 +340,7 @@ fn run_standard_episodes(
             "1" | "bb" => 1usize,
             _ => ((ep - 1) % 2) as usize,
         };
-        let label = format!("Episode {}", ep);
+        let label = format!("Episode {ep}");
         let game = TexasHoldemGame::new_random(st.rng).with_stack(stack_size);
         let (ret, reasons) = simulate_holdem_hand_traced(
             game,

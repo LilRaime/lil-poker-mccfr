@@ -5,7 +5,7 @@
 mod postflop;
 mod preflop;
 
-use crate::game::config::*;
+use crate::game::config::{CALL_CHECK, RAISE_MIN, ROUND_FLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::{Card, Rank, Suit};
 use std::collections::HashMap;
 
@@ -28,7 +28,7 @@ impl Default for ReachRequest<'_> {
         Self {
             remaining_deck: &[],
             board: &[],
-            round: 2,
+            round: ROUND_FLOP,
             target_player: None,
             active_player: None,
             opp_vpip: None,
@@ -173,7 +173,7 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
 
     let flop_actions = collect_target_actions(
         history.actions_in_round(1),
-        2,
+        ROUND_FLOP,
         round,
         target_player,
         active_player,
@@ -181,13 +181,13 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
     let max_opp_raise_flop = flop_actions
         .iter()
         .copied()
-        .filter(|&a| a >= 2)
+        .filter(|&a| a >= RAISE_MIN)
         .max()
         .unwrap_or(0);
 
     let turn_actions = collect_target_actions(
         history.actions_in_round(2),
-        3,
+        ROUND_TURN,
         round,
         target_player,
         active_player,
@@ -195,13 +195,13 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
     let max_opp_raise_turn = turn_actions
         .iter()
         .copied()
-        .filter(|&a| a >= 2)
+        .filter(|&a| a >= RAISE_MIN)
         .max()
         .unwrap_or(0);
 
     let river_actions = collect_target_actions(
         history.actions_in_round(3),
-        4,
+        ROUND_RIVER,
         round,
         target_player,
         active_player,
@@ -209,12 +209,12 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
     let max_opp_raise_river = river_actions
         .iter()
         .copied()
-        .filter(|&a| a >= 2)
+        .filter(|&a| a >= RAISE_MIN)
         .max()
         .unwrap_or(0);
 
-    let flop_street_had_bet = history.actions_in_round(1).iter().any(|&a| a >= 2);
-    let turn_street_had_bet = history.actions_in_round(2).iter().any(|&a| a >= 2);
+    let flop_street_had_bet = history.actions_in_round(1).iter().any(|&a| a >= RAISE_MIN);
+    let turn_street_had_bet = history.actions_in_round(2).iter().any(|&a| a >= RAISE_MIN);
 
     ReachContext {
         opp_raised_pf,
@@ -222,13 +222,13 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         opp_3bet_pf,
         opp_limped_pf,
         max_opp_raise_flop,
-        opp_raised_flop: max_opp_raise_flop >= 2,
-        opp_called_flop: flop_street_had_bet && flop_actions.contains(&1),
+        opp_raised_flop: max_opp_raise_flop >= RAISE_MIN,
+        opp_called_flop: flop_street_had_bet && flop_actions.contains(&CALL_CHECK),
         max_opp_raise_turn,
-        opp_raised_turn: max_opp_raise_turn >= 2,
-        opp_called_turn: turn_street_had_bet && turn_actions.contains(&1),
+        opp_raised_turn: max_opp_raise_turn >= RAISE_MIN,
+        opp_called_turn: turn_street_had_bet && turn_actions.contains(&CALL_CHECK),
         max_opp_raise_river,
-        opp_raised_river: max_opp_raise_river >= 2,
+        opp_raised_river: max_opp_raise_river >= RAISE_MIN,
         flop_board_paired: is_prefix_paired(board, 3),
         turn_board_paired: is_prefix_paired(board, 4),
         river_board_paired: is_prefix_paired(board, 5),
@@ -324,10 +324,10 @@ impl OpponentReachDistribution {
 
                 let pf_weight =
                     preflop_prior_weight(pf_idx, pf_name, strategy_map, req.target_player, &ctx);
-                let flop_weight = flop_likelihood(&cand, req.board, req.round, &ctx);
-                let turn_weight = turn_likelihood(&cand, req.board, req.round, &ctx);
-                let river_weight = river_likelihood(&cand, req.board, req.round, &ctx);
-                let texture_mult = monotone_texture_multiplier(&cand, &ctx);
+                let flop_weight = flop_likelihood(cand, req.board, req.round, &ctx);
+                let turn_weight = turn_likelihood(cand, req.board, req.round, &ctx);
+                let river_weight = river_likelihood(cand, req.board, req.round, &ctx);
+                let texture_mult = monotone_texture_multiplier(cand, &ctx);
 
                 let base_w = (pf_weight * flop_weight * turn_weight * river_weight * texture_mult)
                     .max(1e-5f64);

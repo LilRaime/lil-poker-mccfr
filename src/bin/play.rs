@@ -41,7 +41,7 @@ struct Args {
     #[arg(long, default_value = "alternate")]
     player: String,
 
-    /** Opponent archetype: 'random', 'tag', 'calling_station', 'maniac', 'rock', 'self' */
+    /** Opponent archetype: `random`, `tag`, `calling_station`, `maniac`, `rock`, `self` */
     #[arg(long, alias = "opp-archetype", default_value = "random")]
     opponent: String,
 

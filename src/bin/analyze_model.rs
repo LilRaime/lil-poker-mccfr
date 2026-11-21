@@ -11,6 +11,7 @@ use clap::Parser;
 use lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver;
 use lil_poker_mccfr::game::config::{
     ALL_IN, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
 };
 use std::collections::HashSet;
 use std::fs::File;
@@ -39,22 +40,22 @@ struct Args {
 #[inline(always)]
 fn get_street(key: &str) -> u8 {
     if key.starts_with("R:B") || key.contains("|R:B") {
-        4
+        ROUND_RIVER
     } else if key.starts_with("T:B") || key.contains("|T:B") {
-        3
+        ROUND_TURN
     } else if key.starts_with("F:B") || key.contains("|F:B") {
-        2
+        ROUND_FLOP
     } else {
-        1
+        ROUND_PREFLOP
     }
 }
 
 fn street_name(street: u8) -> &'static str {
     match street {
-        1 => "Preflop",
-        2 => "Flop",
-        3 => "Turn",
-        4 => "River",
+        ROUND_PREFLOP => "Preflop",
+        ROUND_FLOP => "Flop",
+        ROUND_TURN => "Turn",
+        ROUND_RIVER => "River",
         _ => "Unknown",
     }
 }
@@ -133,13 +134,13 @@ fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
         .or_else(|| key.strip_prefix("S30|"))
         .unwrap_or(key);
     let prefix = match street {
-        1 => "P:",
-        2 => "F:B",
-        3 => "T:B",
-        4 => "R:B",
+        ROUND_PREFLOP => "P:",
+        ROUND_FLOP => "F:B",
+        ROUND_TURN => "T:B",
+        ROUND_RIVER => "R:B",
         _ => return None,
     };
-    if street == 1 {
+    if street == ROUND_PREFLOP {
         if let Some(rest) = base_key.strip_prefix("P:") {
             let end = rest.find('/').unwrap_or(rest.len());
             if end > 0 && !rest[..end].contains('|') {
@@ -187,79 +188,48 @@ fn format_bytes(bytes: u64) -> String {
     } else if bytes >= 1024 {
         format!("{:.2} KB", bytes as f64 / 1024.0)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    let path = Path::new(&args.strategy);
+#[derive(Default)]
+struct ModelSummary {
+    stats: [StreetStats; 4],
+    stack_stats: [StackStats; 3],
+    flop_tex_counts: [usize; 5],
+    postflop_buckets: HashSet<usize>,
+}
 
-    if !path.exists() {
-        eprintln!("Error: Strategy file '{}' not found!", args.strategy);
-        std::process::exit(1);
-    }
-
-    let file_size = File::open(path)?.metadata()?.len();
-
-    println!("============================================================");
-    println!("        LIL-POKER MCCFR MODEL ANALYZER & INSPECTOR          ");
-    println!("============================================================");
-    println!("File:         {}", args.strategy);
-    println!("File Size:    {}", format_bytes(file_size));
-
-    let start = Instant::now();
-    let strategy = HoldemMCCFRSolver::load_strategy_from_file(&args.strategy)?;
-    let load_time = start.elapsed();
-    let total_infosets = strategy.len();
-
-    println!("Load Time:    {:.2?}", load_time);
-    println!("Total Nodes:  {} infosets", total_infosets);
-    /* Approximate memory in RAM: key string (~32 bytes) + Vec capacity (~32 bytes) + HashMap overhead (~32 bytes) */
-    let est_ram = (total_infosets * 128) as u64;
-    println!("RAM Estimate: {}", format_bytes(est_ram));
-
-    /* Group and compute statistics by street and stack depth */
-    let mut stats = [
-        StreetStats::default(),
-        StreetStats::default(),
-        StreetStats::default(),
-        StreetStats::default(),
-    ];
-    let mut stack_stats = [
-        StackStats::default(),
-        StackStats::default(),
-        StackStats::default(),
-    ];
-    /* Flop texture counters: [dry 'd', wet 'w', paired 'p', monotone 'm', untextured] */
-    let mut flop_tex_counts = [0usize; 5];
-    let mut postflop_buckets = HashSet::new();
-
+fn collect_model_stats<'a>(
+    strategy: &'a std::collections::HashMap<String, Vec<f64>>,
+    pattern: Option<&str>,
+) -> (ModelSummary, Vec<(&'a String, &'a Vec<f64>)>) {
+    let mut summary = ModelSummary::default();
     let mut matches = Vec::new();
 
-    for (key, probs) in &strategy {
+    for (key, probs) in strategy {
         let street = get_street(key);
         let s_idx = get_stack_idx(key);
-        if (1..=4).contains(&street) {
+        if (ROUND_PREFLOP..=ROUND_RIVER).contains(&street) {
             let bucket_tok = extract_bucket_token(key, street);
-            if street >= 2 {
+            if street >= ROUND_FLOP {
                 if let Some(ref b) = bucket_tok {
                     if let Ok(num) = b.parse::<usize>() {
-                        postflop_buckets.insert(num);
+                        summary.postflop_buckets.insert(num);
                     }
                 }
             }
-            if street == 2 {
+            if street == ROUND_FLOP {
                 match extract_flop_texture(key) {
-                    Some('d') => flop_tex_counts[0] += 1,
-                    Some('w') => flop_tex_counts[1] += 1,
-                    Some('p') => flop_tex_counts[2] += 1,
-                    Some('m') => flop_tex_counts[3] += 1,
-                    _ => flop_tex_counts[4] += 1,
+                    Some('d') => summary.flop_tex_counts[0] += 1,
+                    Some('w') => summary.flop_tex_counts[1] += 1,
+                    Some('p') => summary.flop_tex_counts[2] += 1,
+                    Some('m') => summary.flop_tex_counts[3] += 1,
+                    _ => summary.flop_tex_counts[4] += 1,
                 }
             }
-            stats[(street - 1) as usize].add(probs, bucket_tok);
-            let ss = &mut stack_stats[s_idx];
+            summary.stats[(street - 1) as usize].add(probs, bucket_tok);
+            let ss = &mut summary.stack_stats[s_idx];
             ss.total += 1;
             ss.by_street[(street - 1) as usize] += 1;
             if probs.iter().copied().fold(0.0f64, f64::max) >= 0.95 {
@@ -267,27 +237,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if let Some(ref pat) = args.pattern {
+        if let Some(pat) = pattern {
             if key.contains(pat) {
                 matches.push((key, probs));
             }
         }
     }
 
-    let pf_hands = stats[0].unique_buckets.len();
-    let pf_bucket_count = postflop_buckets.len();
-    println!(
-        "Buckets:      {} postflop | {} preflop hands",
-        pf_bucket_count, pf_hands
-    );
-    println!("------------------------------------------------------------\n");
+    (summary, matches)
+}
 
-    /* Print Street Distribution Table */
+fn print_street_distribution(summary: &ModelSummary, total_infosets: usize) {
     println!("+---------------+----------+---------------+------------+--------------+");
     println!("| Street        |  Buckets |      Infosets |    Share % | Pure Actions |");
     println!("+---------------+----------+---------------+------------+--------------+");
     for s in 1..=4 {
-        let st = &stats[(s - 1) as usize];
+        let st = &summary.stats[(s - 1) as usize];
         let pct = if total_infosets > 0 {
             (st.count as f64 * 100.0) / total_infosets as f64
         } else {
@@ -310,16 +275,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("+---------------+----------+---------------+------------+--------------+");
     println!(
         "| TOTAL         | {:>8} | {:>13} |    100.00% |              |",
-        pf_bucket_count, total_infosets
+        summary.postflop_buckets.len(),
+        total_infosets
     );
     println!("+---------------+----------+---------------+------------+--------------+\n");
+}
 
-    /* Print Stack Depth Distribution Table */
+fn print_stack_and_texture_distribution(summary: &ModelSummary, total_infosets: usize) {
     println!("Stack Depth Distribution:");
     println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
     println!("| Stack Depth   | Preflop |     Flop |     Turn |    River |     Total |  Share % | Pure % |");
     println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
-    for (idx, ss) in stack_stats.iter().enumerate() {
+    for (idx, ss) in summary.stack_stats.iter().enumerate() {
         if ss.total == 0 {
             continue;
         }
@@ -343,21 +310,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
 
-    let textured_flop_total: usize = flop_tex_counts[..4].iter().sum();
+    let textured_flop_total: usize = summary.flop_tex_counts[..4].iter().sum();
     if textured_flop_total > 0 {
         println!(
             "Flop Textures:  Dry(d)={} | Wet(w)={} | Paired(p)={} | Monotone(m)={} | Untextured={}\n",
-            flop_tex_counts[0],
-            flop_tex_counts[1],
-            flop_tex_counts[2],
-            flop_tex_counts[3],
-            flop_tex_counts[4],
+            summary.flop_tex_counts[0],
+            summary.flop_tex_counts[1],
+            summary.flop_tex_counts[2],
+            summary.flop_tex_counts[3],
+            summary.flop_tex_counts[4],
         );
     } else {
         println!();
     }
+}
 
-    /* Print Average Action Probabilities by Street */
+fn print_action_distributions(stats: &[StreetStats; 4]) {
     println!("Average Action Distributions by Street:");
     println!("+----------+--------+------------+-----------+-----------+------------+--------+");
     println!("| Street   |   Fold | Check/Call | Raise Min | Raise 33% | Raise 50%+ | All-In |");
@@ -383,30 +351,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!("+----------+--------+------------+-----------+-----------+------------+--------+\n");
+}
 
-    /* If search pattern was provided, show sample matching keys */
-    if let Some(ref pat) = args.pattern {
-        println!(
-            "Matching Infosets for pattern '{}' (found {}):",
-            pat,
-            matches.len()
-        );
-        matches.sort_by(|a, b| a.0.cmp(b.0));
-        let shown = matches.len().min(args.limit);
-        for &(k, probs) in matches.iter().take(shown) {
-            print!("  • {:<32} => [", k);
-            for (i, &p) in probs.iter().enumerate() {
-                if i > 0 {
-                    print!(", ");
-                }
-                print!("{}: {:.1}%", action_name(i), p * 100.0);
+fn print_pattern_matches(pattern: &str, matches: &mut [(&String, &Vec<f64>)], limit: usize) {
+    println!(
+        "Matching Infosets for pattern '{}' (found {}):",
+        pattern,
+        matches.len()
+    );
+    matches.sort_by(|a, b| a.0.cmp(b.0));
+    let shown = matches.len().min(limit);
+    for &(k, probs) in matches.iter().take(shown) {
+        print!("  • {k:<32} => [");
+        for (i, &p) in probs.iter().enumerate() {
+            if i > 0 {
+                print!(", ");
             }
-            println!("]");
+            print!("{}: {:.1}%", action_name(i), p * 100.0);
         }
-        if matches.len() > shown {
-            println!("  ... and {} more matching keys", matches.len() - shown);
-        }
-        println!();
+        println!("]");
+    }
+    if matches.len() > shown {
+        println!("  ... and {} more matching keys", matches.len() - shown);
+    }
+    println!();
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    let path = Path::new(&args.strategy);
+
+    if !path.exists() {
+        eprintln!("Error: Strategy file '{}' not found!", args.strategy);
+        std::process::exit(1);
+    }
+
+    let file_size = File::open(path)?.metadata()?.len();
+
+    println!("============================================================");
+    println!("        LIL-POKER MCCFR MODEL ANALYZER & INSPECTOR          ");
+    println!("============================================================");
+    println!("File:         {}", args.strategy);
+    println!("File Size:    {}", format_bytes(file_size));
+
+    let start = Instant::now();
+    let strategy = HoldemMCCFRSolver::load_strategy_from_file(&args.strategy)?;
+    let load_time = start.elapsed();
+    let total_infosets = strategy.len();
+
+    println!("Load Time:    {load_time:.2?}");
+    println!("Total Nodes:  {total_infosets} infosets");
+    let est_ram = (total_infosets * 128) as u64;
+    println!("RAM Estimate: {}", format_bytes(est_ram));
+
+    let (summary, mut matches) = collect_model_stats(&strategy, args.pattern.as_deref());
+    println!(
+        "Buckets:      {} postflop | {} preflop hands",
+        summary.postflop_buckets.len(),
+        summary.stats[0].unique_buckets.len()
+    );
+    println!("------------------------------------------------------------\n");
+
+    print_street_distribution(&summary, total_infosets);
+    print_stack_and_texture_distribution(&summary, total_infosets);
+    print_action_distributions(&summary.stats);
+
+    if let Some(ref pat) = args.pattern {
+        print_pattern_matches(pat, &mut matches, args.limit);
     }
 
     Ok(())

@@ -1,4 +1,7 @@
-use lil_poker_mccfr::game::config::*;
+use lil_poker_mccfr::game::config::{
+    BIG_BLIND, PREFLOP_OPEN_MIN_TOTAL, RAISE_HALF_POT_FLOOR_RIVER, RAISE_HALF_POT_FLOOR_TURN,
+    RAISE_MIN_AMT, RAISE_THIRD_POT_FLOOR, SMALL_BLIND, STACK_SIZE,
+};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, Suit, TexasHoldemGame, ALL_IN, CALL_CHECK, RAISE_HALF_POT, RAISE_MIN,
     RAISE_THIRD_POT,

@@ -333,25 +333,6 @@ pub fn preflop_bucket_from_name(name: &str) -> Option<usize> {
     }
 }
 
-#[allow(dead_code)]
-fn rank_char(r: Rank) -> &'static str {
-    match r {
-        Rank::Ace => "A",
-        Rank::King => "K",
-        Rank::Queen => "Q",
-        Rank::Jack => "J",
-        Rank::Ten => "T",
-        Rank::Nine => "9",
-        Rank::Eight => "8",
-        Rank::Seven => "7",
-        Rank::Six => "6",
-        Rank::Five => "5",
-        Rank::Four => "4",
-        Rank::Three => "3",
-        Rank::Two => "2",
-    }
-}
-
 fn suited_name(r1: Rank, r2: Rank) -> &'static str {
     match (r1, r2) {
         (Rank::Ace, Rank::King) => "AKs",

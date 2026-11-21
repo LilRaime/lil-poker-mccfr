@@ -55,8 +55,7 @@ impl MCCFRSolver {
         let entropy_base = Arc::new(AtomicU64::new(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0xcafe_babe_dead_beef),
+                .map_or(0xcafe_babe_dead_beef, |d| d.as_nanos() as u64),
         ));
 
         while done < iterations {

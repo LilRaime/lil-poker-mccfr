@@ -305,9 +305,7 @@ fn test_one_pair_third_kicker_tiebreaker() {
     /* Both hands have AA KQ, but hole1 has 9 kicker while hole2 has 8 kicker */
     assert!(
         score1 > score2,
-        "AA-KQ9 (score1: {:x}) must defeat AA-KQ8 (score2: {:x}) by 3rd kicker",
-        score1,
-        score2
+        "AA-KQ9 (score1: {score1:x}) must defeat AA-KQ8 (score2: {score2:x}) by 3rd kicker"
     );
 }
 

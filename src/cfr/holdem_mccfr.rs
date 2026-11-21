@@ -6,15 +6,29 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::cell::Cell;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use crate::cfr::node::InfosetNode;
+use crate::game::config::{
+    BIG_BLIND, CALL_CHECK, FOLD, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, STACK_SIZE,
+};
 use crate::game::holdem::{Card, TexasHoldemGame};
 
 pub use crate::game::config::HOLDEM_NUM_ACTIONS;
 
-/** Fast 64-bit SplitMix mixer for pre-hashed FNV-1a u64 keys (avoids 20-cycle SipHash-1-3 on every lookup). */
+fn has_ext_ignore_case(path: &str, ext: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+fn prefers_json_path(path: &str) -> bool {
+    has_ext_ignore_case(path, "json") || path.contains(".json.") || path.contains(".tmp.json")
+}
+
+/** Fast 64-bit SplitMix mixer for pre-hashed FNV-1a `u64` keys (avoids 20-cycle SipHash-1-3 on every lookup). */
 #[derive(Default)]
 pub struct FastU64Hasher(u64);
 
@@ -28,7 +42,7 @@ impl Hasher for FastU64Hasher {
     fn write(&mut self, bytes: &[u8]) {
         let mut h = self.0;
         for &b in bytes {
-            h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
         }
         self.0 = h;
     }
@@ -53,7 +67,7 @@ struct EpisodeBucketCache<'a> {
 
 impl<'a> EpisodeBucketCache<'a> {
     #[inline(always)]
-    fn new(hole: &[[Card; 2]; 2], runout: &'a [Card; 5]) -> Self {
+    fn new(hole: [[Card; 2]; 2], runout: &'a [Card; 5]) -> Self {
         Self {
             runout,
             pf: [
@@ -70,8 +84,8 @@ impl<'a> EpisodeBucketCache<'a> {
     }
 
     #[inline(always)]
-    fn get_bucket(&self, hole: &[[Card; 2]; 2], round: u8, player: usize) -> u8 {
-        if round <= 1 {
+    fn get_bucket(&self, hole: [[Card; 2]; 2], round: u8, player: usize) -> u8 {
+        if round <= ROUND_PREFLOP {
             return self.pf[player];
         }
         let s_idx = (round - 2) as usize;
@@ -178,6 +192,9 @@ impl HoldemMCCFRSolver {
     {
         if let Some(entry) = self.nodes.get(&hash) {
             let ptr: *const InfosetNode = &*entry.node;
+            /* SAFETY: `self.nodes` is append-only while `&self` is borrowed during training,
+             * `InfosetNode` is heap-allocated inside `Box` so its address stays pinned across
+             * `DashMap` bucket resizes, and all updates use `AtomicI64` interior mutability. */
             return unsafe { &*ptr };
         }
         let entry = self.nodes.entry(hash).or_insert_with(|| InfosetEntry {
@@ -185,6 +202,8 @@ impl HoldemMCCFRSolver {
             node: Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)),
         });
         let ptr: *const InfosetNode = &*entry.node;
+        /* SAFETY: Same invariant as above — inserted `Box<InfosetNode>` remains live and pinned
+         * at this heap address for the lifetime of `&self`, with atomic-only mutation. */
         unsafe { &*ptr }
     }
 
@@ -234,8 +253,7 @@ impl HoldemMCCFRSolver {
         let entropy_base = Arc::new(AtomicU64::new(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0xcafe_babe_dead_beef),
+                .map_or(0xcafe_babe_dead_beef, |d| d.as_nanos() as u64),
         ));
 
         while done < iterations {
@@ -256,21 +274,21 @@ impl HoldemMCCFRSolver {
                  * is paired across both `updating_player == 0` and `updating_player == 1`! */
                 let ep_stack = if repair_short_only {
                     match (global_idx / 2) % 2 {
-                        0 => crate::game::config::BIG_BLIND * 15,
-                        _ => crate::game::config::BIG_BLIND * 30,
+                        0 => BIG_BLIND * 15,
+                        _ => BIG_BLIND * 30,
                     }
                 } else if self.multi_stack {
                     match (global_idx / 2) % 4 {
-                        0 => crate::game::config::BIG_BLIND * 15,
-                        1 => crate::game::config::BIG_BLIND * 30,
-                        _ => crate::game::config::STACK_SIZE,
+                        0 => BIG_BLIND * 15,
+                        1 => BIG_BLIND * 30,
+                        _ => STACK_SIZE,
                     }
                 } else {
                     self.stack_size
                 };
                 let game = TexasHoldemGame::new_random_with_stack(&mut rng, ep_stack);
                 let runout = game.deck_remaining.peek5();
-                let cache = EpisodeBucketCache::new(&game.hole, runout);
+                let cache = EpisodeBucketCache::new(game.hole, runout);
 
                 let weight = if is_dcfr {
                     /* In epoch-discounted DCFR, each iteration accumulates at unit scale (1.0)
@@ -382,11 +400,11 @@ impl HoldemMCCFRSolver {
             return 0.0;
         }
 
-        let bucket = cache.get_bucket(&game.hole, game.round, curr_player);
-        /* Tag Flop (round == 2) with compact board texture ('d'/'w'/'p'/'m').
+        let bucket = cache.get_bucket(game.hole, game.round, curr_player);
+        /* Tag Flop (round == ROUND_FLOP) with compact board texture ('d'/'w'/'p'/'m').
          * Skip Turn & River (rounds 3..=4) where 88 equity buckets + online SubgameSolver
          * already capture board structure, preventing a 4x postflop infoset explosion. */
-        let tex_char = if self.board_texture && game.round == 2 {
+        let tex_char = if self.board_texture && game.round == ROUND_FLOP {
             Some(cache.get_flop_texture())
         } else {
             None
@@ -418,7 +436,7 @@ impl HoldemMCCFRSolver {
                 if stack_prefix.is_empty() {
                     k
                 } else {
-                    format!("{}{}", stack_prefix, k)
+                    format!("{stack_prefix}{k}")
                 }
             })
         } else {
@@ -444,7 +462,7 @@ impl HoldemMCCFRSolver {
                 if stack_prefix.is_empty() {
                     k
                 } else {
-                    format!("{}{}", stack_prefix, k)
+                    format!("{stack_prefix}{k}")
                 }
             })
         };
@@ -470,12 +488,12 @@ impl HoldemMCCFRSolver {
                 let act = actions[i];
                 let act_idx = act as usize;
 
-                if allow_prune && game.round < 4 && act != crate::game::config::FOLD {
+                if allow_prune && game.round < ROUND_RIVER && act != FOLD {
                     let r = node.get_regret(act_idx);
                     let should_prune = self.dcfr && r < r_thresh && legal_probs[i] < 0.005;
                     if should_prune {
                         /* At round < 4 and act != FOLD, only calling an all-in can terminate the hand. */
-                        if !(act == crate::game::config::CALL_CHECK && opp_all_in) {
+                        if !(act == CALL_CHECK && opp_all_in) {
                             explored[i] = false;
                             continue;
                         }
@@ -558,21 +576,20 @@ impl HoldemMCCFRSolver {
                 let key = &entry.value().key;
                 if prune_river || max_turn_actions > 0 {
                     let street = if key.starts_with("P:") && !key.contains('|') {
-                        1
+                        ROUND_PREFLOP
                     } else if key.contains("F:B") {
-                        2
+                        ROUND_FLOP
                     } else if key.contains("T:B") {
-                        3
+                        ROUND_TURN
                     } else if key.contains("R:B") {
-                        4
+                        ROUND_RIVER
                     } else {
                         0
                     };
 
                     match street {
-                        1 => {}
-                        2 => {}
-                        3 => {
+                        ROUND_PREFLOP | ROUND_FLOP => {}
+                        ROUND_TURN => {
                             if max_turn_actions > 0 {
                                 if let Some(pos) = key.find("T:B") {
                                     let after = &key[pos..];
@@ -585,7 +602,7 @@ impl HoldemMCCFRSolver {
                                 }
                             }
                         }
-                        4 if prune_river => return None,
+                        ROUND_RIVER if prune_river => return None,
                         _ => {}
                     }
                 }
@@ -615,8 +632,7 @@ impl HoldemMCCFRSolver {
         let mut writer = std::io::BufWriter::new(file);
         let strategy_f32 = self.export_strategy_filtered_f32(prune_river, max_turn_actions);
         let count = strategy_f32.len();
-        let is_bin =
-            !path.ends_with(".json") && !path.contains(".json.") && !path.contains(".tmp.json");
+        let is_bin = !prefers_json_path(path);
         if is_bin {
             bincode::serialize_into(&mut writer, &strategy_f32)?;
         } else {
@@ -632,7 +648,6 @@ impl HoldemMCCFRSolver {
                 .collect();
             serde_json::to_writer_pretty(&mut writer, &rounded)?;
         }
-        use std::io::Write;
         writer.flush()?;
         Ok(count)
     }
@@ -645,8 +660,7 @@ impl HoldemMCCFRSolver {
         }
         let file = std::fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
-        let is_bin =
-            !path.ends_with(".json") && !path.contains(".json.") && !path.contains(".tmp.json");
+        let is_bin = !prefers_json_path(path);
         let node_count = if is_bin {
             let strategy_f32 = self.export_strategy_f32();
             let count = strategy_f32.len();
@@ -674,8 +688,7 @@ impl HoldemMCCFRSolver {
         /* Try bincode first for non-.json paths: the first byte of a bincode HashMap is
          * `(len % 256)` in little-endian, which can legitimately equal '{' (123), '[' (91),
          * ' ' (32), or '\n' (10) and falsely trigger a 1-byte JSON sniff! */
-        let prefer_json =
-            path.ends_with(".json") || path.contains(".json.") || path.contains(".tmp.json");
+        let prefer_json = prefers_json_path(path);
 
         if !prefer_json {
             let file_bincode = std::fs::File::open(path)?;
@@ -709,7 +722,7 @@ impl HoldemMCCFRSolver {
         Ok(strat)
     }
 
-    /** Save full raw checkpoint (hashes, keys, regret_sum, strategy_sum, global_iterations) for lossless resume */
+    /** Save full raw checkpoint (`hashes`, `keys`, `regret_sum`, `strategy_sum`, `global_iterations`) for lossless resume */
     pub fn save_raw_checkpoint(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
@@ -734,17 +747,25 @@ impl HoldemMCCFRSolver {
             .collect();
         let count = entries.len();
         bincode::serialize_into(&mut writer, &(global_iters, entries))?;
-        use std::io::Write;
         writer.flush()?;
         Ok(count)
     }
 
     /** Warm-start solver nodes from a raw checkpoint or strategy file (for resuming/extending training) */
     pub fn warm_start_from_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
-        let raw_ckpt_path = format!("{}.ckpt", path);
+        type RawCkpt = (
+            u64,
+            Vec<(
+                u64,
+                String,
+                [i64; HOLDEM_NUM_ACTIONS],
+                [i64; HOLDEM_NUM_ACTIONS],
+            )>,
+        );
+        let raw_ckpt_path = format!("{path}.ckpt");
         let try_raw_path = if std::path::Path::new(&raw_ckpt_path).exists() {
             Some(raw_ckpt_path.as_str())
-        } else if path.ends_with(".ckpt") {
+        } else if has_ext_ignore_case(path, "ckpt") {
             Some(path)
         } else {
             None
@@ -753,15 +774,6 @@ impl HoldemMCCFRSolver {
         if let Some(rp) = try_raw_path {
             if let Ok(file) = std::fs::File::open(rp) {
                 let mut reader = std::io::BufReader::new(file);
-                type RawCkpt = (
-                    u64,
-                    Vec<(
-                        u64,
-                        String,
-                        [i64; HOLDEM_NUM_ACTIONS],
-                        [i64; HOLDEM_NUM_ACTIONS],
-                    )>,
-                );
                 if let Ok((saved_iters, entries)) =
                     bincode::deserialize_from::<_, RawCkpt>(&mut reader)
                 {

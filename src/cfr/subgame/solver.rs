@@ -5,13 +5,21 @@
 
 use super::reach::{OpponentReachDistribution, ReachRequest};
 use super::traversal::TraversalCtx;
-use crate::cfr::abstraction::{hash_holdem_infoset_key, postflop_equity_bucket};
+use crate::cfr::abstraction::{
+    hash_holdem_infoset_key, postflop_equity_bucket, BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+};
 use crate::cfr::node::InfosetNode;
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, BIG_BLIND, CALL_CHECK, DEFAULT_SUBGAME_ITERATIONS, FOLD, HOLDEM_NUM_ACTIONS,
+    MAX_RAISES_PER_ROUND, NUM_CARDS_DECK, NUM_COMMUNITY_CARDS, NUM_ROUNDS, RAISE_HALF_POT,
+    RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN, STACK_SIZE, SUBGAME_BET_PRESSURE,
+    SUBGAME_POT_LG, SUBGAME_POT_MD, SUBGAME_POT_SM, SUBGAME_POT_XS,
+};
 use crate::game::holdem::{Card, TexasHoldemGame, ALL_52_CARDS};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 struct SubgameIterContext<'a> {
@@ -38,8 +46,6 @@ fn build_iteration_state(
     sample_hero_from_range: bool,
     rng: &mut SmallRng,
 ) -> (TexasHoldemGame, [[u8; 2]; 3]) {
-    use rand::Rng;
-
     let opp_hole = ctx.reach_dist.sample(rng);
     let hero_hole = if sample_hero_from_range {
         if let Some(hr) = ctx.hero_reach_opt {
@@ -145,7 +151,7 @@ pub struct SubgameSolver {
     pub stack_size: i32,
 }
 
-/** Reusable context holding allocated InfosetNode maps across subgame solver invocations */
+/** Reusable context holding allocated `InfosetNode` maps across subgame solver invocations */
 #[derive(Default)]
 pub struct SubgameContext {
     pub nodes: HashMap<u64, InfosetNode>,
@@ -181,7 +187,7 @@ impl Default for SubgameRequest<'_> {
         Self {
             hole: [Card::default(); 2],
             board: &[],
-            round: 3,
+            round: ROUND_TURN,
             my_player: 0,
             contributions: [BIG_BLIND, BIG_BLIND],
             raises_this_round: 0,
@@ -200,8 +206,7 @@ impl Default for SubgameSolver {
 impl SubgameSolver {
     pub fn new(num_iterations: usize) -> Self {
         let default_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
+            .map_or(1, std::num::NonZero::get)
             .min(4);
         SubgameSolver {
             num_iterations,
@@ -256,9 +261,9 @@ impl SubgameSolver {
         }
 
         /* Street scaling: River has zero chance nodes -> can solve to high precision */
-        if round >= 4 {
+        if round >= ROUND_RIVER {
             mult *= 1.35;
-        } else if round == 3 {
+        } else if round == ROUND_TURN {
             mult *= 1.1;
         }
 
@@ -304,10 +309,10 @@ impl SubgameSolver {
         };
         ctx.clear();
 
-        let seed = compute_subgame_seed(&req.hole, req.board, req.round, req.contributions);
+        let seed = compute_subgame_seed(req.hole, req.board, req.round, req.contributions);
         let mut rng = SmallRng::seed_from_u64(seed);
 
-        let (remaining_deck, board_only_deck) = build_subgame_decks(&req.hole, req.board);
+        let (remaining_deck, board_only_deck) = build_subgame_decks(req.hole, req.board);
         if remaining_deck.len() < 2 {
             let mut uniform = vec![0.0; HOLDEM_NUM_ACTIONS];
             uniform[CALL_CHECK as usize] = 1.0;
@@ -327,7 +332,7 @@ impl SubgameSolver {
         let eff_stack_bb = self.stack_size / BIG_BLIND.max(1);
         let blueprint_root_opt = lookup_blueprint_root(
             strategy_map,
-            &req.hole,
+            req.hole,
             req.board,
             req.round,
             history,
@@ -335,9 +340,8 @@ impl SubgameSolver {
         );
 
         let hist_rounds = extract_hist_rounds(history);
-        let available_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        let available_threads =
+            std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let eff_stack = self
             .stack_size
             .max(req.contributions[0])
@@ -398,7 +402,6 @@ impl SubgameSolver {
          * - When updating Opponent: always sample Hero from hero_reach (no hole-card leak!).
          * - When updating Hero: alternate exact *hole (dense root convergence) and hero_reach. */
         if params.eff_threads > 1 && params.effective_iterations >= 200 {
-            use rayon::prelude::*;
             let num_threads = params.eff_threads.min(8);
             let iters_per_thread = params.effective_iterations.div_ceil(num_threads);
             let shared_nodes: DashMap<u64, InfosetNode> =
@@ -429,7 +432,7 @@ impl SubgameSolver {
                         opp_prior_bias: params.opp_prior_bias,
                         updating_player,
                         weight: (iter_idx + 1) as f64,
-                        precomputed_buckets: &precomputed_buckets,
+                        precomputed_buckets,
                     };
                     self.cfr_shared(&game, &ctx, &shared_nodes, &mut t_rng);
                 }
@@ -457,13 +460,13 @@ impl SubgameSolver {
                     opp_prior_bias: params.opp_prior_bias,
                     updating_player,
                     weight: (iter_idx + 1) as f64,
-                    precomputed_buckets: &precomputed_buckets,
+                    precomputed_buckets,
                 };
                 self.cfr_local(&game, &ctx, nodes, rng);
             }
             nodes
                 .get(&params.root_hash)
-                .map(|n| n.get_average_strategy())
+                .map(super::super::node::InfosetNode::get_average_strategy)
         }
     }
 }
@@ -477,14 +480,14 @@ struct SubgameRunParams {
 }
 
 fn compute_subgame_seed(
-    hole: &[Card; 2],
+    hole: [Card; 2],
     board: &[Card],
     round: u8,
     contributions: [i32; 2],
 ) -> u64 {
     /* High-entropy board- and chip-sensitive PRNG seed */
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-    for &c in hole {
+    for c in hole {
         seed = seed
             .wrapping_mul(31)
             .wrapping_add(((c.rank as u64) << 3) | (c.suit as u64));
@@ -570,17 +573,21 @@ fn build_root_legal_actions(
 fn apply_safe_resolving(
     mut solved: Vec<f64>,
     fallback: &[f64; HOLDEM_NUM_ACTIONS],
-    hole: &[Card; 2],
+    hole: [Card; 2],
     board: &[Card],
     to_call: i32,
     legal: &[u8],
 ) -> Vec<f64> {
     /* Safe Resolving (Burch et al. 2014): blend solved policy with robust GTO fallback bounds */
-    let current_bucket = postflop_equity_bucket(hole, board);
-    let is_air_or_board_pair = current_bucket < 15 || current_bucket == 28 || current_bucket == 29;
+    let current_bucket = postflop_equity_bucket(&hole, board);
+    let is_air_or_board_pair = current_bucket < BUCKET_STRONG_DRAW_MIN
+        || current_bucket == BUCKET_WEAK_PAIR_MIN
+        || current_bucket == 29;
     if is_air_or_board_pair {
         solved[ALL_IN as usize] = 0.0;
-        if to_call > 0 && (current_bucket < 15 || current_bucket == 28) {
+        if to_call > 0
+            && (current_bucket < BUCKET_STRONG_DRAW_MIN || current_bucket == BUCKET_WEAK_PAIR_MIN)
+        {
             for r_act in RAISE_MIN..=ALL_IN {
                 solved[r_act as usize] = 0.0;
             }
@@ -610,7 +617,7 @@ fn apply_safe_resolving(
 
 fn lookup_blueprint_root<H: crate::cfr::abstraction::HistoryActions + ?Sized, V: AsRef<[f64]>>(
     strategy_map: Option<&HashMap<String, V>>,
-    hole: &[Card; 2],
+    hole: [Card; 2],
     board: &[Card],
     round: u8,
     history: &H,
@@ -619,7 +626,7 @@ fn lookup_blueprint_root<H: crate::cfr::abstraction::HistoryActions + ?Sized, V:
     strategy_map.and_then(|smap| {
         crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
             |k| smap.get(k).map(|v| v.as_ref().to_vec()),
-            hole,
+            &hole,
             board,
             round,
             history,
@@ -658,7 +665,7 @@ fn finalize_root_strategy(
         apply_safe_resolving(
             solved,
             &fallback,
-            iter_ctx.hole,
+            *iter_ctx.hole,
             iter_ctx.board,
             to_call,
             legal,
@@ -668,7 +675,7 @@ fn finalize_root_strategy(
     }
 }
 
-fn build_subgame_decks(hole: &[Card; 2], board: &[Card]) -> (Vec<Card>, Vec<Card>) {
+fn build_subgame_decks(hole: [Card; 2], board: &[Card]) -> (Vec<Card>, Vec<Card>) {
     let remaining_deck = ALL_52_CARDS
         .iter()
         .copied()

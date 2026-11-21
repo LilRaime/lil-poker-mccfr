@@ -3,8 +3,10 @@
  */
 
 use super::postflop::postflop_equity_bucket;
-use super::preflop::preflop_bucket;
+use super::preflop::{preflop_bucket, preflop_bucket_from_name};
+use crate::game::config::{ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::{Card, RoundHistory};
+use std::fmt::Write;
 
 pub trait HistoryActions: Sync {
     fn actions_in_round(&self, r_idx: usize) -> &[u8];
@@ -87,7 +89,7 @@ pub fn format_holdem_infoset_key_slice(
     out: &mut String,
 ) {
     out.clear();
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (_, name) = preflop_bucket(hole[0], hole[1]);
         out.push_str("P:");
         out.push_str(name);
@@ -95,17 +97,16 @@ pub fn format_holdem_infoset_key_slice(
     } else {
         let bucket = postflop_equity_bucket(hole, board);
         let round_code = match round {
-            2 => "F:B",
-            3 => "T:B",
-            4 => "R:B",
+            ROUND_FLOP => "F:B",
+            ROUND_TURN => "T:B",
+            ROUND_RIVER => "R:B",
             _ => "X:B",
         };
         out.push_str(round_code);
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
     }
     for &a in round_history {
@@ -146,24 +147,23 @@ pub fn get_holdem_infoset_key_with_bucket<H: HistoryActions + ?Sized>(
     history: &H,
 ) -> String {
     let mut out = String::with_capacity(16);
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (_, name) = preflop_bucket(hole[0], hole[1]);
         out.push_str("P:");
         out.push_str(name);
         out.push('/');
     } else {
         let round_code = match round {
-            2 => "F:B",
-            3 => "T:B",
-            4 => "R:B",
+            ROUND_FLOP => "F:B",
+            ROUND_TURN => "T:B",
+            ROUND_RIVER => "R:B",
             _ => "X:B",
         };
         out.push_str(round_code);
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
     }
     let r_idx = (round.saturating_sub(1)) as usize;
@@ -194,7 +194,7 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     out: &mut String,
 ) {
     out.clear();
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (_, name) = preflop_bucket(hole[0], hole[1]);
         out.push_str("P:");
         out.push_str(name);
@@ -202,7 +202,7 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             out.push(action_to_char(a));
         }
-    } else if round == 4 {
+    } else if round == ROUND_RIVER {
         /* Compact River: R:B<bucket>/<river_actions>
          * Eliminates the 11.8M combinatorial explosion on river while keeping
          * rich preflop/flop/turn context. Real-time Subgame Solver re-solves river. */
@@ -211,8 +211,7 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
         for &a in history.actions_in_round(3) {
             out.push(action_to_char(a));
@@ -226,7 +225,7 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
             }
             out.push('|');
         }
-        if round >= 3 {
+        if round >= ROUND_TURN {
             let f_actions = history.actions_in_round(1);
             if !f_actions.is_empty() {
                 out.push_str("F:");
@@ -237,13 +236,12 @@ pub fn format_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
             }
         }
         let bucket = postflop_equity_bucket(hole, board);
-        let round_code = if round == 2 { "F:B" } else { "T:B" };
+        let round_code = if round == ROUND_FLOP { "F:B" } else { "T:B" };
         out.push_str(round_code);
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
         let r_idx = (round.saturating_sub(1)) as usize;
         for &a in history.actions_in_round(r_idx) {
@@ -272,7 +270,7 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     history: &H,
 ) -> String {
     let mut out = String::with_capacity(36);
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (_, name) = preflop_bucket(hole[0], hole[1]);
         out.push_str("P:");
         out.push_str(name);
@@ -280,13 +278,12 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             out.push(action_to_char(a));
         }
-    } else if round == 4 {
+    } else if round == ROUND_RIVER {
         out.push_str("R:B");
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
         for &a in history.actions_in_round(3) {
             out.push(action_to_char(a));
@@ -300,7 +297,7 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
             }
             out.push('|');
         }
-        if round >= 3 {
+        if round >= ROUND_TURN {
             let f_actions = history.actions_in_round(1);
             if !f_actions.is_empty() {
                 out.push_str("F:");
@@ -310,13 +307,12 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
                 out.push('|');
             }
         }
-        let round_code = if round == 2 { "F:B" } else { "T:B" };
+        let round_code = if round == ROUND_FLOP { "F:B" } else { "T:B" };
         out.push_str(round_code);
         if bucket < 10 {
             out.push('0');
         }
-        use std::fmt::Write;
-        let _ = write!(out, "{}", bucket);
+        let _ = write!(out, "{bucket}");
         out.push('/');
         let r_idx = (round.saturating_sub(1)) as usize;
         for &a in history.actions_in_round(r_idx) {
@@ -328,8 +324,8 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
 
 /* ── Fast 64-bit Hash Infoset Keys (Zero-allocation FNV-1a) ───────────────── */
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x100000001b3;
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x100_0000_01b3;
 
 #[inline(always)]
 fn fnv1a_combine(mut hash: u64, byte: u8) -> u64 {
@@ -347,7 +343,7 @@ pub fn hash_holdem_infoset_key_slice(
     let mut h = FNV_OFFSET_BASIS;
     h = fnv1a_combine(h, round);
     h = fnv1a_combine(h, b':');
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(hole[0], hole[1]);
         h = fnv1a_combine(h, (idx & 0xff) as u8);
         h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
@@ -383,7 +379,7 @@ pub fn hash_holdem_infoset_key_with_bucket<H: HistoryActions + ?Sized>(
     let mut h = FNV_OFFSET_BASIS;
     h = fnv1a_combine(h, round);
     h = fnv1a_combine(h, b':');
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(hole[0], hole[1]);
         h = fnv1a_combine(h, (idx & 0xff) as u8);
         h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
@@ -406,8 +402,8 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
     history: &H,
 ) -> u64 {
     let mut h = FNV_OFFSET_BASIS;
-    if round == 1 {
-        h = fnv1a_combine(h, 1);
+    if round == ROUND_PREFLOP {
+        h = fnv1a_combine(h, ROUND_PREFLOP);
         h = fnv1a_combine(h, b':');
         let (idx, _) = preflop_bucket(hole[0], hole[1]);
         h = fnv1a_combine(h, (idx & 0xff) as u8);
@@ -416,8 +412,8 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             h = fnv1a_combine(h, a);
         }
-    } else if round == 4 {
-        h = fnv1a_combine(h, 4);
+    } else if round == ROUND_RIVER {
+        h = fnv1a_combine(h, ROUND_RIVER);
         h = fnv1a_combine(h, b':');
         let bucket = postflop_equity_bucket(hole, board);
         h = fnv1a_combine(h, bucket as u8);
@@ -439,7 +435,7 @@ pub fn hash_holdem_infoset_key_rich<H: HistoryActions + ?Sized>(
             }
             h = fnv1a_combine(h, b'|');
         }
-        if round >= 3 {
+        if round >= ROUND_TURN {
             let f_actions = history.actions_in_round(1);
             if !f_actions.is_empty() {
                 h = fnv1a_combine(h, b'F');
@@ -475,8 +471,8 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
     history: &H,
 ) -> u64 {
     let mut h = FNV_OFFSET_BASIS;
-    if round == 1 {
-        h = fnv1a_combine(h, 1);
+    if round == ROUND_PREFLOP {
+        h = fnv1a_combine(h, ROUND_PREFLOP);
         h = fnv1a_combine(h, b':');
         let (idx, _) = preflop_bucket(hole[0], hole[1]);
         h = fnv1a_combine(h, (idx & 0xff) as u8);
@@ -485,8 +481,8 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             h = fnv1a_combine(h, a);
         }
-    } else if round == 4 {
-        h = fnv1a_combine(h, 4);
+    } else if round == ROUND_RIVER {
+        h = fnv1a_combine(h, ROUND_RIVER);
         h = fnv1a_combine(h, b':');
         h = fnv1a_combine(h, bucket);
         h = fnv1a_combine(h, b'/');
@@ -507,7 +503,7 @@ pub fn hash_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
             }
             h = fnv1a_combine(h, b'|');
         }
-        if round >= 3 {
+        if round >= ROUND_TURN {
             let f_actions = history.actions_in_round(1);
             if !f_actions.is_empty() {
                 h = fnv1a_combine(h, b'F');
@@ -544,7 +540,7 @@ pub fn hash_holdem_infoset_key_fast<H: HistoryActions + ?Sized>(
     let mut h = FNV_OFFSET_BASIS;
     h = fnv1a_combine(h, round);
     h = fnv1a_combine(h, b':');
-    if round == 1 {
+    if round == ROUND_PREFLOP {
         h = fnv1a_combine(h, bucket);
         h = fnv1a_combine(h, 0);
     } else {
@@ -565,8 +561,8 @@ pub fn hash_holdem_infoset_key_rich_fast<H: HistoryActions + ?Sized>(
     history: &H,
 ) -> u64 {
     let mut h = FNV_OFFSET_BASIS;
-    if round == 1 {
-        h = fnv1a_combine(h, 1);
+    if round == ROUND_PREFLOP {
+        h = fnv1a_combine(h, ROUND_PREFLOP);
         h = fnv1a_combine(h, b':');
         h = fnv1a_combine(h, bucket);
         h = fnv1a_combine(h, 0);
@@ -574,8 +570,8 @@ pub fn hash_holdem_infoset_key_rich_fast<H: HistoryActions + ?Sized>(
         for &a in history.actions_in_round(0) {
             h = fnv1a_combine(h, a);
         }
-    } else if round == 4 {
-        h = fnv1a_combine(h, 4);
+    } else if round == ROUND_RIVER {
+        h = fnv1a_combine(h, ROUND_RIVER);
         h = fnv1a_combine(h, b':');
         h = fnv1a_combine(h, bucket);
         h = fnv1a_combine(h, b'/');
@@ -596,7 +592,7 @@ pub fn hash_holdem_infoset_key_rich_fast<H: HistoryActions + ?Sized>(
             }
             h = fnv1a_combine(h, b'|');
         }
-        if round >= 3 {
+        if round >= ROUND_TURN {
             let f_actions = history.actions_in_round(1);
             if !f_actions.is_empty() {
                 h = fnv1a_combine(h, b'F');
@@ -637,11 +633,9 @@ pub fn char_to_action(c: u8) -> Option<u8> {
 }
 
 /** Reconstructs the exact 64-bit FNV-1a infoset hash from a formatted infoset key string
- * (both rich keys like "P:rc|F:B39/c" and compact keys like "P:AKo/rc" or "R:B50/t"),
+ * (both rich keys like `"P:rc|F:B39/c"` and compact keys like `"P:AKo/rc"` or `"R:B50/t"`),
  * matching `hash_holdem_infoset_key_rich_with_bucket` / `hash_holdem_infoset_key_with_bucket`. */
 pub fn hash_from_infoset_key_str(key: &str) -> u64 {
-    use super::preflop::preflop_bucket_from_name;
-
     let (stack_prefix, rest) = if let Some(r) = key.strip_prefix("S15|") {
         ("S15|", r)
     } else if let Some(r) = key.strip_prefix("S30|") {
@@ -680,18 +674,18 @@ pub fn hash_from_infoset_key_str(key: &str) -> u64 {
 
     let mut tex_char: Option<char> = None;
     if let Some(pf_name) = head.strip_prefix("P:") {
-        h = fnv1a_combine(h, 1);
+        h = fnv1a_combine(h, ROUND_PREFLOP);
         h = fnv1a_combine(h, b':');
         let idx = preflop_bucket_from_name(pf_name).unwrap_or(0);
         h = fnv1a_combine(h, (idx & 0xff) as u8);
         h = fnv1a_combine(h, ((idx >> 8) & 0xff) as u8);
     } else {
         let round = if head.starts_with("F:") {
-            2u8
+            ROUND_FLOP
         } else if head.starts_with("T:") {
-            3u8
+            ROUND_TURN
         } else if head.starts_with("R:") {
-            4u8
+            ROUND_RIVER
         } else {
             0u8
         };
