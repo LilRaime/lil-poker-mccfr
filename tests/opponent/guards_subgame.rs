@@ -946,3 +946,118 @@ fn test_subgame_baby_vs_qhigh_four_flush_river() {
     );
     assert_ne!(act_qh, FOLD, "Q-high flush on 4-flush river must not fold");
 }
+
+#[test]
+fn test_subgame_turn_pot_control_three_flush_and_four_straight_folds() {
+    let neutral = OpponentTracker::new();
+    let overbet_villain = make_overbet_bluffer();
+    let mut rng = SmallRng::seed_from_u64(20_261_122);
+    let bet_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.10, 0.40, 0.40, 0.0];
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
+
+    /* 1. Middle/weak pair facing no bet on bloated Turn must check for pot control */
+    let hole_t9 = [
+        Card::new(Rank::Ten, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Diamonds),
+    ];
+    let board_t9_turn = [
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
+    let b_t9 = postflop_equity_bucket(&hole_t9, &board_t9_turn);
+    for _ in 0..40 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &bet_heavy,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_t9,
+                round: 3,
+                pot: 3000,
+                hole: Some(&hole_t9),
+                board: Some(&board_t9_turn),
+                table_bb: 200,
+                my_chips: 12000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_eq!(
+            act, CALL_CHECK,
+            "Turn middle/weak pair in bloated pot must check instead of leading out (got {act})"
+        );
+    }
+
+    /* 2. Second pair without flush redraw on 3-flush Turn must fold to all-in even vs overbet bluffer */
+    let hole_j2 = [
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let board_three_flush_turn = [
+        Card::new(Rank::Three, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::King, Suit::Diamonds),
+    ];
+    let b_j2 = postflop_equity_bucket(&hole_j2, &board_three_flush_turn);
+    let (act_j2, tr_j2) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_j2,
+            round: 3,
+            to_call: 4040,
+            pot: 7160,
+            hole: Some(&hole_j2),
+            board: Some(&board_three_flush_turn),
+            table_bb: 400,
+            my_chips: 4040,
+            opp_chips: Some(0),
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_j2, FOLD,
+        "Below-top-pair on 3-flush turn must fold to overbet jam even vs overbet bluffer (reasons: {:?})",
+        tr_j2.guard_reasons
+    );
+
+    /* 3. Bare top pair on 4-to-a-straight Turn facing heavy barrel must fold */
+    let hole_k7 = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+    ];
+    let board_four_straight_turn = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Diamonds),
+    ];
+    let b_k7 = postflop_equity_bucket(&hole_k7, &board_four_straight_turn);
+    let (act_k7, tr_k7) = neutral.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_k7,
+            round: 3,
+            to_call: 2812,
+            pot: 6262,
+            hole: Some(&hole_k7),
+            board: Some(&board_four_straight_turn),
+            table_bb: 300,
+            my_chips: 5649,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_k7, FOLD,
+        "Bare top pair on 4-straight turn must fold to 80% pot barrel (reasons: {:?})",
+        tr_k7.guard_reasons
+    );
+}

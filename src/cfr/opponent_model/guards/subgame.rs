@@ -69,6 +69,14 @@ impl OpponentTracker {
                     probs[c_i] = (probs[c_i] + shifted).max(0.95);
                 }
             }
+        } else if ctx.pot >= ctx.bb * 5
+            && (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
+            && !(ctx.is_passive_station && ctx.bucket >= 35 && !ctx.is_three_flush)
+        {
+            let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                probs[c_i] = (probs[c_i] + shifted).max(0.95);
+            }
         }
     }
 
@@ -149,13 +157,16 @@ impl OpponentTracker {
                     && ctx.bucket < BUCKET_OVERPAIR_MIN
                     && ctx.to_call >= ctx.bb * 15
                     && ctx.pot_odds >= 0.23));
-        let is_turn_one_pair_jam = ctx.round == ROUND_TURN
-            && !ctx.is_overbet_bluffer
-            && ((is_extreme_overbet_jam && ctx.bucket < 58)
-                || (ctx.is_paired_board && ctx.bucket < 52)
-                || (ctx.is_three_flush && ctx.bucket <= BUCKET_OVERPAIR_MIN)
-                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.25)
-                || (!ctx.is_known_maniac && ctx.bucket < BUCKET_TOP_PAIR_MIN));
+        let is_turn_structural_weak_jam = ctx.round == ROUND_TURN
+            && ((ctx.is_three_flush && ctx.bucket < BUCKET_TOP_PAIR_MIN)
+                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.25));
+        let is_turn_one_pair_jam = is_turn_structural_weak_jam
+            || (ctx.round == ROUND_TURN
+                && !ctx.is_overbet_bluffer
+                && ((is_extreme_overbet_jam && ctx.bucket < 58)
+                    || (ctx.is_paired_board && ctx.bucket < 52)
+                    || (ctx.is_three_flush && ctx.bucket <= BUCKET_OVERPAIR_MIN)
+                    || (!ctx.is_known_maniac && ctx.bucket < BUCKET_TOP_PAIR_MIN)));
         let mut is_trash = is_river_one_pair_jam || is_turn_one_pair_jam;
         if !is_trash && !ctx.is_overbet_bluffer && self.is_guard_enabled("RANGE_EQUITY_SHOVE_FOLD")
         {
@@ -273,12 +284,16 @@ impl OpponentTracker {
                     && !ctx.is_overbet_bluffer
                     && ctx.to_call >= ctx.bb * 4
                     && ctx.pot_odds >= 0.25));
-        let fold_four_straight = ctx.round == ROUND_RIVER
-            && ctx.is_four_straight_board
-            && ctx.bucket < BUCKET_STRAIGHT_MIN
-            && ctx.to_call >= ctx.bb * 4
-            && ctx.pot_odds >= 0.30
-            && (ctx.bucket <= BUCKET_TOP_PAIR_MIN || !ctx.is_overbet_bluffer);
+        let fold_four_straight = ctx.is_four_straight_board
+            && ((ctx.round == ROUND_RIVER
+                && ctx.bucket < BUCKET_STRAIGHT_MIN
+                && ctx.to_call >= ctx.bb * 4
+                && ctx.pot_odds >= 0.30
+                && (ctx.bucket <= BUCKET_TOP_PAIR_MIN || !ctx.is_overbet_bluffer))
+                || (ctx.round == ROUND_TURN
+                    && ctx.bucket < BUCKET_TWO_PAIR_MIN
+                    && ctx.to_call >= ctx.bb * 4
+                    && ctx.pot_odds >= 0.26));
         if (fold_four_flush || fold_four_straight) && force_action(probs, ctx.legal_actions, FOLD) {
             reasons.push("SHOVE_DEFENSE_FOLD");
         }
@@ -308,7 +323,15 @@ impl OpponentTracker {
             && ctx.to_call >= ctx.bb * 5
             && ctx.pot_odds >= 0.28
             && ((ctx.bucket <= 30 && !ctx.is_overbet_bluffer)
-                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.32));
+                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.30)
+                || (ctx.is_three_flush
+                    && ctx.bucket < BUCKET_TOP_PAIR_MIN
+                    && ctx.to_call >= ctx.bb * 6
+                    && ctx.pot_odds >= 0.30)
+                || (ctx.bucket <= 35
+                    && !ctx.is_overbet_bluffer
+                    && ctx.to_call >= ctx.bb * 6
+                    && ctx.pot_odds >= 0.36));
         if (fold_river_barrel || fold_turn_barrel) && force_action(probs, ctx.legal_actions, FOLD) {
             reasons.push("POST_BARREL_FOLD");
         }
@@ -336,6 +359,7 @@ impl OpponentTracker {
             || ctx.to_call <= 0
             || ctx.is_four_flush_board
             || ctx.is_four_board_danger
+            || (ctx.round == ROUND_TURN && ctx.is_three_flush && ctx.bucket < BUCKET_TOP_PAIR_MIN)
             || ctx.bucket < min_bluff_catch_bucket
             || (!is_overbet_sizing && !is_priced_in_river_catch)
             || !self.is_guard_enabled("OVERBET_BLUFF_CATCH")

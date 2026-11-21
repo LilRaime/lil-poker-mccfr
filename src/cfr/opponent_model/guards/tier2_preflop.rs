@@ -168,7 +168,8 @@ impl OpponentTracker {
                 && ctx.to_call <= ctx.bb * 2
                 && ctx.pot <= ctx.bb * 4
                 && ctx.pot_odds <= 0.33
-                && pf_tier == 7;
+                && pf_tier == 7
+                && ctx.bucket < 135;
             if ctx.pot_odds <= 0.22 || (ctx.pot_odds <= 0.26 && pf_tier <= 7) {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
@@ -188,6 +189,17 @@ impl OpponentTracker {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.98);
             } else if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
                 probs[f_i] += shifted;
+            }
+        } else if ctx.to_call >= ctx.bb
+            && ctx.to_call < ctx.bb * 3
+            && (pf_tier == 6 || (96..=99).contains(&ctx.bucket))
+        {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+            if pf_tier == 6 && ctx.bucket >= 141 && ctx.pot_odds > 0.28 {
+                force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
+            } else if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                probs[c_i] += shifted;
             }
         } else if ctx.to_call >= ctx.bb * 3 && pf_tier >= 6 {
             reasons.push("PF_DISCIPLINE_GUARD");

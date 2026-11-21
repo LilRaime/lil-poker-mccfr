@@ -97,16 +97,23 @@ impl OpponentTracker {
         } else {
             raw_max_nash_bb
         };
+        let is_genuine_shove_or_short = ctx.is_allin_call
+            || !ctx.can_raise
+            || ctx.eff_stack_bb <= 18
+            || (ctx.my_chips > 0 && ctx.to_call * 2 >= ctx.my_chips);
         let within_nash_rescue = ctx.to_call <= max_nash_bb * ctx.bb
             && ctx.to_call < ctx.bb * 40
-            && (pf_tier <= 5 || ctx.is_known_maniac || ctx.is_extreme_shove_bot);
+            && (pf_tier <= 3
+                || (is_genuine_shove_or_short
+                    && (pf_tier <= 5 || ctx.is_known_maniac || ctx.is_extreme_shove_bot)));
 
         let should_rescue = if ctx.to_call >= ctx.bb * 40 {
             ctx.bucket <= 1 || (ctx.is_known_maniac && pf_tier <= 2)
         } else {
             (pf_tier <= 1
                 || within_nash_rescue
-                || (ctx.is_extreme_shove_bot
+                || (is_genuine_shove_or_short
+                    && ctx.is_extreme_shove_bot
                     && pf_tier <= 6
                     && ctx.pot_odds <= 0.46
                     && ctx.to_call < ctx.bb * 15))

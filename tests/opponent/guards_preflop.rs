@@ -819,3 +819,110 @@ fn test_preflop_hu_sb_mid_hands_open_raise_vs_hyper_aggressor() {
         );
     }
 }
+
+#[test]
+fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..10 {
+        maniac.record_action_street_detailed(ALL_IN, 1, false, 1400, 150);
+        maniac.record_preflop_positional(true, true, true);
+        maniac.end_hand();
+    }
+    let mut rng = SmallRng::seed_from_u64(20_261_122);
+
+    /* 1. Weak offsuit Ace (~30 BB) facing a non-all-in 10 BB 3-bet must fold rather than rescue */
+    let hole_a6o = [
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::Ace, Suit::Diamonds),
+    ];
+    let b_a6o = preflop_bucket(hole_a6o[0], hole_a6o[1]).0;
+    let (act_a6o, tr_a6o) = maniac.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.05, 0.90, 0.0, 0.0, 0.0, 0.05],
+            legal_actions: &LEGAL_SB,
+            bucket: b_a6o,
+            round: 1,
+            to_call: 1500,
+            pot: 2175,
+            hole: Some(&hole_a6o),
+            active_opponents: 1,
+            table_bb: 150,
+            my_chips: 4562,
+            opp_chips: Some(13_000),
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_a6o, FOLD,
+        "Non-all-in 10 BB 3-bet at 30 BB deep must fold A6o instead of short-stack rescue (reasons: {:?})",
+        tr_a6o.guard_reasons
+    );
+
+    /* 2. Weak offsuit Ace in BB facing 2x open must not 3-bet bluff */
+    let tracker = OpponentTracker::new();
+    let hole_a7o = [
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Ace, Suit::Hearts),
+    ];
+    let b_a7o = preflop_bucket(hole_a7o[0], hole_a7o[1]).0;
+    let three_bet_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.25, 0.20, 0.50, 0.0, 0.0];
+    for _ in 0..40 {
+        let (act_a7o, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &three_bet_heavy,
+                legal_actions: &LEGAL_SB,
+                bucket: b_a7o,
+                round: 1,
+                to_call: 300,
+                pot: 900,
+                hole: Some(&hole_a7o),
+                active_opponents: 1,
+                table_bb: 300,
+                my_chips: 11_000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act_a7o < RAISE_MIN,
+            "Weak offsuit Ace in BB vs 2x open must call rather than 3-bet (got {act_a7o})"
+        );
+    }
+
+    /* 3. Low offsuit disconnected gappers (86o / 85o) in HU BB facing 2.5x open must fold */
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
+    for hole in [
+        [
+            Card::new(Rank::Eight, Suit::Hearts),
+            Card::new(Rank::Six, Suit::Clubs),
+        ],
+        [
+            Card::new(Rank::Eight, Suit::Hearts),
+            Card::new(Rank::Five, Suit::Clubs),
+        ],
+    ] {
+        let b = preflop_bucket(hole[0], hole[1]).0;
+        let (act_gap, tr_gap) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &call_heavy,
+                legal_actions: &LEGAL_SB,
+                bucket: b,
+                round: 1,
+                to_call: 450,
+                pot: 1050,
+                hole: Some(&hole),
+                active_opponents: 1,
+                table_bb: 300,
+                my_chips: 10_000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_eq!(
+            act_gap, FOLD,
+            "Low offsuit gapper {hole:?} in HU BB vs 2.5x open must fold (reasons: {:?})",
+            tr_gap.guard_reasons
+        );
+    }
+}
