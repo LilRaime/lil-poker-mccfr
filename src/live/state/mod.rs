@@ -13,7 +13,7 @@ pub use super::round_tracker::LiveRoundTracker;
 
 use serde_json::Value;
 
-use super::protocol::{parse_card_str, parse_json_i32};
+use super::protocol::{parse_card_str, parse_json_i32, parse_json_opt_i32};
 use crate::game::config::BIG_BLIND;
 use crate::game::holdem::Card;
 
@@ -36,8 +36,8 @@ pub(super) fn extract_player_bet(p: &Value) -> i32 {
     parse_json_i32(p.get("bet").or_else(|| p.get("current_bet")))
 }
 
-pub(super) fn extract_player_chips(p: &Value) -> i32 {
-    parse_json_i32(
+pub(super) fn extract_player_chips(p: &Value) -> Option<i32> {
+    parse_json_opt_i32(
         p.get("chips")
             .or_else(|| p.get("stack"))
             .or_else(|| p.get("balance"))
@@ -49,11 +49,11 @@ pub(super) fn extract_player_chips(p: &Value) -> i32 {
 pub(super) fn extract_blind_flags(p: &Value) -> (bool, bool) {
     let is_sb = p
         .get("is_small_blind")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let is_bb = p
         .get("is_big_blind")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     (is_sb, is_bb)
 }
@@ -75,17 +75,16 @@ pub(super) fn parse_cards_array(val: Option<&Value>) -> Vec<Card> {
 pub(super) fn is_player_folded(p: &Value) -> bool {
     p.get("folded")
         .or_else(|| p.get("is_folded"))
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
         || p.get("status")
             .or_else(|| p.get("state"))
             .and_then(|v| v.as_str())
-            .map(|s| {
+            .is_some_and(|s| {
                 s.eq_ignore_ascii_case("folded")
                     || s.eq_ignore_ascii_case("out")
                     || s.eq_ignore_ascii_case("sitout")
             })
-            .unwrap_or(false)
 }
 
 pub(super) fn parse_raw_blinds(state: &Value) -> (i32, i32) {

@@ -1,8 +1,15 @@
 /*! Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
 use super::guards::{action_idx, first_action_idx, force_action, GuardContext};
 use super::tracker::OpponentTracker;
-use crate::cfr::abstraction::preflop_strength_tier;
-use crate::game::config::*;
+use crate::cfr::abstraction::{
+    preflop_strength_tier, BUCKET_FLUSH_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN,
+    BUCKET_WEAK_PAIR_MIN,
+};
+use crate::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
+    ROUND_TURN,
+};
 
 impl OpponentTracker {
     /** Checks if opponent predominantly checks and calls without raising */
@@ -13,9 +20,9 @@ impl OpponentTracker {
             && (self.call_ratio() > 0.50 || self.fold_ratio() < 0.22)
     }
 
-    /** Shift passive check/min-bet weight directly into geometric value sizing (RAISE_HALF_POT / RAISE_THIRD_POT)
+    /** Shift passive check/min-bet weight directly into geometric value sizing (`RAISE_HALF_POT` / `RAISE_THIRD_POT`)
      * so the bot extracts full stacks in 15-25 hands instead of checking down Top Pair / Overpair / Two Pair! */
-    pub(super) fn apply_passive_station_boost(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
+    pub(super) fn apply_passive_station_boost(probs: &mut [f64], ctx: &GuardContext<'_>) {
         if ctx.is_preflop && ctx.to_call <= ctx.bb {
             Self::boost_station_preflop(probs, ctx);
         } else if !ctx.is_preflop && ctx.to_call == 0 && !ctx.is_four_board_danger {
@@ -72,10 +79,10 @@ impl OpponentTracker {
     }
 
     fn boost_station_postflop(probs: &mut [f64], ctx: &GuardContext<'_>) {
-        let is_dangerous_river = ctx.round == 4
+        let is_dangerous_river = ctx.round == ROUND_RIVER
             && (ctx.is_dangerous_board || ctx.is_three_flush || ctx.is_three_straight_board);
 
-        if ctx.bucket <= 14 {
+        if ctx.bucket < BUCKET_STRONG_DRAW_MIN {
             /* Pure air against a station who never folds: stop burning chips on air bluffs! */
             let mut shifted = 0.0f64;
             for (i, &a) in ctx.legal_actions.iter().enumerate() {
@@ -88,19 +95,23 @@ impl OpponentTracker {
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] += shifted;
             }
-        } else if ctx.bucket >= 65
-            && ctx.bucket != 73
-            && !(ctx.is_three_flush && ctx.bucket < 79)
-            && !(ctx.round == 4 && (74..=78).contains(&ctx.bucket) && ctx.is_paired_board)
+        } else if ctx.bucket >= BUCKET_TRIPS_MIN
+            && ctx.bucket != BUCKET_STRAIGHT_MIN
+            && !(ctx.is_three_flush && ctx.bucket < BUCKET_FLUSH_MIN)
+            && !(ctx.round == ROUND_RIVER
+                && (74..=BUCKET_STRAIGHT_MAX).contains(&ctx.bucket)
+                && ctx.is_paired_board)
         {
             Self::boost_station_monsters(probs, ctx);
-        } else if (57..=64).contains(&ctx.bucket) && !ctx.is_three_flush {
+        } else if (BUCKET_TWO_PAIR_MIN..BUCKET_TRIPS_MIN).contains(&ctx.bucket)
+            && !ctx.is_three_flush
+        {
             Self::boost_station_two_pair(probs, ctx, is_dangerous_river);
         } else if (45..=56).contains(&ctx.bucket) && !ctx.is_three_flush {
             Self::boost_station_top_pair(probs, ctx, is_dangerous_river);
         } else if (35..=44).contains(&ctx.bucket)
             && ctx.bucket != 39
-            && ctx.bucket != 40
+            && ctx.bucket != BUCKET_TOP_PAIR_MIN
             && !ctx.is_three_flush
             && !is_dangerous_river
         {
@@ -228,18 +239,20 @@ impl OpponentTracker {
             if fold_three_flush_air && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_BARREL_FOLD");
             }
-            if ctx.round == 2
+            if ctx.round == ROUND_FLOP
                 && ctx.to_call >= ctx.bb * 4
-                && (28..=30).contains(&ctx.bucket)
+                && (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket)
                 && ctx.pot_odds >= 0.28
                 && force_action(probs, ctx.legal_actions, FOLD)
             {
                 reasons.push("POST_BARREL_FOLD");
             }
-            if ctx.round >= 3 && ctx.to_call >= ctx.bb * 5 {
-                let should_fold_weak_pair = (28..=30).contains(&ctx.bucket) && ctx.pot_odds >= 0.33;
-                let should_fold_three_flush_tp =
-                    ctx.is_three_flush && (28..=42).contains(&ctx.bucket) && ctx.pot_odds >= 0.28;
+            if ctx.round >= ROUND_TURN && ctx.to_call >= ctx.bb * 5 {
+                let should_fold_weak_pair =
+                    (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket) && ctx.pot_odds >= 0.33;
+                let should_fold_three_flush_tp = ctx.is_three_flush
+                    && (BUCKET_WEAK_PAIR_MIN..=42).contains(&ctx.bucket)
+                    && ctx.pot_odds >= 0.28;
                 if (should_fold_weak_pair || should_fold_three_flush_tp)
                     && force_action(probs, ctx.legal_actions, FOLD)
                 {
@@ -252,7 +265,8 @@ impl OpponentTracker {
         if ctx.to_call > 0
             && ctx.allow_pot_commit_rescue
             && (ctx.pot_odds <= 0.12
-                || (ctx.pot_odds <= 0.15 && (ctx.is_preflop || ctx.bucket >= 15))
+                || (ctx.pot_odds <= 0.15
+                    && (ctx.is_preflop || ctx.bucket >= BUCKET_STRONG_DRAW_MIN))
                 || ctx.never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_TERMINAL")
         {

@@ -1,15 +1,38 @@
-use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentTracker, PolicyRequest};
-use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+use lil_poker_mccfr::cfr::abstraction::{
+    detect_river_nut_blocker, postflop_equity_bucket, preflop_bucket,
 };
+use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentTracker, PolicyRequest};
+use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, ReachRequest};
+use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
+use lil_poker_mccfr::game::holdem::{
+    Card, Rank, Suit, ALL_52_CARDS, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN,
+    RAISE_THIRD_POT,
+};
+use rand::rngs::SmallRng;
 use rand::SeedableRng;
+
+const LEGAL_FULL: [u8; 6] = [
+    FOLD,
+    CALL_CHECK,
+    RAISE_MIN,
+    RAISE_THIRD_POT,
+    RAISE_HALF_POT,
+    ALL_IN,
+];
+const LEGAL_SHOVE: [u8; 3] = [FOLD, CALL_CHECK, ALL_IN];
+
+fn make_maniac_tracker() -> OpponentTracker {
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..12 {
+        maniac.record_action_street_detailed(ALL_IN, 1, true, 4000, 300);
+        maniac.end_hand();
+    }
+    maniac
+}
 
 #[test]
 fn test_river_blocker_detection_and_bluffing() {
-    use lil_poker_mccfr::cfr::abstraction::detect_river_nut_blocker;
-
     let card = |rank, suit| Card { rank, suit };
-    /* Board with 3 Spades (Ks, 9s, 4s, 2h, 7d) */
     let board = [
         card(Rank::King, Suit::Spades),
         card(Rank::Nine, Suit::Spades),
@@ -18,7 +41,6 @@ fn test_river_blocker_detection_and_bluffing() {
         card(Rank::Seven, Suit::Diamonds),
     ];
 
-    /* Hole has Ace of spades -> holding Nut Flush blocker */
     let hole_with_nut_blocker = [
         card(Rank::Ace, Suit::Spades),
         card(Rank::Three, Suit::Clubs),
@@ -28,7 +50,6 @@ fn test_river_blocker_detection_and_bluffing() {
         "Ace of spades on 3-spade board must be detected as nut blocker"
     );
 
-    /* Hole without Ace of spades -> no blocker */
     let hole_no_blocker = [
         card(Rank::Queen, Suit::Clubs),
         card(Rank::Three, Suit::Clubs),
@@ -38,13 +59,10 @@ fn test_river_blocker_detection_and_bluffing() {
         "Hand without spade should not trigger nut blocker"
     );
 
-    /* Verify purified selection boosts bluff with blocker */
     let tracker = OpponentTracker::new();
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(123);
+    let mut rng = SmallRng::seed_from_u64(123);
     let raw_probs = [0.40, 0.40, 0.0, 0.10, 0.10, 0.0];
     let legal = [FOLD, CALL_CHECK, RAISE_THIRD_POT, RAISE_HALF_POT];
-
-    /* Sample 200 actions with blocker vs without blocker */
     let mut raises_with_blocker = 0;
     let mut raises_without_blocker = 0;
     for _ in 0..200 {
@@ -64,7 +82,6 @@ fn test_river_blocker_detection_and_bluffing() {
         if a1 == RAISE_THIRD_POT || a1 == RAISE_HALF_POT {
             raises_with_blocker += 1;
         }
-
         let a2 = tracker.select_action(
             &PolicyRequest {
                 raw_probs: &raw_probs,
@@ -82,32 +99,24 @@ fn test_river_blocker_detection_and_bluffing() {
             raises_without_blocker += 1;
         }
     }
-
     assert!(
         raises_with_blocker > raises_without_blocker,
-        "River bluffing frequency with nut blocker ({}) must exceed without blocker ({})",
-        raises_with_blocker,
-        raises_without_blocker
+        "River bluffing frequency with nut blocker ({raises_with_blocker}) must exceed without blocker ({raises_without_blocker})"
     );
 }
 
 #[test]
-fn test_shove_defense_pocket_pairs_and_board_textures() {
+fn test_shove_defense_preflop_pairs_and_wet_turn() {
     let tracker = OpponentTracker::new();
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
-    let card = |rank, suit| Card { rank, suit };
+    let mut rng = SmallRng::seed_from_u64(42);
     let legal = [FOLD, CALL_CHECK];
 
-    /* 1. Pocket 88 (bucket 6) facing 40 BB preflop shove (to_call = 4000)
-     * Even if raw CFR probs suggests calling with some weight,
-     * the guard MUST classify 88 as trash against a massive 35+ BB shove and fold! */
-    let raw_probs_88 = [0.20, 0.80, 0.0, 0.0, 0.0, 0.0];
     let chosen_88 = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &raw_probs_88,
+            raw_probs: &[0.20, 0.80, 0.0, 0.0, 0.0, 0.0],
             legal_actions: &legal,
-            bucket: 6, /* 88 */
-            round: 1,  /* Preflop */
+            bucket: 6,
+            round: 1,
             to_call: 4000,
             pot: 5000,
             ..Default::default()
@@ -116,15 +125,12 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
     );
     assert_eq!(chosen_88, FOLD, "Pocket 88 facing a 40 BB shove must fold!");
 
-    /* 2. Monster Pocket AA (bucket 0) facing 40 BB preflop shove
-     * Must NEVER fold */
-    let raw_probs_aa = [0.40, 0.60, 0.0, 0.0, 0.0, 0.0];
     let chosen_aa = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &raw_probs_aa,
+            raw_probs: &[0.40, 0.60, 0.0, 0.0, 0.0, 0.0],
             legal_actions: &legal,
-            bucket: 0, /* AA */
-            round: 1,  /* Preflop */
+            bucket: 0,
+            round: 1,
             to_call: 4000,
             pot: 5000,
             ..Default::default()
@@ -133,26 +139,22 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
     );
     assert_eq!(chosen_aa, CALL_CHECK, "Pocket Aces facing shove must call!");
 
-    /* 3. Overpair JJ on a 4-to-straight Turn board (4d 6d 7c 3c) facing 35+ BB check-raise shove
-     * Board has 3, 4, 6, 7 (any 5 is straight). JJ is bare overpair (bucket 43).
-     * Must fold against shove on dangerous board! */
     let hole_jj = [
-        card(Rank::Jack, Suit::Hearts),
-        card(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Clubs),
     ];
     let board_wet = [
-        card(Rank::Four, Suit::Diamonds),
-        card(Rank::Six, Suit::Diamonds),
-        card(Rank::Seven, Suit::Clubs),
-        card(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Clubs),
     ];
-    let raw_probs_jj = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
     let chosen_jj_turn = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &raw_probs_jj,
+            raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
             legal_actions: &legal,
-            bucket: 43, /* Mid Overpair */
-            round: 3,   /* Turn */
+            bucket: 43,
+            round: 3,
             to_call: 3661,
             pot: 4500,
             hole: Some(&hole_jj),
@@ -165,22 +167,30 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         chosen_jj_turn, FOLD,
         "Overpair JJ on a 4-to-straight Turn board facing all-in raise must fold!"
     );
+}
 
-    /* 4. Fourth Pair JJ on Q-K-3-A-6 River board facing heavy bet / all-in
-     * (bucket 35, to_call = 3254, cannot raise). Must fold! */
+#[test]
+fn test_shove_defense_river_overcards_and_profile_persistence() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(42);
+
+    let hole_jj = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
     let board_overcards = [
-        card(Rank::Queen, Suit::Clubs),
-        card(Rank::King, Suit::Spades),
-        card(Rank::Three, Suit::Hearts),
-        card(Rank::Ace, Suit::Diamonds),
-        card(Rank::Six, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Diamonds),
     ];
     let chosen_jj_river = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &raw_probs_jj,
-            legal_actions: &legal,
-            bucket: 35, /* Middle Pair under multiple overcards */
-            round: 4,   /* River */
+            raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &[FOLD, CALL_CHECK],
+            bucket: 35,
+            round: 4,
             to_call: 3254,
             pot: 4000,
             hole: Some(&hole_jj),
@@ -193,47 +203,32 @@ fn test_shove_defense_pocket_pairs_and_board_textures() {
         chosen_jj_river, FOLD,
         "Fourth pair on Q-K-3-A-6 River board facing heavy all-in call must fold!"
     );
-}
 
-#[test]
-fn test_persistent_opponent_profile_and_bluff_spew_guard() {
-    let mut tracker = OpponentTracker::new();
+    let mut persisted = OpponentTracker::new();
     for _ in 0..10 {
-        tracker.record_action_street_detailed(CALL_CHECK, 1, false, 100, 200);
-        /* Duplicate preflop action in same hand must not double-count vpip_hands */
-        tracker.record_action_street_detailed(CALL_CHECK, 1, false, 200, 400);
-        tracker.end_hand();
+        persisted.record_action_street_detailed(CALL_CHECK, 1, false, 100, 200);
+        persisted.record_action_street_detailed(CALL_CHECK, 1, false, 200, 400);
+        persisted.end_hand();
     }
-    assert_eq!(tracker.total_hands, 10);
-    assert_eq!(tracker.vpip_hands, 10);
-    assert!((tracker.vpip_ratio() - 1.0).abs() < 1e-6);
+    assert_eq!(persisted.total_hands, 10);
+    assert_eq!(persisted.vpip_hands, 10);
+    assert!((persisted.vpip_ratio() - 1.0).abs() < 1e-6);
 
     let tmp_path = "/tmp/lil_poker_test_opp_profiles.json";
-    tracker
+    persisted
         .save_profile(tmp_path, "test_villain")
         .expect("save profile");
     let loaded =
         OpponentTracker::load_profile(tmp_path, "test_villain").expect("load saved profile");
-    assert_eq!(loaded.total_hands, 9); /* 10 * 0.90 session decay */
+    assert_eq!(loaded.total_hands, 9);
     let _ = std::fs::remove_file(tmp_path);
 
-    /* Bluff-spew guard: facing a bet on Flop with pure air (bucket 6), never check-raise or shove */
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
-    let legal = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let raw_probs = [0.05, 0.05, 0.20, 0.20, 0.20, 0.30];
-    let act = tracker.select_action(
+    let act = persisted.select_action(
         &PolicyRequest {
-            raw_probs: &raw_probs,
-            legal_actions: &legal,
-            bucket: 6, /* Queen-high pure air */
-            round: 2,  /* Flop */
+            raw_probs: &[0.05, 0.05, 0.20, 0.20, 0.20, 0.30],
+            legal_actions: &LEGAL_FULL,
+            bucket: 6,
+            round: 2,
             to_call: 250,
             pot: 500,
             ..Default::default()
@@ -242,29 +237,22 @@ fn test_persistent_opponent_profile_and_bluff_spew_guard() {
     );
     assert!(
         act < RAISE_MIN,
-        "Pure air facing a flop bet must not bluff-raise or shove, got {}",
-        act
+        "Pure air facing a flop bet must not bluff-raise or shove, got {act}"
     );
 }
 
 #[test]
-fn test_postflop_barrel_and_deep_shove_defense() {
-    let mut maniac = OpponentTracker::new();
-    for _ in 0..12 {
-        maniac.record_action_street_detailed(ALL_IN, 1, true, 4000, 300);
-        maniac.end_hand();
-    }
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(2026);
-
-    /* 1. Offsuit QJo (bucket 77, Tier 4) facing a 29 BB cold preflop shove (5800 into 6200, bb=200)
-     * must FOLD even against a known maniac! */
-    let legal_shove = [FOLD, CALL_CHECK, ALL_IN];
+fn test_deep_shove_defense_and_paired_board_caps() {
+    let maniac = make_maniac_tracker();
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(2026);
     let call_heavy_probs = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
-    let act_qjo_shove = maniac.select_action(
+
+    let act_qjo = maniac.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy_probs,
-            legal_actions: &legal_shove,
-            bucket: 77, /* QJo */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 77,
             round: 1,
             to_call: 5800,
             pot: 6200,
@@ -274,27 +262,15 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_eq!(
-        act_qjo_shove, FOLD,
+        act_qjo, FOLD,
         "Offsuit QJo must fold to a 29 BB preflop shove!"
     );
 
-    /* 2. Pocket 77 (bucket 8) facing a standard 2x open (to_call = 400, bb = 200)
-     * must NOT 3-bet all-in jam! */
-    let tracker = OpponentTracker::new();
-    let legal_full = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let shove_probs = [0.0, 0.10, 0.0, 0.0, 0.0, 0.90];
-    let act_mid_pair_open = tracker.select_action(
+    let act_77 = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &shove_probs,
-            legal_actions: &legal_full,
-            bucket: 8, /* 77 */
+            raw_probs: &[0.0, 0.10, 0.0, 0.0, 0.0, 0.90],
+            legal_actions: &LEGAL_FULL,
+            bucket: 8,
             round: 1,
             to_call: 400,
             pot: 1000,
@@ -304,12 +280,10 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_ne!(
-        act_mid_pair_open, ALL_IN,
+        act_77, ALL_IN,
         "Pocket 77 facing a standard 2x open must not 3-bet jam ALL_IN!"
     );
 
-    /* 3. Set of Queens (bucket 68) on a 4-to-a-straight River (Kh Ad 2h Qs Jd)
-     * facing a river shove (6725 into 9975) must FOLD! */
     let board_four_straight = [
         Card::new(Rank::King, Suit::Hearts),
         Card::new(Rank::Ace, Suit::Diamonds),
@@ -317,11 +291,11 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         Card::new(Rank::Queen, Suit::Spades),
         Card::new(Rank::Jack, Suit::Diamonds),
     ];
-    let act_set_four_straight = tracker.select_action(
+    let act_set = tracker.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy_probs,
-            legal_actions: &legal_shove,
-            bucket: 68, /* Middle Set QQ */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 68,
             round: 4,
             to_call: 6725,
             pot: 9975,
@@ -332,12 +306,10 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_eq!(
-        act_set_four_straight, FOLD,
+        act_set, FOLD,
         "Set on a 4-to-a-straight river board must fold to a river shove!"
     );
 
-    /* 4. Straight (bucket 76) on a paired + 3-flush River (5h 9s 7d 9h 8h)
-     * must NOT overbet (RAISE_HALF_POT) or shove (ALL_IN)! */
     let board_paired_flush = [
         Card::new(Rank::Five, Suit::Hearts),
         Card::new(Rank::Nine, Suit::Spades),
@@ -345,19 +317,17 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         Card::new(Rank::Nine, Suit::Hearts),
         Card::new(Rank::Eight, Suit::Hearts),
     ];
-    let legal_no_fold = [
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let jam_probs = [0.0, 0.05, 0.0, 0.05, 0.45, 0.45];
-    let act_straight_paired = tracker.select_action(
+    let act_straight = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &jam_probs,
-            legal_actions: &legal_no_fold,
-            bucket: 76, /* Straight */
+            raw_probs: &[0.0, 0.05, 0.0, 0.05, 0.45, 0.45],
+            legal_actions: &[
+                CALL_CHECK,
+                RAISE_MIN,
+                RAISE_THIRD_POT,
+                RAISE_HALF_POT,
+                ALL_IN,
+            ],
+            bucket: 76,
             round: 4,
             pot: 1750,
             board: Some(&board_paired_flush),
@@ -367,21 +337,25 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert!(
-        act_straight_paired != ALL_IN && act_straight_paired != RAISE_HALF_POT,
-        "Straight on paired 3-flush river must not jam or 125% overbet, got {}",
-        act_straight_paired
+        act_straight != ALL_IN && act_straight != RAISE_HALF_POT,
+        "Straight on paired 3-flush river must not jam or 125% overbet, got {act_straight}"
     );
+}
 
-    /* 5. Bottom pair without draw (bucket 30) on 9h 7c 3h facing a 2/3 pot Flop bet (800 into 2000) must FOLD! */
+#[test]
+fn test_postflop_barrel_folds_and_turn_pot_commit() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(2026);
+
     let board_flop_dry = [
         Card::new(Rank::Nine, Suit::Hearts),
         Card::new(Rank::Seven, Suit::Clubs),
         Card::new(Rank::Three, Suit::Hearts),
     ];
-    let act_bottom_pair_flop = tracker.select_action(
+    let act_bottom = tracker.select_action(
         &PolicyRequest {
             raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
-            legal_actions: &legal_full,
+            legal_actions: &LEGAL_FULL,
             bucket: 30,
             round: 2,
             to_call: 800,
@@ -393,22 +367,20 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_eq!(
-        act_bottom_pair_flop, FOLD,
+        act_bottom, FOLD,
         "Bare bottom pair must fold to a 2/3 pot flop bet!"
     );
 
-    /* 6. Vulnerable Top Pair Mid Kicker without flush redraw (bucket 42)
-     * on monotone 4s Ks 8s 6d Turn facing 2900 into 7250 must FOLD! */
     let board_monotone_turn = [
         Card::new(Rank::Four, Suit::Spades),
         Card::new(Rank::King, Suit::Spades),
         Card::new(Rank::Eight, Suit::Spades),
         Card::new(Rank::Six, Suit::Diamonds),
     ];
-    let act_tp_monotone = tracker.select_action(
+    let act_tp_mono = tracker.select_action(
         &PolicyRequest {
             raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
-            legal_actions: &legal_full,
+            legal_actions: &LEGAL_FULL,
             bucket: 42,
             round: 3,
             to_call: 2900,
@@ -420,22 +392,21 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_eq!(
-        act_tp_monotone, FOLD,
+        act_tp_mono, FOLD,
         "Bare top pair mid kicker without flush redraw on 3-flush turn must fold to heavy barrel!"
     );
 
-    /* 7. Pot-committed Turn call (600 into 9400 on 3-flush turn, ~6% pot odds) must NEVER fold! */
     let board_turn_committed = [
         Card::new(Rank::Seven, Suit::Clubs),
         Card::new(Rank::Three, Suit::Diamonds),
         Card::new(Rank::Seven, Suit::Diamonds),
         Card::new(Rank::Five, Suit::Diamonds),
     ];
-    let act_committed_turn = tracker.select_action(
+    let act_committed = tracker.select_action(
         &PolicyRequest {
             raw_probs: &[0.95, 0.05, 0.0, 0.0, 0.0, 0.0],
-            legal_actions: &legal_shove,
-            bucket: 58, /* Two Pair / Overpair above board pair */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 58,
             round: 3,
             to_call: 600,
             pot: 9400,
@@ -446,38 +417,28 @@ fn test_postflop_barrel_and_deep_shove_defense() {
         &mut rng,
     );
     assert_ne!(
-        act_committed_turn, FOLD,
+        act_committed, FOLD,
         "Calling 600 into 9400 (6% pot odds) with overpair must never fold!"
     );
 }
 
 #[test]
-fn test_3bet_4bet_defense_and_monotone_board_guards() {
+fn test_maniac_preflop_3bet_4bet_and_shove_defense() {
     let mut maniac = OpponentTracker::new();
     for _ in 0..12 {
         maniac.record_preflop_positional(true, true, false);
         maniac.record_action_street_detailed(ALL_IN, 1, true, 4000, 300);
         maniac.end_hand();
     }
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(2027);
-    let legal_full = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let legal_shove = [FOLD, CALL_CHECK, ALL_IN];
-
-    /* 1. Small pocket pair 55 (bucket 10, Tier 4) facing a preflop 3-bet (to_call = 500, pot = 1500, bb = 200)
-     * must flat call (or fold), NEVER 4-bet raise or 4-bet jam even if opponent has a high SB limp ratio! */
+    let mut rng = SmallRng::seed_from_u64(2027);
     let raise_heavy = [0.05, 0.25, 0.20, 0.20, 0.15, 0.15];
-    let act_55_vs_3bet = maniac.select_action(
+    let call_heavy = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+
+    let act_55 = maniac.select_action(
         &PolicyRequest {
             raw_probs: &raise_heavy,
-            legal_actions: &legal_full,
-            bucket: 10, /* 55 */
+            legal_actions: &LEGAL_FULL,
+            bucket: 10,
             round: 1,
             to_call: 500,
             pot: 1500,
@@ -487,19 +448,15 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         &mut rng,
     );
     assert!(
-        act_55_vs_3bet < RAISE_MIN,
-        "Pocket 55 facing a preflop 3-bet must not 4-bet bluff or jam, got {}",
-        act_55_vs_3bet
+        act_55 < RAISE_MIN,
+        "Pocket 55 vs 3-bet must not 4-bet, got {act_55}"
     );
 
-    /* 2. Suited Ace A8s (bucket 34, Tier 3) facing a 32 BB preflop shove (6400 into 6800, bb = 200)
-     * must FOLD even against a known maniac! */
-    let call_heavy = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
-    let act_a8s_shove = maniac.select_action(
+    let act_a8s = maniac.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy,
-            legal_actions: &legal_shove,
-            bucket: 34, /* A8s */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 34,
             round: 1,
             to_call: 6400,
             pot: 6800,
@@ -509,17 +466,15 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         &mut rng,
     );
     assert_eq!(
-        act_a8s_shove, FOLD,
-        "Suited A8s must fold to a 32 BB preflop shove even against an aggressive opponent!"
+        act_a8s, FOLD,
+        "Suited A8s must fold to 32 BB preflop shove!"
     );
 
-    /* 3. Suited one-gapper 97s (bucket 51, Tier 5) facing a 13.3 BB preflop shove (2663 into 3063, bb = 200)
-     * must FOLD even against a known maniac! */
-    let act_97s_shove = maniac.select_action(
+    let act_97s = maniac.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy,
-            legal_actions: &legal_shove,
-            bucket: 51, /* 97s */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 51,
             round: 1,
             to_call: 2663,
             pot: 3063,
@@ -529,22 +484,28 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         &mut rng,
     );
     assert_eq!(
-        act_97s_shove, FOLD,
-        "Suited 97s must fold to a 13.3 BB preflop shove!"
+        act_97s, FOLD,
+        "Suited 97s must fold to 13.3 BB preflop shove!"
     );
+}
 
-    /* 4. Non-flush OESD (bucket 16) on a monotone 3-club Flop (Jc 9c 2c) facing a half-pot bet (400 into 800) must FOLD! */
+#[test]
+fn test_monotone_flop_and_paired_river_postflop_guards() {
     let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(2027);
+    let raise_heavy = [0.05, 0.25, 0.20, 0.20, 0.15, 0.15];
+    let call_heavy = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+
     let board_monotone_flop = [
         Card::new(Rank::Jack, Suit::Clubs),
         Card::new(Rank::Nine, Suit::Clubs),
         Card::new(Rank::Two, Suit::Clubs),
     ];
-    let act_oesd_monotone = tracker.select_action(
+    let act_oesd = tracker.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: 16, /* Non-flush OESD */
+            legal_actions: &LEGAL_FULL,
+            bucket: 16,
             round: 2,
             to_call: 400,
             pot: 800,
@@ -554,13 +515,8 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         },
         &mut rng,
     );
-    assert_eq!(
-        act_oesd_monotone, FOLD,
-        "Non-flush OESD on a monotone 3-flush flop must fold to a half-pot bet!"
-    );
+    assert_eq!(act_oesd, FOLD, "Non-flush OESD on 3-flush flop must fold!");
 
-    /* 5. Bare Top Pair Good Kicker (bucket 46) on Flop facing a half-pot donk-bet (500 into 1000)
-     * must flat call rather than raising! */
     let board_dry_flop = [
         Card::new(Rank::King, Suit::Spades),
         Card::new(Rank::Two, Suit::Spades),
@@ -569,8 +525,8 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
     let act_tp_flop = tracker.select_action(
         &PolicyRequest {
             raw_probs: &raise_heavy,
-            legal_actions: &legal_full,
-            bucket: 46, /* Top Pair Good Kicker */
+            legal_actions: &LEGAL_FULL,
+            bucket: 46,
             round: 2,
             to_call: 500,
             pot: 1000,
@@ -582,11 +538,9 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
     );
     assert_eq!(
         act_tp_flop, CALL_CHECK,
-        "Bare Top Pair facing a half-pot flop bet must flat-call rather than raise!"
+        "Bare Top Pair vs flop donk must flat-call!"
     );
 
-    /* 6. Weak Trips (bucket 65) on a paired River board (4d 8c 6h 2d 6s) facing a 48 BB river shove
-     * (9562 into 13124, bb = 200) must FOLD! */
     let board_paired_river = [
         Card::new(Rank::Four, Suit::Diamonds),
         Card::new(Rank::Eight, Suit::Clubs),
@@ -594,11 +548,11 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         Card::new(Rank::Two, Suit::Diamonds),
         Card::new(Rank::Six, Suit::Spades),
     ];
-    let act_weak_trips_river = tracker.select_action(
+    let act_trips = tracker.select_action(
         &PolicyRequest {
             raw_probs: &call_heavy,
-            legal_actions: &legal_shove,
-            bucket: 65, /* Weak Trips */
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 65,
             round: 4,
             to_call: 9562,
             pot: 13124,
@@ -609,24 +563,20 @@ fn test_3bet_4bet_defense_and_monotone_board_guards() {
         &mut rng,
     );
     assert_eq!(
-        act_weak_trips_river, FOLD,
-        "Weak trips on a paired river board must fold to a 48 BB river shove!"
+        act_trips, FOLD,
+        "Weak trips on paired river must fold to 48 BB shove!"
     );
 }
 
 #[test]
 fn test_priority_tier_ordering_and_decision_trace_reasons() {
-    use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, ReachRequest};
-    use lil_poker_mccfr::game::holdem::ALL_52_CARDS;
-
-    /* 1. Verify Priority Tier 2/3 hard caps override Priority Tier 1 passive-station boosts */
     let mut station = OpponentTracker::new();
     for _ in 0..15 {
         station.record_action_street(CALL_CHECK, 1, false);
         station.record_action_street(CALL_CHECK, 2, false);
         station.end_hand();
     }
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(999);
+    let mut rng = SmallRng::seed_from_u64(999);
     let legal_no_fold = [
         CALL_CHECK,
         RAISE_MIN,
@@ -635,9 +585,6 @@ fn test_priority_tier_ordering_and_decision_trace_reasons() {
         ALL_IN,
     ];
     let passive_probs = [0.0, 0.85, 0.05, 0.05, 0.05, 0.0];
-
-    /* Straight (bucket 76) on a paired 3-flush river against a calling station:
-     * Priority Tier 1 boosts value sizing, but Priority Tier 2 must still block ALL_IN and RAISE_HALF_POT! */
     let board_paired_flush = [
         Card::new(Rank::Five, Suit::Hearts),
         Card::new(Rank::Nine, Suit::Spades),
@@ -660,19 +607,20 @@ fn test_priority_tier_ordering_and_decision_trace_reasons() {
     );
     assert!(
         act != ALL_IN && act != RAISE_HALF_POT,
-        "Priority Tier 2 paired/flush river cap must override Priority Tier 1 passive-station boost, got {}",
-        act
+        "Priority Tier 2 cap must override Tier 1 passive-station boost, got {act}"
     );
     assert!(
         trace.guard_reasons.contains(&"PASSIVE_STATION_BOOST")
             && trace
                 .guard_reasons
                 .contains(&"POST_PAIRED_FLUSH_STRAIGHT_CAP"),
-        "DecisionTrace must record both Tier 1 and Tier 2 guard reasons: {:?}",
+        "DecisionTrace must record both Tier 1 and Tier 2 reasons: {:?}",
         trace.guard_reasons
     );
+}
 
-    /* 2. Verify VPIP-adapted Bayesian range narrowing in OpponentReachDistribution */
+#[test]
+fn test_vpip_adapted_bayesian_reach_narrowing() {
     let board_flop = [
         Card::new(Rank::Ace, Suit::Spades),
         Card::new(Rank::King, Suit::Hearts),
@@ -714,7 +662,6 @@ fn test_priority_tier_ordering_and_decision_trace_reasons() {
         &history,
     );
 
-    /* Trash hand 72o should have higher normalized probability in a 75% VPIP range than in a 15% VPIP nit range */
     let c7h = Card::new(Rank::Seven, Suit::Hearts);
     let c2d = Card::new(Rank::Two, Suit::Diamonds);
     let find_prob = |dist: &OpponentReachDistribution| -> f64 {
@@ -722,24 +669,18 @@ fn test_priority_tier_ordering_and_decision_trace_reasons() {
             .iter()
             .zip(dist.weights.iter())
             .find(|(c, _)| (c[0] == c7h && c[1] == c2d) || (c[0] == c2d && c[1] == c7h))
-            .map(|(_, &w)| w / dist.total_weight.max(1e-12))
-            .unwrap_or(0.0)
+            .map_or(0.0, |(_, &w)| w / dist.total_weight.max(1e-12))
     };
     let p_nit = find_prob(&dist_nit);
     let p_loose = find_prob(&dist_loose);
     assert!(
         p_loose > p_nit,
-        "Loose VPIP opponent must assign higher relative reach probability to weak offsuit combos ({:.6} vs {:.6})",
-        p_loose,
-        p_nit
+        "Loose VPIP opponent must assign higher relative reach probability to weak offsuit combos ({p_loose:.6} vs {p_nit:.6})"
     );
 }
 
 #[test]
 fn test_river_set_overbet_cap_on_dangerous_board() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-    use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
-
     let tracker = OpponentTracker::new();
     let hole_set = [
         Card::new(Rank::Nine, Suit::Hearts),
@@ -752,11 +693,10 @@ fn test_river_set_overbet_cap_on_dangerous_board() {
         Card::new(Rank::Four, Suit::Hearts),
         Card::new(Rank::Two, Suit::Spades),
     ];
-    let bucket = postflop_equity_bucket(&hole_set, &board_3straight) as usize;
+    let bucket = postflop_equity_bucket(&hole_set, &board_3straight);
     assert!(
         (68..=72).contains(&bucket),
-        "Set on 3-straight river board should fall in set bucket 68..=72, got {}",
-        bucket
+        "Set on 3-straight river board should fall in set bucket 68..=72, got {bucket}"
     );
 
     let policy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.15, 0.0, 0.30, 0.40];
@@ -781,24 +721,21 @@ fn test_river_set_overbet_cap_on_dangerous_board() {
         );
         assert_eq!(
             act, CALL_CHECK,
-            "Set facing a 6 BB river bet on a dangerous 3-straight board must flat-call instead of raising/shoving (reasons: {:?})",
+            "Set facing a 6 BB river bet on dangerous 3-straight board must flat-call (reasons: {:?})",
             trace.guard_reasons
         );
     }
 }
 
 #[test]
-fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
-    use lil_poker_mccfr::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
-
+fn test_queen_high_flush_no_fold_sb_no_limp_and_monotone_j_fd() {
     let mut tracker = OpponentTracker::new();
     for _ in 0..10 {
         tracker.record_action_street_detailed(RAISE_HALF_POT, 1, false, 100, 300);
         tracker.end_hand();
     }
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+    let mut rng = SmallRng::seed_from_u64(42);
 
-    /* 1. Qs Ts on 7s Td 5s 3s Turn facing 8140 into 3200 must NEVER fold */
     let hole_q_flush = [
         Card::new(Rank::Queen, Suit::Spades),
         Card::new(Rank::Ten, Suit::Spades),
@@ -811,12 +748,10 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
     ];
     let b_q_flush = postflop_equity_bucket(&hole_q_flush, &board_3flush_turn);
     assert_eq!(b_q_flush, 81);
-    let legal_turn_shove = [FOLD, CALL_CHECK];
-    let raw_heavy_fold = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
     let (act_flush, trace_flush) = tracker.select_action_traced(
         &PolicyRequest {
-            raw_probs: &raw_heavy_fold,
-            legal_actions: &legal_turn_shove,
+            raw_probs: &[0.85, 0.15, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &[FOLD, CALL_CHECK],
             bucket: b_q_flush,
             round: 3,
             to_call: 8140,
@@ -834,7 +769,6 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
         trace_flush.guard_reasons
     );
 
-    /* 2. Kd Jh on Th 7h 4h monotone flop counts as real Flush Draw (>= 19) and calls 50% pot c-bet */
     let hole_j_fd = [
         Card::new(Rank::King, Suit::Diamonds),
         Card::new(Rank::Jack, Suit::Hearts),
@@ -847,22 +781,12 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
     let b_j_fd = postflop_equity_bucket(&hole_j_fd, &board_mono_flop);
     assert!(
         b_j_fd >= 19,
-        "Kd Jh on Th 7h 4h must retain Flush Draw bucket >= 19, got {}",
-        b_j_fd
+        "Kd Jh must retain Flush Draw bucket >= 19, got {b_j_fd}"
     );
-    let legal_flop = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let raw_call = [0.05, 0.85, 0.10, 0.0, 0.0, 0.0];
     let (act_fd, _) = tracker.select_action_traced(
         &PolicyRequest {
-            raw_probs: &raw_call,
-            legal_actions: &legal_flop,
+            raw_probs: &[0.05, 0.85, 0.10, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
             bucket: b_j_fd,
             round: 2,
             to_call: 400,
@@ -877,21 +801,20 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
     );
     assert_ne!(
         act_fd, FOLD,
-        "Jack-high flush draw + two overs on monotone flop must not fold to half-pot c-bet"
+        "Jack-high FD + overs on monotone flop must not fold"
     );
 
-    /* 3. Tier 7 (Th 7c) on 100 BB HU SB must never limp */
     let b_t7o = preflop_bucket(
         Card::new(Rank::Ten, Suit::Hearts),
         Card::new(Rank::Seven, Suit::Clubs),
     )
-    .0 as usize;
+    .0;
     let raw_limp = [0.10, 0.80, 0.10, 0.0, 0.0, 0.0];
     for _ in 0..20 {
         let (act_sb, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &raw_limp,
-                legal_actions: &legal_flop,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_t7o,
                 round: 1,
                 to_call: 50,
@@ -903,20 +826,16 @@ fn test_queen_high_flush_no_fold_sb_no_limp_fold_and_monotone_j_fd() {
         );
         assert_ne!(
             act_sb, CALL_CHECK,
-            "Tier 7 T7o on 100 BB HU SB must fold or steal-raise, never limp-fold"
+            "Tier 7 T7o on 100 BB HU SB must never limp"
         );
     }
 }
 
 #[test]
 fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-
     let tracker = OpponentTracker::new();
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(20261116);
+    let mut rng = SmallRng::seed_from_u64(20_261_116);
 
-    /* 1. Turn Pair + Nut Flush Draw (As 8c on [5c 8s Ks 6s], bucket 26)
-     * facing a 1.5x pot turn overbet (2400 into 4000, pot_odds = 37.5%, bb = 200) must not fold! */
     let hole_as8c = [
         Card::new(Rank::Ace, Suit::Spades),
         Card::new(Rank::Eight, Suit::Clubs),
@@ -928,17 +847,11 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
         Card::new(Rank::Six, Suit::Spades),
     ];
     let b_26 = postflop_equity_bucket(&hole_as8c, &board_turn_3spades);
-    assert_eq!(
-        b_26, 26,
-        "As 8c on 5c 8s Ks 6s must be bucket 26 (Pair + NFD)"
-    );
-
-    let legal_turn = [FOLD, CALL_CHECK, RAISE_MIN, ALL_IN];
-    let call_heavy = [0.25, 0.70, 0.05, 0.0, 0.0, 0.0];
+    assert_eq!(b_26, 26);
     let (act_turn, trace_turn) = tracker.select_action_traced(
         &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_turn,
+            raw_probs: &[0.25, 0.70, 0.05, 0.0, 0.0, 0.0],
+            legal_actions: &[FOLD, CALL_CHECK, RAISE_MIN, ALL_IN],
             bucket: b_26,
             round: 3,
             to_call: 2400,
@@ -953,12 +866,10 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
     );
     assert_ne!(
         act_turn, FOLD,
-        "Pair + Nut Flush Draw (14 outs, bucket 26) must not fold on 3-flush Turn (reasons: {:?})",
+        "Pair + NFD (bucket 26) must not fold on 3-flush Turn (reasons: {:?})",
         trace_turn.guard_reasons
     );
 
-    /* 2. River Ace nut-flush blocker (Ah Kc on [3h 2h 7h Td Jc]) at low SPR
-     * (my_chips = 3619, pot = 6878, bb = 150) must still allow RIVER_NUT_BLOCKER_BLUFF! */
     let hole_ahkc = [
         Card::new(Rank::Ace, Suit::Hearts),
         Card::new(Rank::King, Suit::Clubs),
@@ -1006,26 +917,13 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
     }
     assert!(
         fired_reason && blocker_bluffs >= 10,
-        "Low-SPR river with Ace nut-flush blocker must trigger RIVER_NUT_BLOCKER_BLUFF and bluff sometimes (got {}/80)",
-        blocker_bluffs
+        "Low-SPR river with Ace nut blocker must bluff sometimes (got {blocker_bluffs}/80)"
     );
 }
 
 #[test]
-fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+fn test_monster_value_raise_river_halfpot_tp_and_maniac_adjust() {
     let mut rng = SmallRng::seed_from_u64(4242);
-    let legal_full = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-
-    /* 1. Monster (bucket 85 Full House) with 0% fold must keep value-raising (POT_COMMIT must not crush raise into call) */
     let tracker = OpponentTracker::new();
     let raise_heavy = [0.0, 0.05, 0.0, 0.0, 0.95, 0.0];
     let mut raises = 0usize;
@@ -1033,7 +931,7 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
         let act = tracker.select_action(
             &PolicyRequest {
                 raw_probs: &raise_heavy,
-                legal_actions: &legal_full,
+                legal_actions: &LEGAL_FULL,
                 bucket: 85,
                 round: 4,
                 to_call: 500,
@@ -1048,11 +946,9 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
     }
     assert!(
         raises >= 40,
-        "Monster bucket 85 with 95% raise must keep value-raising instead of being dragged to call (got {}/50)",
-        raises
+        "Monster bucket 85 must keep value-raising (got {raises}/50)"
     );
 
-    /* 2. Standard 5 BB half-pot River bet with Top Pair (bucket 47) must NOT be hard-folded by is_shove_faced */
     let board_dry_river = [
         Card::new(Rank::Ace, Suit::Spades),
         Card::new(Rank::Ten, Suit::Diamonds),
@@ -1060,11 +956,10 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
         Card::new(Rank::Three, Suit::Hearts),
         Card::new(Rank::Two, Suit::Spades),
     ];
-    let call_heavy = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
-    let act_tp_river = tracker.select_action(
+    let act_tp = tracker.select_action(
         &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
+            raw_probs: &[0.05, 0.95, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
             bucket: 47,
             round: 4,
             to_call: 500,
@@ -1075,11 +970,37 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
         &mut rng,
     );
     assert_eq!(
-        act_tp_river, CALL_CHECK,
-        "Top Pair must call a standard 5 BB half-pot river bet"
+        act_tp, CALL_CHECK,
+        "Top Pair must call standard 5 BB half-pot river bet"
     );
 
-    /* 3. Flop stack-committing overbet (>= 40% stack, pot_odds >= 35%) with bare flush draw (bucket 21) must fold instead of call-folding half stack */
+    let mut maniac = OpponentTracker::new();
+    for _ in 0..12 {
+        maniac.record_action_street_detailed(RAISE_HALF_POT, 1, false, 300, 450);
+        maniac.record_action_street_detailed(RAISE_HALF_POT, 2, false, 600, 1200);
+        maniac.end_hand();
+    }
+    let bp = [0.20, 0.50, 0.15, 0.15, 0.0, 0.0];
+    let adj = maniac.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &bp,
+        legal_actions: &LEGAL_FULL,
+        bucket: 45,
+        round: 3,
+        to_call: 400,
+        table_bb: 100,
+    });
+    assert!(
+        adj[CALL_CHECK as usize] > bp[CALL_CHECK as usize]
+            && adj[FOLD as usize] < bp[FOLD as usize],
+        "High-VPIP maniac must activate Maniac bluff-catching adjustment: {adj:?}"
+    );
+}
+
+#[test]
+fn test_flop_commit_draw_fold_and_multiway_cold_3bet_shove() {
+    let mut rng = SmallRng::seed_from_u64(4242);
+    let tracker = OpponentTracker::new();
+
     let board_fd_flop = [
         Card::new(Rank::Four, Suit::Clubs),
         Card::new(Rank::Eight, Suit::Clubs),
@@ -1092,7 +1013,7 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
     let (act_fd_commit, _) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
-            legal_actions: &legal_full,
+            legal_actions: &LEGAL_FULL,
             bucket: 21,
             round: 2,
             to_call: 2250,
@@ -1107,10 +1028,10 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
     );
     assert_eq!(
         act_fd_commit, FOLD,
-        "Bare flush draw facing 1.5x pot flop overbet committing 48% of stack must not flat-call"
+        "Bare flush draw facing 1.5x pot flop overbet committing 48% of stack must fold"
     );
 
-    /* 4. Multiway cold 3-bet shove (~19.4 BB over CO open) with KQs (bucket 15) must fold on Hand 1 */
+    /* Multiway cold 3-bet shove (~19.4 BB over CO open) with KQs (bucket 15) must fold with zero prior reads */
     let (act_kqs_mw, _) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
@@ -1130,723 +1051,4 @@ fn test_audit_regressions_monster_raise_river_halfpot_draw_commit_and_maniac() {
         act_kqs_mw, FOLD,
         "KQs must fold to a 19.4 BB multiway cold 3-bet squeeze shove with no reads"
     );
-
-    /* 5. High-VPIP Maniac must trigger Maniac branch (not Calling Station) in adjust_strategy */
-    let mut maniac = OpponentTracker::new();
-    for _ in 0..12 {
-        maniac.record_action_street_detailed(RAISE_HALF_POT, 1, false, 300, 450);
-        maniac.record_action_street_detailed(RAISE_HALF_POT, 2, false, 600, 1200);
-        maniac.end_hand();
-    }
-    let bp = [0.20, 0.50, 0.15, 0.15, 0.0, 0.0];
-    let adj = maniac.adjust_strategy(&ExploitRequest {
-        blueprint_probs: &bp,
-        legal_actions: &legal_full,
-        bucket: 45,
-        round: 3,
-        to_call: 400,
-        table_bb: 100,
-    });
-    assert!(
-        adj[CALL_CHECK as usize] > bp[CALL_CHECK as usize] && adj[FOLD as usize] < bp[FOLD as usize],
-        "High-VPIP maniac must activate Maniac bluff-catching adjustment, not Calling Station: {:?}",
-        adj
-    );
-}
-
-#[test]
-fn test_subgame_postflop_safety_invariants() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-    use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
-
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(20261119);
-    let tracker = OpponentTracker::new();
-    let legal_full = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let legal_open = [
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-
-    /* 1. Ah 4c on 9h 5s As 9d paired Turn facing 2x overbet (2209 into 3309) must NOT check-raise jam */
-    let hole_a4o = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Clubs),
-    ];
-    let board_paired_turn = [
-        Card::new(Rank::Nine, Suit::Hearts),
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Ace, Suit::Spades),
-        Card::new(Rank::Nine, Suit::Diamonds),
-    ];
-    let b_a4o = postflop_equity_bucket(&hole_a4o, &board_paired_turn);
-    let jam_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.25, 0.0, 0.10, 0.10, 0.50];
-    for _ in 0..30 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &jam_heavy,
-                legal_actions: &legal_full,
-                bucket: b_a4o,
-                round: 3,
-                to_call: 2209,
-                pot: 3309,
-                hole: Some(&hole_a4o),
-                board: Some(&board_paired_turn),
-                my_chips: 8413,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        assert!(
-            act < RAISE_MIN,
-            "Weak Top Pair A4o on paired turn vs 2x overbet must never raise/jam, got {}",
-            act
-        );
-    }
-
-    /* 2. Js Ts on 5s Jc 8d 9s 5d paired connected River facing 5625 into 13125
-     * - Neutral tracker: never jams (act < RAISE_MIN)
-     * - Ultra-nit tracker: folds one pair facing triple barrel */
-    let mut ultra_nit = OpponentTracker::new();
-    for i in 0..15 {
-        if i == 0 {
-            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 300, 150);
-        } else if i < 3 {
-            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 150, 150);
-        } else {
-            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 300);
-        }
-        ultra_nit.end_hand();
-    }
-    let hole_jt = [
-        Card::new(Rank::Jack, Suit::Spades),
-        Card::new(Rank::Ten, Suit::Spades),
-    ];
-    let board_paired_danger_river = [
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Jack, Suit::Clubs),
-        Card::new(Rank::Eight, Suit::Diamonds),
-        Card::new(Rank::Nine, Suit::Spades),
-        Card::new(Rank::Five, Suit::Diamonds),
-    ];
-    let b_jt = postflop_equity_bucket(&hole_jt, &board_paired_danger_river);
-    let req_jt = PolicyRequest {
-        raw_probs: &jam_heavy,
-        legal_actions: &legal_full,
-        bucket: b_jt,
-        round: 4,
-        to_call: 5625,
-        pot: 13125,
-        hole: Some(&hole_jt),
-        board: Some(&board_paired_danger_river),
-        table_bb: 300,
-        my_chips: 6359,
-        from_subgame: true,
-        ..Default::default()
-    };
-    let (act_paired_river_neutral, _) = tracker.select_action_traced(&req_jt, &mut rng);
-    assert!(
-        act_paired_river_neutral < RAISE_MIN,
-        "Js Ts on paired dangerous river must never jam/raise, got {}",
-        act_paired_river_neutral
-    );
-    let (act_paired_river_nit, _) = ultra_nit.select_action_traced(&req_jt, &mut rng);
-    assert_eq!(
-        act_paired_river_nit, FOLD,
-        "Js Ts vs ultra-nit triple barrel on paired dangerous river must FOLD"
-    );
-
-    /* 3. Qc Jc (no diamond) on 4-diamond river Qd Kd 6d 4d 5s facing 375 into 1125 -> FOLD */
-    let hole_qcjc = [
-        Card::new(Rank::Queen, Suit::Clubs),
-        Card::new(Rank::Jack, Suit::Clubs),
-    ];
-    let board_four_flush = [
-        Card::new(Rank::Queen, Suit::Diamonds),
-        Card::new(Rank::King, Suit::Diamonds),
-        Card::new(Rank::Six, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Diamonds),
-        Card::new(Rank::Five, Suit::Spades),
-    ];
-    let b_four_flush = postflop_equity_bucket(&hole_qcjc, &board_four_flush);
-    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
-    let (act_four_flush, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_four_flush,
-            round: 4,
-            to_call: 375,
-            pot: 1125,
-            hole: Some(&hole_qcjc),
-            board: Some(&board_four_flush),
-            table_bb: 150,
-            my_chips: 6256,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_four_flush, FOLD,
-        "Qc Jc without diamond on 4-diamond river must fold"
-    );
-
-    /* 4. Qh Js (3rd pair) on 3c Kh Qc 3s Ac river facing 3750 into 11250 vs ultra-nit -> FOLD */
-    let hole_qj = [
-        Card::new(Rank::Queen, Suit::Hearts),
-        Card::new(Rank::Jack, Suit::Spades),
-    ];
-    let board_paired_ace_river = [
-        Card::new(Rank::Three, Suit::Clubs),
-        Card::new(Rank::King, Suit::Hearts),
-        Card::new(Rank::Queen, Suit::Clubs),
-        Card::new(Rank::Three, Suit::Spades),
-        Card::new(Rank::Ace, Suit::Clubs),
-    ];
-    let b_qj = postflop_equity_bucket(&hole_qj, &board_paired_ace_river);
-    let (act_third_pair_nit, _) = ultra_nit.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_qj,
-            round: 4,
-            to_call: 3750,
-            pot: 11250,
-            hole: Some(&hole_qj),
-            board: Some(&board_paired_ace_river),
-            table_bb: 600,
-            my_chips: 8586,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_third_pair_nit, FOLD,
-        "3rd pair Qh Js vs ultra-nit 3rd barrel must fold"
-    );
-
-    /* 5. > 3x pot ALL_IN capped even from subgame with ALL_IN=0.90 on Turn flush and River straight */
-    let hole_4dtd = [
-        Card::new(Rank::Four, Suit::Diamonds),
-        Card::new(Rank::Ten, Suit::Diamonds),
-    ];
-    let board_turn_flush = [
-        Card::new(Rank::Ace, Suit::Diamonds),
-        Card::new(Rank::Three, Suit::Clubs),
-        Card::new(Rank::Nine, Suit::Diamonds),
-        Card::new(Rank::Seven, Suit::Diamonds),
-    ];
-    let b_turn_flush = postflop_equity_bucket(&hole_4dtd, &board_turn_flush);
-    let raw_allin: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.05, 0.0, 0.05, 0.0, 0.90];
-    let (act_turn_flush, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &raw_allin,
-            legal_actions: &legal_open,
-            bucket: b_turn_flush,
-            round: 3,
-            pot: 400,
-            hole: Some(&hole_4dtd),
-            board: Some(&board_turn_flush),
-            my_chips: 9300,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_ne!(
-        act_turn_flush, ALL_IN,
-        "Extreme >20x pot Turn flush ALL_IN must be capped into standard value sizing"
-    );
-
-    let hole_3s4s = [
-        Card::new(Rank::Three, Suit::Spades),
-        Card::new(Rank::Four, Suit::Spades),
-    ];
-    let board_river_straight = [
-        Card::new(Rank::Ace, Suit::Clubs),
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Five, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Diamonds),
-        Card::new(Rank::Two, Suit::Clubs),
-    ];
-    let b_river_straight = postflop_equity_bucket(&hole_3s4s, &board_river_straight);
-    let (act_river_straight, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &raw_allin,
-            legal_actions: &legal_open,
-            bucket: b_river_straight,
-            round: 4,
-            pot: 300,
-            hole: Some(&hole_3s4s),
-            board: Some(&board_river_straight),
-            table_bb: 150,
-            my_chips: 8900,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_ne!(
-        act_river_straight, ALL_IN,
-        "Extreme >30x pot River straight ALL_IN must be capped into standard value sizing"
-    );
-
-    /* 6. King-high showdown value & paired-river 25% air check back */
-    let hole_k5 = [
-        Card::new(Rank::King, Suit::Spades),
-        Card::new(Rank::Five, Suit::Hearts),
-    ];
-    let board_paired_khigh = [
-        Card::new(Rank::Ten, Suit::Diamonds),
-        Card::new(Rank::Eight, Suit::Clubs),
-        Card::new(Rank::Eight, Suit::Hearts),
-        Card::new(Rank::Two, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Hearts),
-    ];
-    let b_khigh = postflop_equity_bucket(&hole_k5, &board_paired_khigh);
-    let overbet_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.0, 0.0, 0.90, 0.0];
-    let (act_khigh, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &overbet_raw,
-            legal_actions: &legal_open,
-            bucket: b_khigh,
-            round: 4,
-            pot: 500,
-            hole: Some(&hole_k5),
-            board: Some(&board_paired_khigh),
-            my_chips: 12253,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_khigh, CALL_CHECK,
-        "King-high showdown value must check back instead of 125% overbet bluff"
-    );
-
-    let hole_q9c = [
-        Card::new(Rank::Queen, Suit::Clubs),
-        Card::new(Rank::Nine, Suit::Clubs),
-    ];
-    let board_paired_air_river = [
-        Card::new(Rank::Jack, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Hearts),
-        Card::new(Rank::Ace, Suit::Clubs),
-        Card::new(Rank::Ten, Suit::Clubs),
-        Card::new(Rank::Ten, Suit::Spades),
-    ];
-    let b_paired_air = postflop_equity_bucket(&hole_q9c, &board_paired_air_river);
-    let min_bluff_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.85, 0.0, 0.0, 0.0];
-    let (act_paired_air, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &min_bluff_raw,
-            legal_actions: &legal_open,
-            bucket: b_paired_air,
-            round: 4,
-            pot: 1250,
-            hole: Some(&hole_q9c),
-            board: Some(&board_paired_air_river),
-            my_chips: 9663,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_paired_air, CALL_CHECK,
-        "Pure air must check back instead of 25% micro-bluff into paired river"
-    );
-
-    /* 7. Kd 8c Nut Straight on 2h 5s 4h 7c 6d must value-bet instead of checking */
-    let hole_kd8c = [
-        Card::new(Rank::King, Suit::Diamonds),
-        Card::new(Rank::Eight, Suit::Clubs),
-    ];
-    let board_four_straight_nut = [
-        Card::new(Rank::Two, Suit::Hearts),
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Four, Suit::Hearts),
-        Card::new(Rank::Seven, Suit::Clubs),
-        Card::new(Rank::Six, Suit::Diamonds),
-    ];
-    let b_nut_straight = postflop_equity_bucket(&hole_kd8c, &board_four_straight_nut);
-    let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.85, 0.0, 0.15, 0.0, 0.0];
-    let mut nut_straight_bets = 0usize;
-    for _ in 0..80 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &passive_check,
-                legal_actions: &legal_open,
-                bucket: b_nut_straight,
-                round: 4,
-                pot: 400,
-                hole: Some(&hole_kd8c),
-                board: Some(&board_four_straight_nut),
-                table_bb: 200,
-                my_chips: 5189,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        if act >= RAISE_MIN {
-            nut_straight_bets += 1;
-        }
-    }
-    assert!(
-        nut_straight_bets >= 45,
-        "Nut Straight must value-bet majority of the time, got {}/80",
-        nut_straight_bets
-    );
-
-    /* 8. Jh Js Top Set on wet 5c 3d Jc flop must value-bet majority */
-    let hole_jj = [
-        Card::new(Rank::Jack, Suit::Hearts),
-        Card::new(Rank::Jack, Suit::Spades),
-    ];
-    let board_wet_set_flop = [
-        Card::new(Rank::Five, Suit::Clubs),
-        Card::new(Rank::Three, Suit::Diamonds),
-        Card::new(Rank::Jack, Suit::Clubs),
-    ];
-    let b_wet_set = postflop_equity_bucket(&hole_jj, &board_wet_set_flop);
-    let mut wet_set_bets = 0usize;
-    for _ in 0..80 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &passive_check,
-                legal_actions: &legal_open,
-                bucket: b_wet_set,
-                round: 2,
-                pot: 1000,
-                hole: Some(&hole_jj),
-                board: Some(&board_wet_set_flop),
-                table_bb: 200,
-                my_chips: 5331,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        if act >= RAISE_MIN {
-            wet_set_bets += 1;
-        }
-    }
-    assert!(
-        wet_set_bets >= 45,
-        "Top Set on wet flop must value-bet majority of the time, got {}/80",
-        wet_set_bets
-    );
-
-    /* 9. Overbet-bluffer tracker catches Ks 7d middle pair bluff-catcher vs 1.5x river overbet */
-    let mut overbet_villain = OpponentTracker::new();
-    for _ in 0..5 {
-        overbet_villain.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
-        overbet_villain.end_hand();
-    }
-    assert!(overbet_villain.is_overbet_bluffer());
-    let hole_k7 = [
-        Card::new(Rank::King, Suit::Spades),
-        Card::new(Rank::Seven, Suit::Diamonds),
-    ];
-    let board_paired_overbet_river = [
-        Card::new(Rank::Three, Suit::Diamonds),
-        Card::new(Rank::Nine, Suit::Clubs),
-        Card::new(Rank::Seven, Suit::Hearts),
-        Card::new(Rank::Jack, Suit::Spades),
-        Card::new(Rank::Jack, Suit::Hearts),
-    ];
-    let b_bluff_catch = postflop_equity_bucket(&hole_k7, &board_paired_overbet_river);
-    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
-    let mut bluff_catch_calls = 0usize;
-    for _ in 0..100 {
-        let (act, _) = overbet_villain.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &fold_heavy,
-                legal_actions: &legal_full,
-                bucket: b_bluff_catch,
-                round: 4,
-                to_call: 4500,
-                pot: 7500,
-                hole: Some(&hole_k7),
-                board: Some(&board_paired_overbet_river),
-                table_bb: 150,
-                my_chips: 5400,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        if act == CALL_CHECK {
-            bluff_catch_calls += 1;
-        }
-    }
-    assert!(
-        bluff_catch_calls >= 45,
-        "Ks 7d bluff-catcher vs overbet spammer must call frequently, got {}/100",
-        bluff_catch_calls
-    );
-}
-
-#[test]
-fn test_subgame_shove_defense_overbet_bluff_catch_and_low_spr_value() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-    use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-
-    let tracker = OpponentTracker::new();
-    let mut rng = SmallRng::seed_from_u64(20261120);
-    let legal_full = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let legal_open = [
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
-
-    /* 1. As 4c top pair weak kicker on 5s 6c 2d Ah facing 8,314 (11.9x pot) turn shove from subgame must fold */
-    let hole_a4o = [
-        Card::new(Rank::Ace, Suit::Spades),
-        Card::new(Rank::Four, Suit::Clubs),
-    ];
-    let board_turn_overbet_jam = [
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Six, Suit::Clubs),
-        Card::new(Rank::Two, Suit::Diamonds),
-        Card::new(Rank::Ace, Suit::Hearts),
-    ];
-    let b_a4o = postflop_equity_bucket(&hole_a4o, &board_turn_overbet_jam);
-    let (act_a4o, tr_a4o) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_a4o,
-            round: 3,
-            to_call: 8314,
-            pot: 9010,
-            hole: Some(&hole_a4o),
-            board: Some(&board_turn_overbet_jam),
-            table_bb: 100,
-            my_chips: 8314,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_a4o, FOLD,
-        "As 4c must fold to 11.9x pot turn jam in subgame (reasons: {:?})",
-        tr_a4o.guard_reasons
-    );
-
-    /* 2. Qh Qd underpair on Ks 9h 6c 5h 9s facing 4,648 river shove from subgame must fold */
-    let hole_qq = [
-        Card::new(Rank::Queen, Suit::Hearts),
-        Card::new(Rank::Queen, Suit::Diamonds),
-    ];
-    let board_paired_king_river = [
-        Card::new(Rank::King, Suit::Spades),
-        Card::new(Rank::Nine, Suit::Hearts),
-        Card::new(Rank::Six, Suit::Clubs),
-        Card::new(Rank::Five, Suit::Hearts),
-        Card::new(Rank::Nine, Suit::Spades),
-    ];
-    let b_qq = postflop_equity_bucket(&hole_qq, &board_paired_king_river);
-    let (act_qq, tr_qq) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_qq,
-            round: 4,
-            to_call: 4648,
-            pot: 9938,
-            hole: Some(&hole_qq),
-            board: Some(&board_paired_king_river),
-            table_bb: 200,
-            my_chips: 4648,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_qq, FOLD,
-        "Qh Qd underpair on Ks 9h 6c 5h 9s must fold to river jam in subgame (reasons: {:?})",
-        tr_qq.guard_reasons
-    );
-
-    /* 3. 7s 2c bottom pair on Jd 2d 9c Kh vs overbet bluffer turn 18 BB raise must fold */
-    let mut overbet_villain = OpponentTracker::new();
-    for _ in 0..5 {
-        overbet_villain.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
-        overbet_villain.end_hand();
-    }
-    let hole_72o = [
-        Card::new(Rank::Seven, Suit::Spades),
-        Card::new(Rank::Two, Suit::Clubs),
-    ];
-    let board_turn_bottom_pair = [
-        Card::new(Rank::Jack, Suit::Diamonds),
-        Card::new(Rank::Two, Suit::Diamonds),
-        Card::new(Rank::Nine, Suit::Clubs),
-        Card::new(Rank::King, Suit::Hearts),
-    ];
-    let b_72o = postflop_equity_bucket(&hole_72o, &board_turn_bottom_pair);
-    let (act_72o, _) = overbet_villain.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_72o,
-            round: 3,
-            to_call: 3600,
-            pot: 6000,
-            hole: Some(&hole_72o),
-            board: Some(&board_turn_bottom_pair),
-            table_bb: 200,
-            my_chips: 5000,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_72o, FOLD,
-        "7s 2c bottom pair must fold to 18 BB turn raise even vs overbet bluffer"
-    );
-
-    /* 4. 6d 7h gutshot on 3s Kh 4c Js turn facing 1,247 into 3,157 in subgame must fold */
-    let hole_67o = [
-        Card::new(Rank::Six, Suit::Diamonds),
-        Card::new(Rank::Seven, Suit::Hearts),
-    ];
-    let board_turn_gutshot = [
-        Card::new(Rank::Three, Suit::Spades),
-        Card::new(Rank::King, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Clubs),
-        Card::new(Rank::Jack, Suit::Spades),
-    ];
-    let b_67o = postflop_equity_bucket(&hole_67o, &board_turn_gutshot);
-    let (act_67o, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &call_heavy,
-            legal_actions: &legal_full,
-            bucket: b_67o,
-            round: 3,
-            to_call: 1247,
-            pot: 3157,
-            hole: Some(&hole_67o),
-            board: Some(&board_turn_gutshot),
-            table_bb: 100,
-            my_chips: 9000,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_eq!(
-        act_67o, FOLD,
-        "6d 7h gutshot must fold on turn facing 40% pot bet in subgame"
-    );
-
-    /* 5. 9s 6c Top Two Pair on 6s 9d 5h 2c at SPR = 0.88 must value-bet instead of checking */
-    let hole_96o = [
-        Card::new(Rank::Nine, Suit::Spades),
-        Card::new(Rank::Six, Suit::Clubs),
-    ];
-    let board_low_spr_two_pair = [
-        Card::new(Rank::Six, Suit::Spades),
-        Card::new(Rank::Nine, Suit::Diamonds),
-        Card::new(Rank::Five, Suit::Hearts),
-        Card::new(Rank::Two, Suit::Clubs),
-    ];
-    let b_96o = postflop_equity_bucket(&hole_96o, &board_low_spr_two_pair);
-    let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.88, 0.0, 0.12, 0.0, 0.0];
-    let mut low_spr_two_pair_bets = 0usize;
-    for _ in 0..80 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &passive_check,
-                legal_actions: &legal_open,
-                bucket: b_96o,
-                round: 3,
-                pot: 2152,
-                hole: Some(&hole_96o),
-                board: Some(&board_low_spr_two_pair),
-                table_bb: 200,
-                my_chips: 15000,
-                opp_chips: 1894,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        if act >= RAISE_MIN {
-            low_spr_two_pair_bets += 1;
-        }
-    }
-    assert!(
-        low_spr_two_pair_bets >= 45,
-        "Top Two Pair at effective SPR 0.88 must value-bet majority of the time, got {}/80",
-        low_spr_two_pair_bets
-    );
-
-    /* 6. Td 9h middle pair on Jh 9c 2d 6h Ks river must never fire 125% pot overbet (RAISE_HALF_POT) */
-    let hole_t9o = [
-        Card::new(Rank::Ten, Suit::Diamonds),
-        Card::new(Rank::Nine, Suit::Hearts),
-    ];
-    let board_unpaired_river = [
-        Card::new(Rank::Jack, Suit::Hearts),
-        Card::new(Rank::Nine, Suit::Clubs),
-        Card::new(Rank::Two, Suit::Diamonds),
-        Card::new(Rank::Six, Suit::Hearts),
-        Card::new(Rank::King, Suit::Spades),
-    ];
-    let b_t9o = postflop_equity_bucket(&hole_t9o, &board_unpaired_river);
-    let overbet_raw: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.0, 0.0, 0.90, 0.0];
-    for _ in 0..40 {
-        let (act_t9o, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &overbet_raw,
-                legal_actions: &legal_open,
-                bucket: b_t9o,
-                round: 4,
-                pot: 1320,
-                hole: Some(&hole_t9o),
-                board: Some(&board_unpaired_river),
-                table_bb: 150,
-                my_chips: 14000,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        assert!(
-            act_t9o != RAISE_HALF_POT && act_t9o != ALL_IN,
-            "Td 9h middle pair must never 125% overbet river, got {}",
-            act_t9o
-        );
-    }
 }

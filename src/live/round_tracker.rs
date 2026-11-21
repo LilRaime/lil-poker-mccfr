@@ -2,7 +2,7 @@
 use super::protocol::pseudo_harmonic_action_mapping;
 use super::state::LiveSnapshot;
 use crate::cfr::opponent_model::OpponentTracker;
-use crate::game::config::*;
+use crate::game::config::{BIG_BLIND, NUM_ROUNDS, ROUND_PREFLOP, SMALL_BLIND, STACK_SIZE};
 use crate::game::holdem::{
     RoundHistory, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
 };
@@ -126,179 +126,207 @@ impl LiveRoundTracker {
         self.infer_opponent_action_inner(snapshot, Some(tracker));
     }
 
-    /** Update live_history only (used in 6-max where LiveTableTracker records per-seat stats) */
+    /** Update `live_history` only (used in 6-max where `LiveTableTracker` records per-seat stats) */
     pub fn infer_opponent_history_only(&mut self, snapshot: &LiveSnapshot) {
         self.infer_opponent_action_inner(snapshot, None);
     }
 
-    fn infer_opponent_action_inner(
-        &mut self,
-        snapshot: &LiveSnapshot,
-        mut tracker: Option<&mut OpponentTracker>,
-    ) {
-        let round_idx = self.current_round_idx;
-        let hist = &mut self.live_history[round_idx];
-        let mut rng = rand::thread_rng();
-        let bb = if snapshot.big_blind > 0 {
+    fn resolve_tracker_bb(&self, snapshot: &LiveSnapshot) -> i32 {
+        if snapshot.big_blind > 0 {
             snapshot.big_blind
         } else if self.last_big_blind > 0 {
             self.last_big_blind
         } else {
             BIG_BLIND
-        };
+        }
+    }
+
+    fn infer_opponent_action_inner(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        tracker: Option<&mut OpponentTracker>,
+    ) {
+        let round_idx = self.current_round_idx;
+        let bb = self.resolve_tracker_bb(snapshot);
         self.last_big_blind = bb;
         let scaled_allin_thresh = (bb * 35).max(1);
-        let eff_allin_thresh = if snapshot.opp_chips == 0 && snapshot.opp_bet > 0 {
+        let eff_allin_thresh = if snapshot.opp_chips == Some(0) && snapshot.opp_bet > 0 {
             snapshot.opp_bet
         } else {
             scaled_allin_thresh
         };
-        let eff_limp_thresh = bb.max(1);
 
-        if hist.is_empty() {
+        if self.live_history[round_idx].is_empty() {
             if round_idx == 0 {
-                if snapshot.active_opponents >= 2 {
-                    /* Multi-way: only record voluntary preflop actions if pot/bet exceeds posted blinds (sb + bb);
-                     * otherwise pot is unopened before UTG/MP/CO/BTN/SB so leave preflop history empty! */
-                    let blinds_pot = bb + snapshot.small_blind.max(1);
-                    if snapshot.current_bet > bb {
-                        let opp_bet_amt = snapshot.opp_bet.max(snapshot.current_bet);
-                        let raise_act = if opp_bet_amt <= bb * 3 {
-                            RAISE_MIN
-                        } else {
-                            pseudo_harmonic_action_mapping(
-                                opp_bet_amt,
-                                snapshot.pot,
-                                eff_allin_thresh,
-                                &mut rng,
-                            )
-                        };
-                        hist.push(raise_act);
-                    } else if snapshot.pot > blinds_pot + snapshot.small_blind / 2
-                        && !snapshot.my_is_sb
-                    {
-                        hist.push(CALL_CHECK);
-                    }
-                } else if !snapshot.my_is_sb {
-                    /* Heads-Up: SB acts first. If bot is BB, opponent acted first! */
-                    if snapshot.to_call == 0 || snapshot.opp_bet <= eff_limp_thresh {
-                        hist.push(CALL_CHECK);
-                        if let Some(ref mut tr) = tracker {
-                            tr.record_action_street_detailed(
-                                CALL_CHECK,
-                                1,
-                                false,
-                                snapshot.opp_bet,
-                                snapshot.pot,
-                            );
-                            tr.record_preflop_positional(true, true, false);
-                        }
-                    } else {
-                        let raise_act = if snapshot.opp_bet <= bb * 3 {
-                            RAISE_MIN
-                        } else {
-                            pseudo_harmonic_action_mapping(
-                                snapshot.opp_bet,
-                                snapshot.pot,
-                                eff_allin_thresh,
-                                &mut rng,
-                            )
-                        };
-                        hist.push(raise_act);
-                        if let Some(ref mut tr) = tracker {
-                            tr.record_action_street_detailed(
-                                raise_act,
-                                1,
-                                false,
-                                snapshot.opp_bet,
-                                snapshot.pot,
-                            );
-                            tr.record_preflop_positional(true, true, true);
-                        }
-                    }
-                }
+                self.infer_opening_preflop_action(snapshot, bb, eff_allin_thresh, tracker);
             } else {
-                /* Postflop: player 1 acts first (OOP), player 0 acts second (IP).
-                 * If Hero is IP (my_player == 0), opponent acted first; if Hero is OOP and faces a bet
-                 * (e.g. multi-way seat ahead of Hero bet), record that bet as well. */
-                if snapshot.my_player == 0 || snapshot.to_call > 0 {
-                    if snapshot.to_call == 0 {
-                        hist.push(CALL_CHECK);
-                        if let Some(ref mut tr) = tracker {
-                            tr.record_action_street_detailed(
-                                CALL_CHECK,
-                                (round_idx + 1) as u8,
-                                false,
-                                0,
-                                snapshot.pot,
-                            );
-                        }
-                    } else {
-                        let bet_amt = snapshot.opp_bet.max(snapshot.to_call);
-                        let pre_bet_pot = (snapshot.pot - bet_amt).max(bb);
-                        let bet_act = if round_idx >= 1
-                            && bet_amt >= bb * 10
-                            && (bet_amt as i64) * 10 >= (pre_bet_pot as i64) * 15
-                        {
-                            ALL_IN
-                        } else {
-                            pseudo_harmonic_action_mapping(
-                                bet_amt,
-                                pre_bet_pot,
-                                eff_allin_thresh,
-                                &mut rng,
-                            )
-                        };
-                        hist.push(bet_act);
-                        if let Some(ref mut tr) = tracker {
-                            tr.record_action_street_detailed(
-                                bet_act,
-                                (round_idx + 1) as u8,
-                                false,
-                                bet_amt,
-                                pre_bet_pot,
-                            );
-                        }
-                    }
-                }
+                self.infer_opening_postflop_action(snapshot, bb, eff_allin_thresh, tracker);
             }
         } else if snapshot.to_call > 0 {
-            /* Facing a bet or re-raise after bot already acted this round */
-            let bot_bet_this_round = hist.iter().any(|&a| a >= RAISE_MIN);
-            let opp_diff = (snapshot.opp_bet - self.last_opp_bet).max(snapshot.to_call);
-            let pre_bet_pot = (snapshot.pot - opp_diff).max(bb);
-            let raise_act = if round_idx >= 1
-                && opp_diff >= bb * 10
-                && (opp_diff as i64) * 10 >= (pre_bet_pot as i64) * 15
-            {
-                ALL_IN
-            } else {
-                pseudo_harmonic_action_mapping(opp_diff, pre_bet_pot, eff_allin_thresh, &mut rng)
-            };
-            hist.push(raise_act);
-            let facing_cbet = round_idx == 1 && bot_bet_this_round;
-            if let Some(ref mut tr) = tracker {
-                tr.record_action_street_detailed(
-                    raise_act,
-                    (round_idx + 1) as u8,
-                    facing_cbet,
-                    opp_diff,
-                    pre_bet_pot,
-                );
-                if round_idx == 0 && bot_bet_this_round {
-                    tr.record_preflop_positional(snapshot.opp_is_sb, true, true);
-                    if self.bot_3bet_preflop && !self.faced_3bet_recorded_this_hand {
-                        tr.record_facing_3bet(false);
-                        self.faced_3bet_recorded_this_hand = true;
-                    }
-                }
-            }
+            self.infer_subsequent_street_action(snapshot, bb, eff_allin_thresh, tracker);
         }
 
         if snapshot.my_chips > 0 {
             self.estimated_my_chips = snapshot.my_chips;
         }
         self.last_opp_bet = snapshot.opp_bet;
+    }
+
+    fn infer_opening_preflop_action(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        bb: i32,
+        eff_allin_thresh: i32,
+        tracker: Option<&mut OpponentTracker>,
+    ) {
+        let hist = &mut self.live_history[0];
+        let mut rng = rand::thread_rng();
+        let eff_limp_thresh = bb.max(1);
+
+        if snapshot.active_opponents >= 2 {
+            let blinds_pot = bb + snapshot.small_blind.max(1);
+            if snapshot.current_bet > bb {
+                let opp_bet_amt = snapshot.opp_bet.max(snapshot.current_bet);
+                let raise_act = if opp_bet_amt <= bb * 3 {
+                    RAISE_MIN
+                } else {
+                    pseudo_harmonic_action_mapping(
+                        opp_bet_amt,
+                        snapshot.pot,
+                        eff_allin_thresh,
+                        &mut rng,
+                    )
+                };
+                hist.push(raise_act);
+            } else if snapshot.pot > blinds_pot + snapshot.small_blind / 2 && !snapshot.my_is_sb {
+                hist.push(CALL_CHECK);
+            }
+        } else if !snapshot.my_is_sb {
+            /* Heads-Up: SB acts first. If bot is BB, opponent acted first! */
+            if snapshot.to_call == 0 || snapshot.opp_bet <= eff_limp_thresh {
+                hist.push(CALL_CHECK);
+                if let Some(tr) = tracker {
+                    tr.record_action_street_detailed(
+                        CALL_CHECK,
+                        ROUND_PREFLOP,
+                        false,
+                        snapshot.opp_bet,
+                        snapshot.pot,
+                    );
+                    tr.record_preflop_positional(true, true, false);
+                }
+            } else {
+                let raise_act = if snapshot.opp_bet <= bb * 3 {
+                    RAISE_MIN
+                } else {
+                    pseudo_harmonic_action_mapping(
+                        snapshot.opp_bet,
+                        snapshot.pot,
+                        eff_allin_thresh,
+                        &mut rng,
+                    )
+                };
+                hist.push(raise_act);
+                if let Some(tr) = tracker {
+                    tr.record_action_street_detailed(
+                        raise_act,
+                        ROUND_PREFLOP,
+                        false,
+                        snapshot.opp_bet,
+                        snapshot.pot,
+                    );
+                    tr.record_preflop_positional(true, true, true);
+                }
+            }
+        }
+    }
+
+    fn infer_opening_postflop_action(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        bb: i32,
+        eff_allin_thresh: i32,
+        tracker: Option<&mut OpponentTracker>,
+    ) {
+        if snapshot.my_player != 0 && snapshot.to_call <= 0 {
+            return;
+        }
+        let round_idx = self.current_round_idx;
+        let hist = &mut self.live_history[round_idx];
+        let mut rng = rand::thread_rng();
+
+        if snapshot.to_call == 0 {
+            hist.push(CALL_CHECK);
+            if let Some(tr) = tracker {
+                tr.record_action_street_detailed(
+                    CALL_CHECK,
+                    (round_idx + 1) as u8,
+                    false,
+                    0,
+                    snapshot.pot,
+                );
+            }
+        } else {
+            let bet_amt = snapshot.opp_bet.max(snapshot.to_call);
+            let pre_bet_pot = (snapshot.pot - bet_amt).max(bb);
+            let bet_act =
+                if bet_amt >= bb * 10 && (bet_amt as i64) * 10 >= (pre_bet_pot as i64) * 15 {
+                    ALL_IN
+                } else {
+                    pseudo_harmonic_action_mapping(bet_amt, pre_bet_pot, eff_allin_thresh, &mut rng)
+                };
+            hist.push(bet_act);
+            if let Some(tr) = tracker {
+                tr.record_action_street_detailed(
+                    bet_act,
+                    (round_idx + 1) as u8,
+                    false,
+                    bet_amt,
+                    pre_bet_pot,
+                );
+            }
+        }
+    }
+
+    fn infer_subsequent_street_action(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        bb: i32,
+        eff_allin_thresh: i32,
+        tracker: Option<&mut OpponentTracker>,
+    ) {
+        let round_idx = self.current_round_idx;
+        let hist = &mut self.live_history[round_idx];
+        let mut rng = rand::thread_rng();
+        let bot_bet_this_round = hist.iter().any(|&a| a >= RAISE_MIN);
+        let opp_diff = (snapshot.opp_bet - self.last_opp_bet).max(snapshot.to_call);
+        let pre_bet_pot = (snapshot.pot - opp_diff).max(bb);
+        let raise_act = if round_idx >= 1
+            && opp_diff >= bb * 10
+            && (opp_diff as i64) * 10 >= (pre_bet_pot as i64) * 15
+        {
+            ALL_IN
+        } else {
+            pseudo_harmonic_action_mapping(opp_diff, pre_bet_pot, eff_allin_thresh, &mut rng)
+        };
+        hist.push(raise_act);
+        let facing_cbet = round_idx == 1 && bot_bet_this_round;
+        if let Some(tr) = tracker {
+            tr.record_action_street_detailed(
+                raise_act,
+                (round_idx + 1) as u8,
+                facing_cbet,
+                opp_diff,
+                pre_bet_pot,
+            );
+            if round_idx == 0 && bot_bet_this_round {
+                tr.record_preflop_positional(snapshot.opp_is_sb, true, true);
+                if self.bot_3bet_preflop && !self.faced_3bet_recorded_this_hand {
+                    tr.record_facing_3bet(false);
+                    self.faced_3bet_recorded_this_hand = true;
+                }
+            }
+        }
     }
 
     pub fn compute_engine_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
@@ -324,8 +352,8 @@ impl LiveRoundTracker {
         (engine_contributions, raises_this_round)
     }
 
-    /** Computes effective-stack scaled contributions for SubgameSolver so STACK_SIZE (10_000)
-     * inside TexasHoldemGame preserves the exact real-world Stack-to-Pot Ratio (SPR) and pot odds. */
+    /** Computes effective-stack scaled contributions for `SubgameSolver` so `STACK_SIZE` (`10_000`)
+     * inside `TexasHoldemGame` preserves the exact real-world Stack-to-Pot Ratio (SPR) and pot odds. */
     pub fn compute_scaled_subgame_contributions(&self, snapshot: &LiveSnapshot) -> ([i32; 2], u8) {
         let (raw_contribs, raises) = self.compute_engine_contributions(snapshot);
         let eff_my_chips = if snapshot.my_chips > 0 {
@@ -333,16 +361,16 @@ impl LiveRoundTracker {
         } else {
             self.estimated_my_chips
         };
-        if eff_my_chips <= 0 && snapshot.opp_chips <= 0 {
+        if eff_my_chips <= 0 && snapshot.opp_chips.unwrap_or(0) <= 0 {
             return (raw_contribs, raises);
         }
         let my_c = raw_contribs[snapshot.my_player];
         let opp_c = raw_contribs[1 - snapshot.my_player];
-        let eff_rem = if snapshot.opp_chips > 0 || snapshot.to_call > 0 {
-            eff_my_chips.min(snapshot.opp_chips + snapshot.to_call)
-        } else {
-            eff_my_chips
-        };
+        let eff_rem = crate::cfr::opponent_model::effective_remaining_chips(
+            eff_my_chips,
+            snapshot.opp_chips,
+            snapshot.to_call,
+        );
         let table_bb = if snapshot.big_blind > 0 {
             snapshot.big_blind
         } else if self.last_big_blind > 0 {

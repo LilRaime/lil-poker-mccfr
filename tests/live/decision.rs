@@ -463,8 +463,7 @@ fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
         );
         assert!(
             act != RAISE_THIRD_POT && act != RAISE_HALF_POT && act != ALL_IN,
-            "55 facing open raise must suppress 3-bet raise sizes, got action {}",
-            act
+            "55 facing open raise must suppress 3-bet raise sizes, got action {act}"
         );
         if act == RAISE_MIN {
             raise_min_count += 1;
@@ -479,8 +478,7 @@ fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
     );
     assert!(
         raise_min_count <= 20,
-        "55 should rarely 3-bet min-raise (capped <= 0.05), got {}/100",
-        raise_min_count
+        "55 should rarely 3-bet min-raise (capped <= 0.05), got {raise_min_count}/100"
     );
 
     let legal = vec![
@@ -503,8 +501,7 @@ fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
     .expect("map 3-bet");
     assert!(
         three_bet_amt <= 1950,
-        "Preflop RAISE_HALF_POT 3-bet vs 650 open must be <= 3.0x (1950), got {}",
-        three_bet_amt
+        "Preflop RAISE_HALF_POT 3-bet vs 650 open must be <= 3.0x (1950), got {three_bet_amt}"
     );
 }
 
@@ -582,8 +579,7 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
     }
     assert!(
         hu_28_calls >= 12,
-        "AQo should frequently call <= 30 BB HU shove (got {}/30 calls)",
-        hu_28_calls
+        "AQo should frequently call <= 30 BB HU shove (got {hu_28_calls}/30 calls)"
     );
 
     /* 3. Maniac opponent at 33 BB: expanded maniac cap (33 <= 38 BB) calls */

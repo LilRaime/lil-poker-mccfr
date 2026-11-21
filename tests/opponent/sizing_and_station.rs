@@ -152,9 +152,7 @@ fn test_limper_exploitation_and_float_probe() {
     let total_raise_base = base_strat[RAISE_MIN as usize] + base_strat[RAISE_THIRD_POT as usize];
     assert!(
         total_raise_limp > total_raise_base,
-        "ISO-raise against frequent limper must increase. Got {} vs base {}",
-        total_raise_limp,
-        total_raise_base
+        "ISO-raise against frequent limper must increase. Got {total_raise_limp} vs base {total_raise_base}"
     );
 
     /* Test 2: Turn Float/Probe on missed flop c-bet (round 3) */
@@ -205,9 +203,7 @@ fn test_dynamic_bet_sizing_against_leaks() {
     let boost_min = adj_station_strong[RAISE_MIN as usize] / base_strat[RAISE_MIN as usize];
     assert!(
         boost_half > boost_min,
-        "Against Calling Station, large sizing (half pot boost {}) must exceed min-raise (boost {})",
-        boost_half,
-        boost_min
+        "Against Calling Station, large sizing (half pot boost {boost_half}) must exceed min-raise (boost {boost_min})"
     );
 
     /* 2. Weak hand (bucket 10) against calling station -> All raises suppressed */
@@ -226,9 +222,7 @@ fn test_dynamic_bet_sizing_against_leaks() {
         .sum();
     assert!(
         total_raise_weak < total_raise_base,
-        "Against Calling Station, bluffs should be reduced below base (base {}, weak {})",
-        total_raise_base,
-        total_raise_weak
+        "Against Calling Station, bluffs should be reduced below base (base {total_raise_base}, weak {total_raise_weak})"
     );
 
     /* 3. Weak hand against Nit/Rock (over-folder) -> Cheap bluffs (RAISE_THIRD_POT / RAISE_MIN) boosted, large bets dampened */
@@ -251,9 +245,7 @@ fn test_dynamic_bet_sizing_against_leaks() {
         adj_nit_weak[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
     assert!(
         boost_third > boost_half_nit,
-        "Against Nit, cheap bluffs (1/3 pot boost {}) must be favored over large bluffs (half pot boost {})",
-        boost_third,
-        boost_half_nit
+        "Against Nit, cheap bluffs (1/3 pot boost {boost_third}) must be favored over large bluffs (half pot boost {boost_half_nit})"
     );
 }
 
@@ -300,10 +292,7 @@ fn test_passive_station_value_extraction_boost() {
             );
             assert!(
                 act == RAISE_HALF_POT || act == RAISE_THIRD_POT || (bucket >= 65 && act == ALL_IN),
-                "Against passive check/call station on round {} with bucket {}, bot must value-bet large instead of checking, got {}",
-                round,
-                bucket,
-                act
+                "Against passive check/call station on round {round} with bucket {bucket}, bot must value-bet large instead of checking, got {act}"
             );
         }
     }

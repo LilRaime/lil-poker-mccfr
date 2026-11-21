@@ -13,7 +13,7 @@ use crate::game::holdem::{
 };
 use crate::live::protocol::parse_json_i32;
 
-/** Process showdown event: inspect each opponent's cards and record into their own OpponentTracker */
+/** Process showdown event: inspect each opponent's cards and record into their own `OpponentTracker` */
 pub fn process_showdown_multiway(
     state: &Value,
     player_id: &str,
@@ -68,7 +68,7 @@ pub fn process_showdown_multiway(
     }
 }
 
-/** Process showdown event: inspect opponent cards and record to OpponentTracker */
+/** Process showdown event: inspect opponent cards and record to `OpponentTracker` */
 pub fn process_showdown(
     state: &Value,
     player_id: &str,
@@ -279,122 +279,137 @@ impl LiveTableTracker {
         profiles_path: Option<&str>,
         pot: i32,
     ) {
+        for p in players {
+            self.observe_single_opponent(p, my_player_id, trackers, profiles_path, pot);
+        }
+    }
+
+    fn observe_single_opponent(
+        &mut self,
+        p: &Value,
+        my_player_id: &str,
+        trackers: &mut HashMap<String, OpponentTracker>,
+        profiles_path: Option<&str>,
+        pot: i32,
+    ) {
+        let p_id = extract_player_id(p);
+        if p_id.eq_ignore_ascii_case(my_player_id) {
+            return;
+        }
+        let opp_key = extract_player_name(p, p_id).to_string();
+        if opp_key.is_empty() {
+            return;
+        }
+        let bb = self.big_blind.max(1);
+        if !trackers.contains_key(&opp_key) {
+            let loaded =
+                profiles_path.and_then(|path| OpponentTracker::load_profile(path, &opp_key));
+            trackers.insert(opp_key.clone(), loaded.unwrap_or_default());
+        }
+        let tracker = trackers.entry(opp_key.clone()).or_default();
+        tracker.observe_blind_level(bb);
+
+        let p_bet = extract_player_bet(p);
+        let p_chips = extract_player_chips(p);
+        let (is_sb, is_bb) = extract_blind_flags(p);
+        let now_folded = is_player_folded(p);
+        let now_allin = p_chips == Some(0) && p_bet > 0;
+
+        let mut st = self
+            .opp_states
+            .remove(&opp_key)
+            .unwrap_or_else(|| OppHandState {
+                is_sb,
+                ..Default::default()
+            });
+        st.is_sb = is_sb;
+
+        if !st.initialized {
+            self.init_opponent_preflop_bet(&mut st, p_bet, is_sb, is_bb);
+        }
+
+        if !st.is_folded && now_folded {
+            let facing_bet = self.street_max_bet > st.last_bet;
+            tracker.record_action_street_detailed(
+                FOLD,
+                (self.round_idx + 1) as u8,
+                facing_bet,
+                0,
+                pot,
+            );
+            if self.round_idx == 0 {
+                st.acted_pf = true;
+            }
+            record_facing_3bet_once(tracker, &mut st, self.round_idx, self.pf_raise_count, true);
+            st.is_folded = true;
+        } else if p_bet > st.last_bet {
+            self.record_opponent_bet_action(tracker, &mut st, p_bet, pot, now_allin);
+        }
+        st.is_allin = now_allin;
+        self.opp_states.insert(opp_key, st);
+    }
+
+    fn record_opponent_bet_action(
+        &mut self,
+        tracker: &mut OpponentTracker,
+        st: &mut OppHandState,
+        p_bet: i32,
+        pot: i32,
+        now_allin: bool,
+    ) {
+        let bb = self.big_blind.max(1);
+        let delta = p_bet - st.last_bet;
+        let round_num = (self.round_idx + 1) as u8;
+        let facing_bet = self.street_max_bet > st.last_bet;
+        if p_bet > self.street_max_bet {
+            if self.round_idx == 0 {
+                self.pf_raise_count = self.pf_raise_count.saturating_add(1);
+                record_facing_3bet_once(tracker, st, self.round_idx, self.pf_raise_count, false);
+                st.acted_pf = true;
+                st.pf_vpip = true;
+                st.pf_pfr = true;
+                st.pf_raises_made = st.pf_raises_made.saturating_add(1);
+            }
+            let pre_bet_pot = (pot - delta).max(bb);
+            let act = classify_live_bet_action(delta, pre_bet_pot, bb, now_allin);
+            tracker.record_action_street_detailed(act, round_num, facing_bet, delta, pre_bet_pot);
+            self.street_max_bet = p_bet;
+        } else {
+            if self.round_idx == 0 {
+                st.acted_pf = true;
+                st.pf_vpip = true;
+                record_facing_3bet_once(tracker, st, self.round_idx, self.pf_raise_count, false);
+            }
+            tracker.record_action_street_detailed(CALL_CHECK, round_num, facing_bet, delta, pot);
+        }
+        st.last_bet = p_bet;
+    }
+
+    fn init_opponent_preflop_bet(
+        &mut self,
+        st: &mut OppHandState,
+        p_bet: i32,
+        is_sb: bool,
+        is_bb: bool,
+    ) {
         let bb = self.big_blind.max(1);
         let sb = self.small_blind.max(1);
-        for p in players {
-            let p_id = extract_player_id(p);
-            if p_id.eq_ignore_ascii_case(my_player_id) {
-                continue;
-            }
-            let opp_key = extract_player_name(p, p_id).to_string();
-            if opp_key.is_empty() {
-                continue;
-            }
-            if !trackers.contains_key(&opp_key) {
-                let loaded =
-                    profiles_path.and_then(|path| OpponentTracker::load_profile(path, &opp_key));
-                trackers.insert(opp_key.clone(), loaded.unwrap_or_default());
-            }
-            let tracker = trackers.entry(opp_key.clone()).or_default();
-            tracker.observe_blind_level(bb);
-
-            let p_bet = extract_player_bet(p);
-            let p_chips = extract_player_chips(p);
-            let (is_sb, is_bb) = extract_blind_flags(p);
-            let now_folded = is_player_folded(p);
-            let now_allin = p_chips == 0 && p_bet > 0;
-
-            let st = self
-                .opp_states
-                .entry(opp_key)
-                .or_insert_with(|| OppHandState {
-                    is_sb,
-                    ..Default::default()
-                });
-            st.is_sb = is_sb;
-
-            if !st.initialized {
-                if self.round_idx == 0 {
-                    if (is_sb && p_bet <= sb) || (is_bb && p_bet <= bb) {
-                        st.last_bet = p_bet;
-                        self.street_max_bet = self.street_max_bet.max(bb);
-                    } else if p_bet > 0 {
-                        st.last_bet = if is_sb {
-                            sb.min(p_bet)
-                        } else if is_bb {
-                            bb.min(p_bet)
-                        } else {
-                            0
-                        };
-                        self.street_max_bet = self.street_max_bet.max(bb);
-                    }
-                }
-                st.initialized = true;
-            }
-
-            if !st.is_folded && now_folded {
-                let facing_bet = self.street_max_bet > st.last_bet;
-                tracker.record_action_street_detailed(
-                    FOLD,
-                    (self.round_idx + 1) as u8,
-                    facing_bet,
-                    0,
-                    pot,
-                );
-                if self.round_idx == 0 {
-                    st.acted_pf = true;
-                }
-                record_facing_3bet_once(tracker, st, self.round_idx, self.pf_raise_count, true);
-                st.is_folded = true;
-            } else if p_bet > st.last_bet {
-                let delta = p_bet - st.last_bet;
-                let round_num = (self.round_idx + 1) as u8;
-                let facing_bet = self.street_max_bet > st.last_bet;
-                if p_bet > self.street_max_bet {
-                    if self.round_idx == 0 {
-                        self.pf_raise_count = self.pf_raise_count.saturating_add(1);
-                        record_facing_3bet_once(
-                            tracker,
-                            st,
-                            self.round_idx,
-                            self.pf_raise_count,
-                            false,
-                        );
-                        st.acted_pf = true;
-                        st.pf_vpip = true;
-                        st.pf_pfr = true;
-                        st.pf_raises_made = st.pf_raises_made.saturating_add(1);
-                    }
-                    let pre_bet_pot = (pot - delta).max(bb);
-                    let act = classify_live_bet_action(delta, pre_bet_pot, bb, now_allin);
-                    tracker.record_action_street_detailed(
-                        act,
-                        round_num,
-                        facing_bet,
-                        delta,
-                        pre_bet_pot,
-                    );
-                    self.street_max_bet = p_bet;
-                } else {
-                    if self.round_idx == 0 {
-                        st.acted_pf = true;
-                        st.pf_vpip = true;
-                        record_facing_3bet_once(
-                            tracker,
-                            st,
-                            self.round_idx,
-                            self.pf_raise_count,
-                            false,
-                        );
-                    }
-                    tracker.record_action_street_detailed(
-                        CALL_CHECK, round_num, facing_bet, delta, pot,
-                    );
-                }
+        if self.round_idx == 0 {
+            if (is_sb && p_bet <= sb) || (is_bb && p_bet <= bb) {
                 st.last_bet = p_bet;
+                self.street_max_bet = self.street_max_bet.max(bb);
+            } else if p_bet > 0 {
+                st.last_bet = if is_sb {
+                    sb.min(p_bet)
+                } else if is_bb {
+                    bb.min(p_bet)
+                } else {
+                    0
+                };
+                self.street_max_bet = self.street_max_bet.max(bb);
             }
-            st.is_allin = now_allin;
         }
+        st.initialized = true;
     }
 
     /** Observe any WebSocket table update (even when not Hero's turn) so every 6-max
@@ -415,8 +430,7 @@ impl LiveTableTracker {
         let board_len = state
             .get("board")
             .and_then(|v| v.as_array())
-            .map(|b| b.len())
-            .unwrap_or(0);
+            .map_or(0, std::vec::Vec::len);
         let new_round_idx = match board_len {
             0 => 0,
             3 => 1,

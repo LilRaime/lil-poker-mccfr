@@ -1,7 +1,12 @@
 /*! Shared Zero-Cost Guard Action Helpers & Cross-Tier Safety Invariants */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
-use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
+use crate::cfr::abstraction::{
+    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+};
+use crate::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER,
+};
 use crate::game::holdem::Card;
 
 #[inline]
@@ -84,7 +89,7 @@ pub(super) fn is_three_straight_board(board: &[Card]) -> bool {
     (0..=9).any(|s| (s..s + 4).filter(|&r| ranks[r]).count() >= 3)
 }
 
-/** Cap extreme > 3x pot ALL_IN shoves for ALL hands when effective stack is known */
+/** Cap extreme > 3x pot `ALL_IN` shoves for ALL hands when effective stack is known */
 pub(super) fn apply_overbet_allin_cap(
     tracker: &OpponentTracker,
     probs: &mut [f64],
@@ -110,7 +115,7 @@ pub(super) fn apply_overbet_allin_cap(
     reasons.push("POST_OVERBET_ALLIN_CAP");
     probs[ai_i] = 0.0;
     let target_idx = if ctx.to_call == 0 {
-        if ctx.bucket < 65
+        if ctx.bucket < BUCKET_TRIPS_MIN
             && (ctx.is_paired_board || ctx.is_three_flush || ctx.is_four_board_danger)
         {
             first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, CALL_CHECK])
@@ -120,7 +125,7 @@ pub(super) fn apply_overbet_allin_cap(
                 &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
             )
         }
-    } else if ctx.bucket >= 65 && !ctx.is_four_board_danger {
+    } else if ctx.bucket >= BUCKET_TRIPS_MIN && !ctx.is_four_board_danger {
         first_action_idx(
             ctx.legal_actions,
             &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
@@ -142,18 +147,23 @@ pub(super) fn apply_river_bluff_cap(
     strip_half_and_allin_for_air: bool,
     reasons: &mut Vec<&'static str>,
 ) {
-    if ctx.round != 4 || ctx.to_call != 0 || !tracker.is_guard_enabled("POST_RIVER_BLUFF_CAP") {
+    if ctx.round != ROUND_RIVER
+        || ctx.to_call != 0
+        || !tracker.is_guard_enabled("POST_RIVER_BLUFF_CAP")
+    {
         return;
     }
-    if ctx.bucket < 28 {
+    if ctx.bucket < BUCKET_WEAK_PAIR_MIN {
         if !strip_half_and_allin_for_air && ctx.has_river_nut_blocker {
             return;
         }
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| {
             (strip_half_and_allin_for_air && (a == ALL_IN || a == RAISE_HALF_POT))
-                || ((8..=10).contains(&ctx.bucket) && !ctx.has_river_nut_blocker && a >= RAISE_MIN)
+                || ((8..=BUCKET_HIGH_CARD_MAX).contains(&ctx.bucket)
+                    && !ctx.has_river_nut_blocker
+                    && a >= RAISE_MIN)
                 || (ctx.is_paired_board
-                    && ctx.bucket < 11
+                    && ctx.bucket < BUCKET_WEAK_DRAW_MIN
                     && !ctx.has_river_nut_blocker
                     && a == RAISE_MIN)
         });
@@ -163,7 +173,7 @@ pub(super) fn apply_river_bluff_cap(
                 probs[c_i] += shifted;
             }
         }
-    } else if (28..=44).contains(&ctx.bucket)
+    } else if (BUCKET_WEAK_PAIR_MIN..=44).contains(&ctx.bucket)
         || ((45..=66).contains(&ctx.bucket)
             && (ctx.is_paired_board
                 || ctx.is_dangerous_board

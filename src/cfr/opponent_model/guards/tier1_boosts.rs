@@ -4,8 +4,11 @@ use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
     detect_board_texture, nash_open_push_max_bb, preflop_strength_tier, BoardFlushTexture,
+    BUCKET_STRONG_DRAW_MIN,
 };
-use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
+use crate::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
+};
 
 impl OpponentTracker {
     pub(super) fn apply_tier1_soft_boosts(
@@ -16,7 +19,7 @@ impl OpponentTracker {
     ) {
         if ctx.is_passive_station && self.is_guard_enabled("PASSIVE_STATION_BOOST") {
             reasons.push("PASSIVE_STATION_BOOST");
-            self.apply_passive_station_boost(probs, ctx);
+            Self::apply_passive_station_boost(probs, ctx);
         }
 
         self.apply_pot_commit_early(probs, ctx, reasons);
@@ -34,7 +37,8 @@ impl OpponentTracker {
         if ctx.to_call > 0
             && ctx.allow_pot_commit_rescue
             && (ctx.pot_odds <= 0.12
-                || (ctx.pot_odds <= 0.15 && (ctx.is_preflop || ctx.bucket >= 15))
+                || (ctx.pot_odds <= 0.15
+                    && (ctx.is_preflop || ctx.bucket >= BUCKET_STRONG_DRAW_MIN))
                 || ctx.never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_EARLY")
             && shift_action_to(probs, ctx.legal_actions, FOLD, &[CALL_CHECK, ALL_IN]) > 0.0
@@ -53,7 +57,11 @@ impl OpponentTracker {
             return;
         }
         let max_steal_tier = if ctx.is_hyper_aggressor {
-            3
+            if ctx.active_opponents == 1 {
+                5
+            } else {
+                3
+            }
         } else if ctx.active_opponents == 1 {
             6
         } else if ctx.active_opponents == 2 {
@@ -89,11 +97,11 @@ impl OpponentTracker {
             && ctx.to_call > 0
             && ctx.to_call <= steal_max_call
             && ctx.is_hyper_aggressor
-            && (4..=5).contains(&pf_tier_now)
-            && ctx.bucket > 24
+            && pf_tier_now == 1
+            && ctx.bucket <= 1
             && self.is_guard_enabled("PF_SB_AGGRESSOR_TRAP")
         {
-            self.apply_sb_aggressor_limp_trap(probs, ctx, reasons);
+            Self::apply_sb_aggressor_limp_trap(probs, ctx, reasons);
         } else if ctx.to_call <= steal_max_call
             && pf_tier_now <= max_steal_tier
             && self.is_guard_enabled("PF_BUTTON_STEAL")
@@ -107,7 +115,7 @@ impl OpponentTracker {
                 || (pf_tier_now == 3 && (ctx.is_hyper_aggressor || ctx.eff_stack_bb <= 16)))
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            self.apply_short_3bet_resteal_shove(probs, ctx, reasons);
+            Self::apply_short_3bet_resteal_shove(probs, ctx, reasons);
         } else if ctx.active_opponents == 1
             && ctx.to_call > steal_max_call
             && ctx.to_call <= ctx.bb * 3
@@ -116,12 +124,11 @@ impl OpponentTracker {
             && (2..=4).contains(&pf_tier_now)
             && self.is_guard_enabled("PF_BUTTON_STEAL")
         {
-            self.apply_fold_to_3bet_exploit(probs, ctx, reasons);
+            Self::apply_fold_to_3bet_exploit(probs, ctx, reasons);
         }
     }
 
     fn apply_sb_aggressor_limp_trap(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -156,8 +163,7 @@ impl OpponentTracker {
             return;
         };
         /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4; leave strong blueprint raises untouched. */
-        let passive_mass =
-            fold_idx.map(|i| probs[i]).unwrap_or(0.0) + call_idx.map(|i| probs[i]).unwrap_or(0.0);
+        let passive_mass = fold_idx.map_or(0.0, |i| probs[i]) + call_idx.map_or(0.0, |i| probs[i]);
         if !((ctx.to_call > 0 && pf_tier_now <= 4)
             || passive_mass > 0.55
             || ctx.is_passive_station
@@ -210,7 +216,6 @@ impl OpponentTracker {
     }
 
     fn apply_short_3bet_resteal_shove(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -235,7 +240,6 @@ impl OpponentTracker {
     }
 
     fn apply_fold_to_3bet_exploit(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -286,20 +290,17 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        if ctx.round != 2
+        if ctx.round != ROUND_FLOP
             || ctx.to_call != 0
             || !(68..=72).contains(&ctx.bucket)
             || !self.is_guard_enabled("FLOP_WET_SET_VALUE")
         {
             return;
         }
-        let is_wet_flop = ctx
-            .board
-            .map(|b| {
-                let t = detect_board_texture(b);
-                t.flush_texture != BoardFlushTexture::Rainbow || t.is_connected
-            })
-            .unwrap_or(false);
+        let is_wet_flop = ctx.board.is_some_and(|b| {
+            let t = detect_board_texture(b);
+            t.flush_texture != BoardFlushTexture::Rainbow || t.is_connected
+        });
         if !is_wet_flop {
             return;
         }

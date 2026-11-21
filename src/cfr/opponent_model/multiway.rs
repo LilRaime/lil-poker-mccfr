@@ -1,11 +1,14 @@
 /*! Multi-Way Table Adaptation (3 to 6 Active Players: Range Tightening & Bluff Damping) */
 use super::guards::{action_idx, force_action, zero_and_sum, GuardContext};
 use super::tracker::OpponentTracker;
-use crate::cfr::abstraction::preflop_strength_tier;
-use crate::game::config::*;
+use crate::cfr::abstraction::{
+    preflop_strength_tier, BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN,
+    BUCKET_STRONG_FLUSH_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+};
+use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_RIVER};
 
 /** 6-Max Positional Preflop Open-Raise Chart:
- * Maps seat_position (0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB) to maximum playable open tier. */
+ * Maps `seat_position` (0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB) to maximum playable open tier. */
 pub fn max_open_tier_6max(seat_pos: u8) -> u8 {
     match seat_pos {
         0 => 3, /* UTG: ~15% VPIP (premiums, medium/high pairs, strong suited broadways) */
@@ -18,7 +21,7 @@ pub fn max_open_tier_6max(seat_pos: u8) -> u8 {
 }
 
 impl OpponentTracker {
-    pub(super) fn apply_multiway_adaptation(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
+    pub(super) fn apply_multiway_adaptation(probs: &mut [f64], ctx: &GuardContext<'_>) {
         if ctx.active_opponents < 2 {
             return;
         }
@@ -28,14 +31,13 @@ impl OpponentTracker {
         let call_idx = action_idx(ctx.legal_actions, CALL_CHECK);
 
         if ctx.is_preflop {
-            self.apply_multiway_preflop(probs, ctx, extra_opps, fold_idx, call_idx);
+            Self::apply_multiway_preflop(probs, ctx, extra_opps, fold_idx, call_idx);
         } else {
-            self.apply_multiway_postflop(probs, ctx, extra_opps, fold_idx, call_idx);
+            Self::apply_multiway_postflop(probs, ctx, extra_opps, fold_idx, call_idx);
         }
     }
 
     fn apply_multiway_preflop(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         extra_opps: i32,
@@ -67,7 +69,7 @@ impl OpponentTracker {
                         probs[c_i] += removed_raise;
                     }
                 } else if let Some(f_i) = fold_idx {
-                    let call_w = call_idx.map(|ci| probs[ci]).unwrap_or(0.0);
+                    let call_w = call_idx.map_or(0.0, |ci| probs[ci]);
                     if let Some(ci) = call_idx {
                         probs[ci] = 0.0;
                     }
@@ -143,16 +145,18 @@ impl OpponentTracker {
     }
 
     fn apply_multiway_postflop(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         extra_opps: i32,
         fold_idx: Option<usize>,
         call_idx: Option<usize>,
     ) {
-        if ctx.bucket < 15 || ctx.bucket == 28 || ctx.bucket == 29 {
+        if ctx.bucket < BUCKET_STRONG_DRAW_MIN
+            || ctx.bucket == BUCKET_WEAK_PAIR_MIN
+            || ctx.bucket == 29
+        {
             Self::apply_multiway_postflop_air(probs, ctx, extra_opps, fold_idx, call_idx);
-        } else if (15..=27).contains(&ctx.bucket) {
+        } else if (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket) {
             Self::apply_multiway_postflop_draws(probs, ctx, extra_opps, fold_idx, call_idx);
         } else if (30..55).contains(&ctx.bucket) {
             Self::apply_multiway_postflop_one_pair(probs, ctx, fold_idx, call_idx);
@@ -236,7 +240,7 @@ impl OpponentTracker {
          *    Pot control! Avoid bloating pots or stacking off with a single pair against multiple opponents. */
         let mut shifted = 0.0f64;
         for (i, &a) in ctx.legal_actions.iter().enumerate() {
-            if a == ALL_IN || (a == RAISE_HALF_POT && ctx.bucket < 50) {
+            if a == ALL_IN || (a == RAISE_HALF_POT && ctx.bucket < BUCKET_OVERPAIR_MIN) {
                 shifted += probs[i];
                 probs[i] = 0.0;
             } else if a >= RAISE_MIN && (ctx.to_call > 0 || ctx.bucket < 46) {
@@ -247,7 +251,9 @@ impl OpponentTracker {
         }
         if ctx.to_call > 0
             && ((ctx.bucket < 44 && ctx.pot_odds >= 0.18)
-                || (ctx.bucket < 50 && ctx.pot_odds >= 0.28 && ctx.active_opponents >= 3))
+                || (ctx.bucket < BUCKET_OVERPAIR_MIN
+                    && ctx.pot_odds >= 0.28
+                    && ctx.active_opponents >= 3))
         {
             if let Some(f_i) = fold_idx {
                 if let Some(c_i) = call_idx {
@@ -272,7 +278,7 @@ impl OpponentTracker {
          *      must NEVER bet/raise, and must fold to any meaningful bet (>= 4 BB or pot_odds >= 0.18).
          *    - Facing a massive multi-way shove (to_call >= 15 BB and pot_odds > 0.18), require at least
          *      Trips/Set (bucket >= 65) on clean boards or Strong Flush/Full House (bucket >= 80) on 3-flush boards! */
-        if ctx.is_four_flush_board && ctx.bucket < 82 {
+        if ctx.is_four_flush_board && ctx.bucket < BUCKET_SECOND_NUT_FLUSH {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if ctx.to_call > 0 && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.18) {
                 force_action(probs, ctx.legal_actions, FOLD);
@@ -280,10 +286,11 @@ impl OpponentTracker {
                 probs[c_i] = (probs[c_i] + shifted).max(0.95);
             }
         } else if ctx.to_call >= ctx.bb * 15 && ctx.pot_odds > 0.18 {
-            let fold_multiway_shove = if ctx.round == 4 {
-                ctx.bucket < 65 || (ctx.is_three_flush && ctx.bucket < 80)
+            let fold_multiway_shove = if ctx.round == ROUND_RIVER {
+                ctx.bucket < BUCKET_TRIPS_MIN
+                    || (ctx.is_three_flush && ctx.bucket < BUCKET_STRONG_FLUSH_MIN)
             } else {
-                ctx.bucket < 57
+                ctx.bucket < BUCKET_TWO_PAIR_MIN
                     && !(ctx.bucket == 22
                         || ctx.bucket == 23
                         || ctx.bucket == 25

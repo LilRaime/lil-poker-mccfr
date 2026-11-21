@@ -5,7 +5,14 @@ use super::helpers::{
     action_idx, apply_overbet_allin_cap, apply_river_bluff_cap, first_action_idx, force_action,
     zero_and_sum,
 };
-use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
+use crate::cfr::abstraction::{
+    BUCKET_FLUSH_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN,
+    BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+};
+use crate::game::config::{
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
+    ROUND_TURN,
+};
 
 impl OpponentTracker {
     pub(super) fn apply_tier2_postflop_caps_and_pot_control(
@@ -34,7 +41,7 @@ impl OpponentTracker {
         reasons: &mut Vec<&'static str>,
     ) {
         if ctx.bucket < 25
-            && !(ctx.round == 2 && (22..=27).contains(&ctx.bucket))
+            && !(ctx.round == ROUND_FLOP && (22..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket))
             && self.is_guard_enabled("POST_ALLIN_BLUFF_CAP")
         {
             if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
@@ -51,24 +58,29 @@ impl OpponentTracker {
             }
         }
 
-        if (ctx.bucket < 15 || ctx.bucket == 28 || ctx.bucket == 29)
+        if (ctx.bucket < BUCKET_STRONG_DRAW_MIN
+            || ctx.bucket == BUCKET_WEAK_PAIR_MIN
+            || ctx.bucket == 29)
             && self.is_guard_enabled("POST_AIR_GUTSHOT_GUARD")
         {
             if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
                 probs[ai_i] = 0.0;
             }
-            if ctx.to_call > 0 && (ctx.bucket < 15 || ctx.bucket == 28) {
+            if ctx.to_call > 0
+                && (ctx.bucket < BUCKET_STRONG_DRAW_MIN || ctx.bucket == BUCKET_WEAK_PAIR_MIN)
+            {
                 let shifted_raise = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
                 let overpriced =
-                    (ctx.round < 4 && ctx.to_call >= ctx.bb * 2 && ctx.pot_odds >= 0.25)
-                        || (ctx.round == 3
+                    (ctx.round < ROUND_RIVER && ctx.to_call >= ctx.bb * 2 && ctx.pot_odds >= 0.25)
+                        || (ctx.round == ROUND_TURN
                             && ctx.to_call >= ctx.bb
                             && ctx.pot_odds >= 0.16
-                            && ctx.bucket < 15)
-                        || (ctx.round < 4
+                            && ctx.bucket < BUCKET_STRONG_DRAW_MIN)
+                        || (ctx.round < ROUND_RIVER
                             && ctx.to_call >= ctx.bb
                             && ctx.pot_odds > 0.12
-                            && (ctx.bucket < 11 || ctx.bucket == 28));
+                            && (ctx.bucket < BUCKET_WEAK_DRAW_MIN
+                                || ctx.bucket == BUCKET_WEAK_PAIR_MIN));
                 if overpriced && force_action(probs, ctx.legal_actions, FOLD) {
                     reasons.push("POST_AIR_GUTSHOT_GUARD");
                 } else if !overpriced && shifted_raise > 0.0 {
@@ -91,9 +103,9 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        if ctx.round != 3
+        if ctx.round != ROUND_TURN
             || ctx.to_call < ctx.bb * 2
-            || !(15..=27).contains(&ctx.bucket)
+            || !(BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
             || !self.is_guard_enabled("TURN_DRAW_ODDS_FOLD")
         {
             return;
@@ -113,10 +125,10 @@ impl OpponentTracker {
     }
 
     fn apply_free_pot_control_caps(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
-        if ctx.round == 2
+        if ctx.round == ROUND_FLOP
             && ctx.to_call == 0
-            && ((ctx.bucket < 15 && ctx.pot >= ctx.bb * 8)
-                || ((28..=37).contains(&ctx.bucket) && ctx.pot >= ctx.bb * 10))
+            && ((ctx.bucket < BUCKET_STRONG_DRAW_MIN && ctx.pot >= ctx.bb * 8)
+                || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&ctx.bucket) && ctx.pot >= ctx.bb * 10))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
@@ -125,25 +137,26 @@ impl OpponentTracker {
             }
         }
 
-        if ctx.round >= 3
+        if ctx.round >= ROUND_TURN
             && ctx.to_call == 0
             && ctx.is_four_board_danger
-            && ctx.bucket < 73
+            && ctx.bucket < BUCKET_STRAIGHT_MIN
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] = (probs[c_i] + shifted).max(0.95);
             }
-        } else if ctx.round >= 3
+        } else if ctx.round >= ROUND_TURN
             && ctx.to_call == 0
-            && (ctx.bucket < 15 || (ctx.round == 4 && ctx.bucket < 28))
+            && (ctx.bucket < BUCKET_STRONG_DRAW_MIN
+                || (ctx.round == ROUND_RIVER && ctx.bucket < BUCKET_WEAK_PAIR_MIN))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             if let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT) {
                 probs[hp_i] = 0.0;
             }
-            let air_pot_cap = if ctx.bucket < 11 {
+            let air_pot_cap = if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
                 ctx.bb * 8
             } else {
                 ctx.bb * 18
@@ -152,7 +165,7 @@ impl OpponentTracker {
                 || ctx.is_sticky_caller
                 || ctx.active_opponents >= 2
                 || ctx.pot >= air_pot_cap
-                || (ctx.is_three_flush && ctx.bucket < 15))
+                || (ctx.is_three_flush && ctx.bucket < BUCKET_STRONG_DRAW_MIN))
                 && !ctx.has_river_nut_blocker;
             if should_cap_bluff {
                 let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
@@ -160,9 +173,9 @@ impl OpponentTracker {
                     probs[c_i] = (probs[c_i] + shifted).max(0.95);
                 }
             }
-        } else if ctx.round == 3
+        } else if ctx.round == ROUND_TURN
             && ctx.to_call == 0
-            && (15..=27).contains(&ctx.bucket)
+            && (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
             && (ctx.is_passive_station || ctx.active_opponents >= 2)
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
@@ -175,10 +188,10 @@ impl OpponentTracker {
                     probs[c_i] = (probs[c_i] + shifted).max(0.90);
                 }
             }
-        } else if ctx.round >= 3
+        } else if ctx.round >= ROUND_TURN
             && ctx.to_call == 0
             && ctx.pot >= ctx.bb * 8
-            && (28..=38).contains(&ctx.bucket)
+            && (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
             && !(ctx.is_passive_station && ctx.bucket >= 35 && !ctx.is_three_flush)
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
@@ -191,7 +204,7 @@ impl OpponentTracker {
 
     fn apply_facing_bet_pot_control_caps(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
         /* Pair + Strong Draw Defense on Flop & Turn (bucket 33 or 38) */
-        if ctx.round < 4
+        if ctx.round < ROUND_RIVER
             && ctx.to_call > 0
             && (ctx.bucket == 33 || ctx.bucket == 38)
             && ctx.pot_odds <= 0.35
@@ -208,11 +221,11 @@ impl OpponentTracker {
         }
 
         /* Flop facing a significant bet: call only with bare pair/draw instead of check-raising */
-        if ctx.round == 2
-            && (((28..=47).contains(&ctx.bucket)
+        if ctx.round == ROUND_FLOP
+            && (((BUCKET_WEAK_PAIR_MIN..=47).contains(&ctx.bucket)
                 && ctx.to_call >= ctx.bb * 2
                 && ctx.pot_odds >= 0.24)
-                || ((15..=21).contains(&ctx.bucket)
+                || ((BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket)
                     && ctx.to_call > 0
                     && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.30)))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
@@ -224,7 +237,7 @@ impl OpponentTracker {
         }
 
         /* Turn facing a bet: never probe-raise or check-raise with weak or marginal hands (< 61) */
-        if ctx.round == 3
+        if ctx.round == ROUND_TURN
             && ctx.to_call > 0
             && ctx.bucket < 61
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
@@ -244,12 +257,12 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
-        if ctx.round >= 3
-            && ctx.bucket == 73
+        if ctx.round >= ROUND_TURN
+            && ctx.bucket == BUCKET_STRAIGHT_MIN
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
-            self.cap_idiot_end_straight(probs, ctx, reasons);
-        } else if ctx.round >= 3
+            Self::cap_idiot_end_straight(probs, ctx, reasons);
+        } else if ctx.round >= ROUND_TURN
             && ctx.bucket == 74
             && (ctx.to_call >= ctx.bb * 3
                 || ctx.pot + ctx.to_call >= ctx.bb * 12
@@ -265,19 +278,19 @@ impl OpponentTracker {
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] = (probs[c_i] + shifted).max(0.60);
             }
-        } else if ctx.round == 4
-            && (74..=78).contains(&ctx.bucket)
+        } else if ctx.round == ROUND_RIVER
+            && (74..=BUCKET_STRAIGHT_MAX).contains(&ctx.bucket)
             && (ctx.is_three_flush || ctx.is_paired_board || ctx.is_four_flush_board)
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
-            self.cap_dangerous_river_straight(probs, ctx, reasons);
-        } else if ctx.round == 4
-            && (28..=72).contains(&ctx.bucket)
+            Self::cap_dangerous_river_straight(probs, ctx, reasons);
+        } else if ctx.round == ROUND_RIVER
+            && (BUCKET_WEAK_PAIR_MIN..=72).contains(&ctx.bucket)
             && self.is_guard_enabled("POST_RIVER_OVERBET_CAP")
         {
-            self.cap_dangerous_river_overbets(probs, ctx);
-        } else if ctx.round >= 3
-            && (79..=81).contains(&ctx.bucket)
+            Self::cap_dangerous_river_overbets(probs, ctx);
+        } else if ctx.round >= ROUND_TURN
+            && (BUCKET_FLUSH_MIN..=81).contains(&ctx.bucket)
             && (ctx.is_four_flush_board || (ctx.is_three_flush && ctx.is_paired_board))
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
@@ -292,7 +305,6 @@ impl OpponentTracker {
     }
 
     fn cap_idiot_end_straight(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -301,7 +313,7 @@ impl OpponentTracker {
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| {
             a == RAISE_HALF_POT || a == ALL_IN || (a >= RAISE_MIN && ctx.to_call > 0)
         });
-        if ctx.to_call == 0 && ctx.round == 3 {
+        if ctx.to_call == 0 && ctx.round == ROUND_TURN {
             if let Some(r_t) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) {
                 probs[r_t] += shifted * 0.75;
             }
@@ -314,7 +326,6 @@ impl OpponentTracker {
     }
 
     fn cap_dangerous_river_straight(
-        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -335,7 +346,7 @@ impl OpponentTracker {
         }
     }
 
-    fn cap_dangerous_river_overbets(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
+    fn cap_dangerous_river_overbets(probs: &mut [f64], ctx: &GuardContext<'_>) {
         let is_dangerous =
             ctx.is_dangerous_board || ctx.is_three_flush || ctx.is_three_straight_board;
         if !is_dangerous {
@@ -367,7 +378,7 @@ impl OpponentTracker {
         if !ctx.is_three_flush
             || ctx.to_call <= 0
             || ctx.pot_odds < 0.16
-            || ctx.bucket >= 79
+            || ctx.bucket >= BUCKET_FLUSH_MIN
             || ctx.bucket == 72
             || !self.is_guard_enabled("THREE_FLUSH_NO_RAISE")
         {

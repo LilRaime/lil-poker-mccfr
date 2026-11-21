@@ -2,13 +2,20 @@
 use std::collections::HashMap;
 
 use super::protocol::{map_action_index, ActionMapRequest};
-use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket, preflop_strength_tier};
+use crate::cfr::abstraction::{
+    postflop_equity_bucket, preflop_bucket, preflop_strength_tier, BUCKET_FLUSH_MIN,
+    BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN,
+    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+};
 use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
 use crate::cfr::opponent_model::{
-    DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest,
+    effective_remaining_chips, DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest,
 };
 use crate::cfr::subgame::{SubgameContext, SubgameRequest, SubgameSolver};
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
+    ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND,
+};
 use crate::game::holdem::{Card, Rank, RoundHistory, Suit};
 
 #[derive(Clone, Copy)]
@@ -26,7 +33,7 @@ pub struct LiveDecisionRequest<'a> {
     pub active_opponents: usize,
     pub big_blind: i32,
     pub my_chips: i32,
-    pub opp_chips: i32,
+    pub opp_chips: Option<i32>,
     pub current_bet: i32,
     pub strategy_index: Option<&'a StrategyLookupIndex>,
     pub solver: Option<&'a SubgameSolver>,
@@ -51,7 +58,7 @@ impl Default for LiveDecisionRequest<'_> {
             active_opponents: 1,
             big_blind: BIG_BLIND,
             my_chips: 0,
-            opp_chips: 0,
+            opp_chips: None,
             current_bet: 0,
             strategy_index: None,
             solver: None,
@@ -83,27 +90,18 @@ pub fn decide_action_traced(
     let active_opponents = req.active_opponents.max(1);
     let (to_call, pot) = normalize_uncallable_bet(req.to_call, req.pot, req.my_chips);
     let round = match req.board.len() {
-        0 => 1,
-        3 => 2,
-        4 => 3,
-        _ => 4,
+        0 => ROUND_PREFLOP,
+        3 => ROUND_FLOP,
+        4 => ROUND_TURN,
+        _ => ROUND_RIVER,
     };
     let legal_u8 = derive_legal_u8(req.legal, to_call);
-    let current_bucket = if round == 1 {
+    let current_bucket = if round == ROUND_PREFLOP {
         preflop_bucket(req.hole[0], req.hole[1]).0
     } else {
         postflop_equity_bucket(&req.hole, req.board)
     };
-    let eff_chips = if req.my_chips > 0 && req.opp_chips > 0 {
-        let opp_max_callable = if to_call > req.opp_chips {
-            req.opp_chips + to_call.max(0)
-        } else {
-            req.opp_chips
-        };
-        req.my_chips.min(opp_max_callable)
-    } else {
-        req.my_chips
-    };
+    let eff_chips = effective_remaining_chips(req.my_chips, req.opp_chips, to_call);
     let state = LiveDecisionState {
         hole: &req.hole,
         board: req.board,
@@ -157,7 +155,7 @@ pub fn decide_action_traced(
             active_opponents: state.active_opponents,
             table_bb: state.bb,
             my_chips: state.eff_chips,
-            opp_chips: req.opp_chips,
+            opp_chips: None,
             from_subgame: use_subgame,
         },
         &mut rng,
@@ -277,7 +275,9 @@ fn try_extreme_pot_commit_rescue(
     let is_extreme_commit =
         s.to_call * 8 <= new_pot || (s.my_chips > 0 && s.my_chips <= s.bb / 2 && s.pot >= s.bb * 4);
     if !(is_extreme_commit
-        && (s.round >= 2 || preflop_strength_tier(s.bucket) <= 6 || s.my_chips <= s.to_call))
+        && (s.round >= ROUND_FLOP
+            || preflop_strength_tier(s.bucket) <= 6
+            || s.my_chips <= s.to_call))
     {
         return None;
     }
@@ -306,7 +306,7 @@ fn try_short_stack_nash_decision(
     tracker: &OpponentTracker,
 ) -> Option<(String, i32, DecisionTrace)> {
     /* Short-Stack Nash Push/Fold Engine: <= 12 BB effective stack on preflop */
-    if s.round != 1 || s.eff_chips <= 0 || s.eff_chips > s.bb * 12 {
+    if s.round != ROUND_PREFLOP || s.eff_chips <= 0 || s.eff_chips > s.bb * 12 {
         return None;
     }
     let (short_act, reason) = tracker.select_short_stack_preflop_action(&ShortStackRequest {
@@ -316,7 +316,7 @@ fn try_short_stack_nash_decision(
         active_opponents: s.active_opponents,
         table_bb: s.bb,
         my_chips: s.eff_chips,
-        opp_chips: 0,
+        opp_chips: None,
         legal_actions: &s.legal_u8,
     })?;
     let total_pot = (s.pot + s.to_call).max(1);
@@ -324,7 +324,7 @@ fn try_short_stack_nash_decision(
     let pot_odds_bps = (pot_odds.clamp(0.0, 1.0) * 1000.0).round() as u16;
     let tr = DecisionTrace {
         bucket: s.bucket,
-        round: 1,
+        round: ROUND_PREFLOP,
         pot_odds_bps,
         raw_top_action: short_act,
         final_action: short_act,
@@ -379,7 +379,7 @@ fn resolve_raw_strategy_probs(
     let flop_trigger_pot = (s.bb * 8).max(1);
     let use_subgame = sp.subgame_search
         && s.active_opponents == 1
-        && (s.round >= 3 || (s.round == 2 && s.pot >= flop_trigger_pot));
+        && (s.round >= ROUND_TURN || (s.round == ROUND_FLOP && s.pot >= flop_trigger_pot));
 
     let (opp_vpip_opt, opp_pfr_opt) = if tracker.is_overbet_bluffer() {
         (
@@ -462,7 +462,11 @@ fn apply_live_street_action_guards(
     chosen_idx: &mut usize,
     trace: &mut DecisionTrace,
 ) {
-    if s.round == 4 && s.to_call == 0 && s.bucket < 65 && *chosen_idx >= RAISE_MIN as usize {
+    if s.round == ROUND_RIVER
+        && s.to_call == 0
+        && s.bucket < BUCKET_TRIPS_MIN
+        && *chosen_idx >= RAISE_MIN as usize
+    {
         let turn_hist = s.history[2].as_slice();
         let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
         /* On Turn, OOP (my_player == 1) acts on even indices (0, 2, ...), IP (my_player == 0) on odd indices (1, 3, ...). */
@@ -471,21 +475,20 @@ fn apply_live_street_action_guards(
             .enumerate()
             .rev()
             .find(|&(_, &a)| a >= RAISE_MIN)
-            .map(|(idx, _)| {
+            .is_some_and(|(idx, _)| {
                 let is_oop_action = idx % 2 == 0;
                 (s.my_player == 1 && !is_oop_action) || (s.my_player == 0 && is_oop_action)
-            })
-            .unwrap_or(false);
+            });
         if turn_raises >= 2 || (s.my_player == 1 && opp_was_last_turn_raiser) {
             *chosen_idx = CALL_CHECK as usize;
             trace.guard_reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
         }
     }
-    if s.round == 2
+    if s.round == ROUND_FLOP
         && s.to_call == 0
         && s.my_player == 1
         && *chosen_idx == RAISE_MIN as usize
-        && s.bucket < 40
+        && s.bucket < BUCKET_TOP_PAIR_MIN
         && tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
     {
         let pf_hist = s.history[0].as_slice();
@@ -506,11 +509,11 @@ fn apply_live_commit_and_spr_guards(
 ) {
     if s.to_call > 0 && *chosen_idx == FOLD as usize && s.legal_u8.contains(&CALL_CHECK) {
         let new_pot = (s.pot + s.to_call).max(1);
-        let is_postflop_micro_commit = s.round >= 2
+        let is_postflop_micro_commit = s.round >= ROUND_FLOP
             && (s.to_call * 8 <= new_pot
-                || (s.to_call * 6 <= new_pot && s.bucket >= 15)
+                || (s.to_call * 6 <= new_pot && s.bucket >= BUCKET_STRONG_DRAW_MIN)
                 || (s.my_chips > 0 && s.my_chips <= s.bb && s.pot >= s.bb * 4));
-        let is_preflop_priced_in = s.round == 1
+        let is_preflop_priced_in = s.round == ROUND_PREFLOP
             && (s.to_call <= s.bb * 2 || preflop_strength_tier(s.bucket) <= 6)
             && s.to_call * 6 <= new_pot;
         if is_postflop_micro_commit || is_preflop_priced_in {
@@ -518,23 +521,31 @@ fn apply_live_commit_and_spr_guards(
             trace.guard_reasons.push("POT_COMMIT_DECISION_RESCUE");
         }
     }
-    if s.round >= 2 && s.eff_chips > 0 {
-        let is_four_board_pair = s.round >= 3 && matches!(s.bucket, 28 | 40 | 50 | 57);
-        let is_bloated_flop_weak = s.round == 2
-            && ((s.bucket < 15 && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
-                || ((28..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
+    if s.round >= ROUND_FLOP && s.eff_chips > 0 {
+        let is_four_board_pair = s.round >= ROUND_TURN
+            && matches!(
+                s.bucket,
+                BUCKET_WEAK_PAIR_MIN
+                    | BUCKET_TOP_PAIR_MIN
+                    | BUCKET_OVERPAIR_MIN
+                    | BUCKET_TWO_PAIR_MIN
+            );
+        let is_bloated_flop_weak = s.round == ROUND_FLOP
+            && ((s.bucket < BUCKET_STRONG_DRAW_MIN
+                && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
+                || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
         if s.to_call == 0
             && *chosen_idx >= RAISE_MIN as usize
             && (is_four_board_pair
                 || is_bloated_flop_weak
-                || (s.bucket < 11
+                || (s.bucket < BUCKET_WEAK_DRAW_MIN
                     && *chosen_idx >= RAISE_THIRD_POT as usize
                     && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8)))
         {
             *chosen_idx = CALL_CHECK as usize;
             trace.guard_reasons.push("LOW_SPR_BLUFF_SUPPRESS");
         } else if s.to_call > s.bb
-            && (s.bucket < 15 || s.bucket == 28)
+            && (s.bucket < BUCKET_STRONG_DRAW_MIN || s.bucket == BUCKET_WEAK_PAIR_MIN)
             && *chosen_idx == CALL_CHECK as usize
         {
             let remaining = s.eff_chips - s.to_call;
@@ -565,9 +576,17 @@ fn safe_default_live_action(s: &LiveDecisionState<'_>) -> (String, i32) {
         ("check".to_string(), 0)
     } else if s.has("call") {
         ("call".to_string(), 0)
-    } else if s.to_call > 0 && s.round >= 2 && s.bucket >= 79 && s.has("all_in") {
+    } else if s.to_call > 0
+        && s.round >= ROUND_FLOP
+        && s.bucket >= BUCKET_FLUSH_MIN
+        && s.has("all_in")
+    {
         ("all_in".to_string(), 0)
-    } else if s.to_call > 0 && s.round >= 2 && s.bucket >= 79 && s.has("allin") {
+    } else if s.to_call > 0
+        && s.round >= ROUND_FLOP
+        && s.bucket >= BUCKET_FLUSH_MIN
+        && s.has("allin")
+    {
         ("allin".to_string(), 0)
     } else if s.has("check") {
         ("check".to_string(), 0)

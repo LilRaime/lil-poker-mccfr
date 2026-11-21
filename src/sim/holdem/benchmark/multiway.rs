@@ -6,17 +6,24 @@ use rand::{Rng, SeedableRng};
 use super::deal_cards_prefix;
 use crate::cfr::abstraction::{
     detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+    BUCKET_WEAK_PAIR_MIN,
 };
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
-use crate::game::config::*;
+use crate::game::config::{
+    BIG_BLIND, BIG_BLIND_F64, MAX_RAISES_PER_ROUND, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER,
+    ROUND_TURN, SMALL_BLIND, STACK_SIZE,
+};
 use crate::game::holdem::{
     evaluate_7cards, Card, RoundHistory, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT,
     RAISE_MIN, RAISE_THIRD_POT,
 };
 use crate::live::{decide_action_traced, LiveDecisionRequest};
 use crate::sim::stats::SimStats;
+
+const NUM_SEATS: usize = 6;
+const CARDS_PER_MULTIWAY_DEAL: usize = NUM_SEATS * 2 + 5;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MultiwayBenchmarkConfig<'a> {
@@ -90,7 +97,6 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
     let subgame_solver = SubgameSolver::default();
     let mut rng = SmallRng::seed_from_u64(cfg.seed.unwrap_or(2026));
 
-    const NUM_SEATS: usize = 6;
     let opp_roster = ["tag", "calling_station", "maniac", "shove_bot", "rock"];
     let mut trackers: Vec<OpponentTracker> = (0..opp_roster.len())
         .map(|_| {
@@ -127,9 +133,8 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
         cfg.total_deals * NUM_SEATS as u64
     );
 
-    const CARDS_NEEDED: usize = NUM_SEATS * 2 + 5;
     for _deal in 1..=cfg.total_deals {
-        let deck = deal_cards_prefix(&mut rng, CARDS_NEEDED);
+        let deck = deal_cards_prefix(&mut rng, CARDS_PER_MULTIWAY_DEAL);
         let holes: [[Card; 2]; NUM_SEATS] = [
             [deck[0], deck[1]],
             [deck[2], deck[3]],
@@ -162,10 +167,7 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
     let se_bb100 = (se_chips / BIG_BLIND_F64) * 100.0;
     println!("------------------------------------------------------------");
     println!("Total 6-Max Hands Played : {}", total_stats.hands);
-    println!(
-        "Multi-Way Win Rate       : {:+.2} bb/100 (±{:.2})",
-        bb100, se_bb100
-    );
+    println!("Multi-Way Win Rate       : {bb100:+.2} bb/100 (±{se_bb100:.2})");
     println!(
         "95% Confidence Interval  : [{:+.2}, {:+.2}] bb/100",
         bb100 - 1.96 * se_bb100,
@@ -178,12 +180,12 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
 fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut SmallRng) -> u8 {
     let (idx, _) = preflop_bucket(spot.hole[0], spot.hole[1]);
     let tier = preflop_strength_tier(idx);
-    let bucket = if spot.round == 1 {
+    let bucket = if spot.round == ROUND_PREFLOP {
         (9 - tier as usize) * 8
     } else {
         postflop_equity_bucket(spot.hole, spot.board_slice)
     };
-    let (has_fd, has_sd) = if spot.round >= 2 {
+    let (has_fd, has_sd) = if spot.round >= ROUND_FLOP {
         detect_draws(spot.hole, spot.board_slice)
     } else {
         (false, false)
@@ -192,8 +194,10 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
     match arch {
         "calling_station" => {
             if spot.to_call == 0
-                || (spot.round == 1 && (tier <= 6 || (tier == 7 && spot.to_call <= BIG_BLIND * 4)))
-                || (spot.round >= 2 && (bucket >= 28 || has_fd || has_sd))
+                || (spot.round == ROUND_PREFLOP
+                    && (tier <= 6 || (tier == 7 && spot.to_call <= BIG_BLIND * 4)))
+                || (spot.round >= ROUND_FLOP
+                    && (bucket >= BUCKET_WEAK_PAIR_MIN || has_fd || has_sd))
                 || spot.to_call <= BIG_BLIND * 2
             {
                 CALL_CHECK
@@ -212,7 +216,9 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
         }
         "shove_bot" => {
             if spot.raises_this_round < MAX_RAISES_PER_ROUND
-                && ((spot.round == 1 && tier <= 4) || bucket >= 36 || rng.gen_bool(0.20))
+                && ((spot.round == ROUND_PREFLOP && tier <= 4)
+                    || bucket >= 36
+                    || rng.gen_bool(0.20))
             {
                 ALL_IN
             } else if spot.to_call == 0 {
@@ -222,14 +228,16 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
             }
         }
         "rock" => {
-            if (spot.round == 1 && tier <= 1) || (spot.round >= 2 && bucket >= 54) {
+            if (spot.round == ROUND_PREFLOP && tier <= 1)
+                || (spot.round >= ROUND_FLOP && bucket >= 54)
+            {
                 if spot.raises_this_round < MAX_RAISES_PER_ROUND {
                     RAISE_THIRD_POT
                 } else {
                     CALL_CHECK
                 }
             } else if spot.to_call == 0
-                || (spot.round == 1 && tier <= 2 && spot.to_call <= BIG_BLIND * 2)
+                || (spot.round == ROUND_PREFLOP && tier <= 2 && spot.to_call <= BIG_BLIND * 2)
             {
                 CALL_CHECK
             } else {
@@ -238,15 +246,17 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
         }
         _ => {
             /* TAG */
-            if (spot.round == 1 && tier <= 2) || (spot.round >= 2 && bucket >= 45) {
+            if (spot.round == ROUND_PREFLOP && tier <= 2)
+                || (spot.round >= ROUND_FLOP && bucket >= 45)
+            {
                 if spot.raises_this_round < MAX_RAISES_PER_ROUND {
                     RAISE_THIRD_POT
                 } else {
                     CALL_CHECK
                 }
             } else if spot.to_call == 0
-                || (spot.round == 1 && tier <= 4 && spot.to_call <= BIG_BLIND * 3)
-                || (spot.round >= 2
+                || (spot.round == ROUND_PREFLOP && tier <= 4 && spot.to_call <= BIG_BLIND * 3)
+                || (spot.round >= ROUND_FLOP
                     && (bucket >= 34 || has_fd || has_sd)
                     && spot.to_call <= spot.pot / 2)
             {
@@ -304,7 +314,7 @@ fn apply_bot_seat_action(
             active_opponents: turn.active_now.saturating_sub(1).max(1),
             big_blind: BIG_BLIND,
             my_chips: turn.my_remaining,
-            opp_chips: 0,
+            opp_chips: None,
             current_bet: street_current_bet,
             strategy_index: Some(res.strategy_index),
             solver: Some(res.subgame_solver),
@@ -404,7 +414,7 @@ fn step_multiway_opp_seat(
         }
     }
     let bet_added = (state.contribs[seat] - prev_c).max(0);
-    if spot.round == 1 {
+    if spot.round == ROUND_PREFLOP {
         state.opp_acted_pf[tracker_slot] = true;
         if act >= RAISE_MIN {
             state.opp_pf_vpip[tracker_slot] = true;
@@ -416,7 +426,7 @@ fn step_multiway_opp_seat(
     trackers[tracker_slot].record_action_street_detailed(
         act,
         spot.round,
-        spot.round == 2 && state.raises_this_round > 0,
+        spot.round == ROUND_FLOP && state.raises_this_round > 0,
         bet_added,
         spot.pot,
     );
@@ -440,7 +450,7 @@ fn run_multiway_round(
     trackers: &mut [OpponentTracker],
     rng: &mut SmallRng,
 ) {
-    let street_start_bet = if rctx.round == 1 {
+    let street_start_bet = if rctx.round == ROUND_PREFLOP {
         0
     } else {
         state.current_bet
@@ -452,7 +462,7 @@ fn run_multiway_round(
             *flag = true;
         }
     }
-    let mut cursor = if rctx.round == 1 { 2 } else { 0 };
+    let mut cursor = if rctx.round == ROUND_PREFLOP { 2 } else { 0 };
     let mut safety_steps = 0;
 
     while needs_action.iter().any(|&n| n) && safety_steps < 36 {
@@ -563,7 +573,7 @@ fn simulate_multiway_6max_hand(
     };
     let mut ctx = SubgameContext::new();
 
-    for round in 1..=4u8 {
+    for round in ROUND_PREFLOP..=ROUND_RIVER {
         if state.folded.iter().filter(|&&f| !f).count() <= 1 {
             break;
         }
@@ -575,9 +585,9 @@ fn simulate_multiway_6max_hand(
             continue;
         }
         let board_slice: &[Card] = match round {
-            1 => &[],
-            2 => &full_board[0..3],
-            3 => &full_board[0..4],
+            ROUND_PREFLOP => &[],
+            ROUND_FLOP => &full_board[0..3],
+            ROUND_TURN => &full_board[0..4],
             _ => &full_board[0..5],
         };
         let rctx = MultiwayRoundContext {

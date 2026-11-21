@@ -77,13 +77,11 @@ fn test_opponent_barrel_metrics_and_wilson() {
     let (low, high) = OpponentTracker::wilson_confidence(50, 100, 1.96);
     assert!(
         (0.39..=0.42).contains(&low),
-        "Wilson 95% lower bound for 50/100 should be ~0.40, got {}",
-        low
+        "Wilson 95% lower bound for 50/100 should be ~0.40, got {low}"
     );
     assert!(
         (0.58..=0.61).contains(&high),
-        "Wilson 95% upper bound for 50/100 should be ~0.60, got {}",
-        high
+        "Wilson 95% upper bound for 50/100 should be ~0.60, got {high}"
     );
 
     /* Turn barrel facing and folding */
@@ -116,7 +114,7 @@ fn test_opponent_barrel_metrics_and_wilson() {
     /* Test turn barrel exploit in adjust_strategy_full */
     let base_strat = [0.30, 0.40, 0.10, 0.10, 0.10, 0.0];
     let legal = [FOLD, CALL_CHECK, RAISE_MIN, RAISE_THIRD_POT, RAISE_HALF_POT];
-    // Weak hand (bucket 10) on Turn (round 3)
+    /* Weak hand (bucket 10) on Turn (round 3) */
     let adj_turn = tracker.adjust_strategy(&ExploitRequest {
         blueprint_probs: &base_strat,
         legal_actions: &legal,
@@ -128,9 +126,7 @@ fn test_opponent_barrel_metrics_and_wilson() {
     let adj_raise: f64 = adj_turn[3] + adj_turn[4];
     assert!(
         adj_raise > orig_raise,
-        "Facing turn over-folder, bot should fire 2nd barrel bluff more often (orig {}, adj {})",
-        orig_raise,
-        adj_raise
+        "Facing turn over-folder, bot should fire 2nd barrel bluff more often (orig {orig_raise}, adj {adj_raise})"
     );
 }
 
@@ -139,11 +135,11 @@ fn test_opponent_sizing_tells() {
     let mut tracker = OpponentTracker::new();
 
     /* Record detailed actions with bet size and pot */
-    // Opponent bet 20 chips into 100 pot (20% pot -> small bet)
+    /* Opponent bet 20 chips into 100 pot (20% pot -> small bet) */
     tracker.record_action_street_detailed(RAISE_MIN, 2, false, 20, 100);
-    // Opponent bet 50 chips into 100 pot (50% pot -> mid bet)
+    /* Opponent bet 50 chips into 100 pot (50% pot -> mid bet) */
     tracker.record_action_street_detailed(RAISE_HALF_POT, 2, false, 50, 100);
-    // Opponent bet 150 chips into 100 pot (150% pot -> large/overbet)
+    /* Opponent bet 150 chips into 100 pot (150% pot -> large/overbet) */
     tracker.record_action_street_detailed(ALL_IN, 3, false, 150, 100);
 
     assert_eq!(tracker.sizing_small_bets, 1);

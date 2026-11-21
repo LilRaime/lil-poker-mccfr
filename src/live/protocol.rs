@@ -2,7 +2,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
+    ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
+};
 use crate::game::holdem::{Card, Rank, Suit};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -25,17 +28,20 @@ pub struct ActPayload {
 }
 
 pub fn parse_json_i32(v: Option<&Value>) -> i32 {
-    let Some(val) = v else {
-        return 0;
-    };
+    parse_json_opt_i32(v).unwrap_or(0)
+}
+
+/** Parse an optional JSON number or numeric string while distinguishing absence (None) from zero (Some(0)) */
+pub fn parse_json_opt_i32(v: Option<&Value>) -> Option<i32> {
+    let val = v?;
     if let Some(i) = val.as_i64() {
-        i as i32
+        Some(i as i32)
     } else if let Some(f) = val.as_f64() {
-        f as i32
+        Some(f as i32)
     } else if let Some(s) = val.as_str() {
-        s.parse::<i32>().unwrap_or(0)
+        s.parse::<i32>().ok()
     } else {
-        0
+        None
     }
 }
 
@@ -102,7 +108,7 @@ impl Default for ActionMapRequest<'_> {
             to_call: 0,
             pot: 0,
             is_wet: false,
-            round: 2,
+            round: ROUND_FLOP,
             table_bb: BIG_BLIND,
             my_chips: 0,
             current_bet: 0,
@@ -110,7 +116,7 @@ impl Default for ActionMapRequest<'_> {
     }
 }
 
-/** Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN) to server legal string */
+/** Map CFR Action Index (0: FOLD, 1: CALL/CHECK, 2: `RAISE_MIN`, 3: `RAISE_THIRD_POT`, 4: `RAISE_HALF_POT`, 5: `ALL_IN`) to server legal string */
 pub fn map_action_index(req: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     let mut ctx = *req;
     if ctx.table_bb <= 0 {
@@ -185,15 +191,15 @@ fn compute_half_pot_raise(
         (bb * 7 / 2).max(preflop_open_min_total)
     } else if is_preflop_4bet_plus {
         (opp_bet_pf * 23 / 10).max(min_raise)
-    } else if c.round == 1 && c.to_call > 0 {
+    } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
         (opp_bet_pf * 3)
             .min(opp_bet_pf + c.pot)
             .max(opp_bet_pf * 11 / 4)
             .max(min_raise)
     } else {
-        let s = if c.round == 4 && base_bet == 0 {
+        let s = if c.round == ROUND_RIVER && base_bet == 0 {
             (c.pot * 5 / 4).max((bb * 5 / 2).max(bb))
-        } else if c.round >= 3 {
+        } else if c.round >= ROUND_TURN {
             (c.pot * 3 / 4).max((bb * 2).max(bb))
         } else if c.is_wet {
             (c.pot * 3 / 4).max((bb * 3 / 2).max(bb))
@@ -212,7 +218,7 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
     let bb = c.table_bb;
     let preflop_open_min_total = (bb * 5 / 2).max(bb * 2);
 
-    let is_unopened_or_limped_pf = c.round == 1
+    let is_unopened_or_limped_pf = c.round == ROUND_PREFLOP
         && if c.current_bet > 0 {
             c.current_bet <= bb
         } else {
@@ -223,7 +229,7 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
     } else {
         ((c.pot + c.to_call) / 2).max(c.to_call + bb / 2)
     };
-    let min_raise = if c.round == 1 {
+    let min_raise = if c.round == ROUND_PREFLOP {
         if is_unopened_or_limped_pf {
             preflop_open_min_total
         } else if c.to_call > 0 {
@@ -236,7 +242,7 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
     } else {
         bb
     };
-    let base_bet = if c.round == 1 && c.to_call == 0 {
+    let base_bet = if c.round == ROUND_PREFLOP && c.to_call == 0 {
         bb
     } else if c.current_bet > 0 {
         c.current_bet.max(c.to_call)
@@ -244,7 +250,8 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
         c.to_call
     };
     let my_posted_bet = c.current_bet.saturating_sub(c.to_call);
-    let is_preflop_4bet_plus = c.round == 1 && !is_unopened_or_limped_pf && opp_bet_pf > bb * 5;
+    let is_preflop_4bet_plus =
+        c.round == ROUND_PREFLOP && !is_unopened_or_limped_pf && opp_bet_pf > bb * 5;
 
     let amt = match idx {
         RAISE_THIRD_POT => {
@@ -252,7 +259,7 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
                 (bb * 3).max(preflop_open_min_total)
             } else if is_preflop_4bet_plus {
                 (opp_bet_pf * 11 / 5).max(min_raise)
-            } else if c.round == 1 && c.to_call > 0 {
+            } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
                 (opp_bet_pf * 11 / 4).max(min_raise)
             } else {
                 let s = (c.pot / 3).max(bb);
@@ -276,9 +283,9 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
                 preflop_open_min_total
             } else if is_preflop_4bet_plus {
                 (opp_bet_pf * 21 / 10).max(min_raise)
-            } else if c.round == 1 && c.to_call > 0 {
+            } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
                 (opp_bet_pf * 5 / 2).max(min_raise)
-            } else if c.round == 1 {
+            } else if c.round == ROUND_PREFLOP {
                 (base_bet + bb).max(min_raise)
             } else if c.to_call > 0 {
                 let s = ((c.pot + c.to_call) / 4).max(bb);
@@ -294,12 +301,14 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
 fn map_raise_action(idx: u8, c: &ActionMapRequest<'_>) -> Option<(String, i32)> {
     let (amt, my_posted_bet) = compute_raise_amount(idx, c);
     let max_total = c.my_chips + my_posted_bet;
-    let leaves_tiny_postflop =
-        c.round >= 2 && c.my_chips > 0 && max_total > amt && max_total - amt <= c.table_bb.max(2);
-    let is_preflop_commit_jam = c.round == 1
+    let leaves_tiny_postflop = c.round >= ROUND_FLOP
+        && c.my_chips > 0
+        && max_total > amt
+        && max_total - amt <= c.table_bb.max(2);
+    let is_preflop_commit_jam = c.round == ROUND_PREFLOP
         && c.my_chips > 0
         && c.to_call > 0
-        && (amt * 20 >= c.my_chips * 11 || c.my_chips - amt <= c.table_bb * 3);
+        && (amt * 20 >= max_total * 11 || max_total - amt <= c.table_bb * 3);
     if is_preflop_commit_jam || leaves_tiny_postflop {
         /* If a raise commits >= 55% preflop or leaves <= 1 BB behind on postflop, jam all-in! */
         if has_legal(c.legal, "all_in") {
@@ -374,7 +383,7 @@ pub fn pseudo_harmonic_prob(x: i32, s1: i32, s2: i32, pot: i32) -> f64 {
 }
 
 /** Pseudo-Harmonic action translation: maps an arbitrary continuous bet amount into
- * a discrete action index (2: RAISE_MIN, 3: RAISE_THIRD_POT, 4: RAISE_HALF_POT, 5: ALL_IN)
+ * a discrete action index (2: `RAISE_MIN`, 3: `RAISE_THIRD_POT`, 4: `RAISE_HALF_POT`, 5: `ALL_IN`)
  * preserving pot odds and expectation value.
  * Ref: Ganzfried & Sandholm (2013). */
 pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(

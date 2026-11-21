@@ -20,7 +20,7 @@ pub struct LiveSnapshot {
     pub my_bet: i32,
     pub opp_bet: i32,
     pub my_chips: i32,
-    pub opp_chips: i32,
+    pub opp_chips: Option<i32>,
     pub pot: i32,
     pub to_call: i32,
     pub big_blind: i32,
@@ -29,7 +29,7 @@ pub struct LiveSnapshot {
     pub opp_is_sb: bool,
     pub my_player: usize,
     pub active_opponents: usize,
-    /// 6-max positional index: 0=UTG, 1=MP, 2=CO, 3=BTN, 4=SB, 5=BB
+    /** 6-max positional index: `0=UTG`, `1=MP`, `2=CO`, `3=BTN`, `4=SB`, `5=BB` */
     pub seat_position: u8,
     pub opp_name: String,
     pub action_seq_key: String,
@@ -41,7 +41,8 @@ struct TablePlayersSummary {
     my_bet: i32,
     opp_bet: i32,
     my_chips: i32,
-    opp_chips: i32,
+    opp_chips: Option<i32>,
+    deepest_active_opp_total: Option<i32>,
     my_is_sb: bool,
     my_is_bb: bool,
     opp_is_sb: bool,
@@ -54,7 +55,7 @@ struct TablePlayersSummary {
     nonzero_bets: Vec<i32>,
 }
 
-/** Dynamically derive legal action tokens when server does not provide legal_actions */
+/** Dynamically derive legal action tokens when server does not provide `legal_actions` */
 pub fn derive_legal_actions(to_call: i32, my_chips: i32) -> Vec<String> {
     let mut actions = Vec::new();
     if to_call == 0 {
@@ -105,7 +106,7 @@ fn summarize_players(players: &[Value], player_id: &str) -> TablePlayersSummary 
 
         if p_id.eq_ignore_ascii_case(player_id) {
             sum.my_bet = p_bet;
-            sum.my_chips = p_chips;
+            sum.my_chips = p_chips.unwrap_or(0);
             sum.my_is_sb = is_sb;
             sum.my_is_bb = is_bb;
         } else {
@@ -114,10 +115,17 @@ fn summarize_players(players: &[Value], player_id: &str) -> TablePlayersSummary 
             let is_folded = is_player_folded(p);
             if !is_folded {
                 sum.active_opps += 1;
+                if let Some(c) = p_chips {
+                    let opp_total = c.max(0) + p_bet;
+                    sum.deepest_active_opp_total = Some(
+                        sum.deepest_active_opp_total
+                            .map_or(opp_total, |prev| prev.max(opp_total)),
+                    );
+                }
             }
             /* Prioritize active opponents with the highest current bet, then highest stack */
             let active_bonus: i64 = if !is_folded { 1_000_000_000 } else { 0 };
-            let score = active_bonus + (p_bet as i64) * 100_000 + (p_chips as i64);
+            let score = active_bonus + (p_bet as i64) * 100_000 + (p_chips.unwrap_or(0) as i64);
             if score >= best_opp_score {
                 best_opp_score = score;
                 sum.opp_bet = p_bet;
@@ -197,12 +205,96 @@ fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize 
     }
 }
 
-/** Parse a WebSocket JSON message into LiveSnapshot if bot is active player */
+/** Parse a WebSocket JSON message into `LiveSnapshot` if bot is active player */
 pub fn parse_live_state(state: &Value, player_id: &str) -> Option<LiveSnapshot> {
     parse_live_state_with_hint(state, player_id, 0)
 }
 
-/** Parse a WebSocket JSON message into LiveSnapshot with an optional same-hand big-blind hint */
+fn extract_hero_hole_cards(players: Option<&Vec<Value>>, player_id: &str) -> Option<[Card; 2]> {
+    let mut hole_cards = Vec::new();
+    if let Some(arr) = players {
+        for p in arr {
+            if extract_player_id(p).eq_ignore_ascii_case(player_id) {
+                hole_cards.extend(parse_cards_array(p.get("hole")));
+            }
+        }
+    }
+    (hole_cards.len() >= 2).then(|| [hole_cards[0], hole_cards[1]])
+}
+
+fn resolve_legal_actions(state: &Value, to_call: i32, effective_my_chips: i32) -> Vec<String> {
+    state
+        .get("legal_actions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_lowercase))
+                .collect::<Vec<_>>()
+        })
+        .filter(|parsed| !parsed.is_empty())
+        .unwrap_or_else(|| derive_legal_actions(to_call, effective_my_chips))
+}
+
+fn resolve_seat_position(
+    state: &Value,
+    players: Option<&Vec<Value>>,
+    player_id: &str,
+    sum: &TablePlayersSummary,
+) -> u8 {
+    if sum.my_is_sb {
+        return 4;
+    }
+    if sum.my_is_bb {
+        return 5;
+    }
+    if sum.total_opps <= 1 {
+        return 3;
+    }
+    let Some(arr) = players else {
+        return 2;
+    };
+    let dealer_seat = state
+        .get("dealer_seat")
+        .or_else(|| state.get("button_seat"))
+        .and_then(serde_json::Value::as_i64);
+    let my_idx = arr
+        .iter()
+        .position(|p| extract_player_id(p).eq_ignore_ascii_case(player_id));
+    let btn_idx = dealer_seat.and_then(|ds| {
+        arr.iter()
+            .position(|p| p.get("seat").and_then(serde_json::Value::as_i64) == Some(ds))
+    });
+    match (my_idx, btn_idx) {
+        (Some(mi), Some(bi)) if !arr.is_empty() => {
+            let n = arr.len();
+            let dist_from_btn = (mi + n - bi) % n;
+            if dist_from_btn == 0 {
+                3 /* BTN */
+            } else if dist_from_btn == n - 1 {
+                2 /* CO */
+            } else if dist_from_btn == n.saturating_sub(2) && n >= 5 {
+                1 /* MP */
+            } else {
+                0 /* UTG */
+            }
+        }
+        _ => 2, /* Default CO if seat metadata absent */
+    }
+}
+
+fn resolve_hero_chips(state: &Value, parsed_chips: i32) -> i32 {
+    if parsed_chips > 0 {
+        return parsed_chips;
+    }
+    parse_json_i32(state.get("my_chips").or_else(|| {
+        state
+            .get("hero_chips")
+            .or_else(|| state.get("stack"))
+            .or_else(|| state.get("chips"))
+    }))
+}
+
+/** Parse a WebSocket JSON message into `LiveSnapshot` with an optional same-hand big-blind hint */
 pub fn parse_live_state_with_hint(
     state: &Value,
     player_id: &str,
@@ -217,38 +309,17 @@ pub fn parse_live_state_with_hint(
     }
 
     let players = state.get("players").and_then(|v| v.as_array());
-    let mut hole_cards = Vec::new();
-    if let Some(arr) = players {
-        for p in arr {
-            if extract_player_id(p).eq_ignore_ascii_case(player_id) {
-                hole_cards.extend(parse_cards_array(p.get("hole")));
-            }
-        }
-    }
-    if hole_cards.len() < 2 {
-        return None;
-    }
-    let hole = [hole_cards[0], hole_cards[1]];
+    let hole = extract_hero_hole_cards(players, player_id)?;
     let board = parse_cards_array(state.get("board"));
 
-    let mut sum = players
-        .map(|arr| summarize_players(arr, player_id))
-        .unwrap_or_default();
+    let mut sum = players.map_or_default(|arr| summarize_players(arr, player_id));
 
     let active_opponents = if sum.active_opps > 0 {
         sum.active_opps
     } else {
         sum.total_opps.max(1)
     };
-
-    if sum.my_chips <= 0 {
-        sum.my_chips = parse_json_i32(state.get("my_chips").or_else(|| {
-            state
-                .get("hero_chips")
-                .or_else(|| state.get("stack"))
-                .or_else(|| state.get("chips"))
-        }));
-    }
+    sum.my_chips = resolve_hero_chips(state, sum.my_chips);
 
     let (current_bet, pot, to_call) = compute_pot_and_to_call(state, &sum, sum.my_chips);
     let phase = state
@@ -262,24 +333,13 @@ pub fn parse_live_state_with_hint(
     } else {
         STACK_SIZE
     };
-
-    /* Extract legal actions or dynamically derive them from table state */
-    let legal_actions: Vec<String> = state
-        .get("legal_actions")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                .collect::<Vec<_>>()
-        })
-        .filter(|parsed| !parsed.is_empty())
-        .unwrap_or_else(|| derive_legal_actions(to_call, effective_my_chips));
+    let legal_actions = resolve_legal_actions(state, to_call, effective_my_chips);
 
     let hand_id = state
         .get("hand_number")
         .or_else(|| state.get("hand_id"))
         .or_else(|| state.get("hand_count"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
 
     let raw_pot = parse_json_i32(state.get("pot"));
@@ -296,8 +356,7 @@ pub fn parse_live_state_with_hint(
     let hist_len = state
         .get("history")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map_or(0, std::vec::Vec::len);
 
     let action_seq_key = format!(
         "{}:{}:{}:{}:{}:{}:{}:{:?}{:?}",
@@ -313,42 +372,13 @@ pub fn parse_live_state_with_hint(
     );
 
     let my_player = compute_hero_position(board.is_empty(), &sum);
-    let seat_position: u8 = if sum.my_is_sb {
-        4
-    } else if sum.my_is_bb {
-        5
-    } else if sum.total_opps <= 1 {
-        3
-    } else if let Some(arr) = players {
-        let dealer_seat = state
-            .get("dealer_seat")
-            .or_else(|| state.get("button_seat"))
-            .and_then(|v| v.as_i64());
-        let my_idx = arr
-            .iter()
-            .position(|p| extract_player_id(p).eq_ignore_ascii_case(player_id));
-        let btn_idx = dealer_seat.and_then(|ds| {
-            arr.iter()
-                .position(|p| p.get("seat").and_then(|v| v.as_i64()) == Some(ds))
-        });
-        match (my_idx, btn_idx) {
-            (Some(mi), Some(bi)) if !arr.is_empty() => {
-                let n = arr.len();
-                let dist_from_btn = (mi + n - bi) % n;
-                if dist_from_btn == 0 {
-                    3 /* BTN */
-                } else if dist_from_btn == n - 1 {
-                    2 /* CO */
-                } else if dist_from_btn == n.saturating_sub(2) && n >= 5 {
-                    1 /* MP */
-                } else {
-                    0 /* UTG */
-                }
-            }
-            _ => 2, /* Default CO if seat metadata absent */
-        }
+    let seat_position = resolve_seat_position(state, players, player_id, &sum);
+    let opp_chips = if active_opponents >= 2 {
+        sum.deepest_active_opp_total
+            .map(|tot| (tot - sum.my_bet - to_call).max(0))
+            .or(sum.opp_chips)
     } else {
-        2
+        sum.opp_chips
     };
 
     Some(LiveSnapshot {
@@ -361,7 +391,7 @@ pub fn parse_live_state_with_hint(
         my_bet: sum.my_bet,
         opp_bet: sum.opp_bet,
         my_chips: sum.my_chips,
-        opp_chips: sum.opp_chips,
+        opp_chips,
         pot,
         to_call,
         big_blind,

@@ -171,8 +171,7 @@ fn test_pseudo_harmonic_and_geometric_sizing() {
     let bet_2streets = calculate_geometric_bet_size(pot, stack, 2);
     assert!(
         bet_2streets > 500 && bet_2streets < stack,
-        "Geometric sizing should be reasonable fraction of pot, got {}",
-        bet_2streets
+        "Geometric sizing should be reasonable fraction of pot, got {bet_2streets}"
     );
 
     /* 2. Pseudo-Harmonic probability boundary conditions */
@@ -289,7 +288,46 @@ fn test_protocol_6max_limp_pot_and_multiway_3bet_sizing() {
     .expect("map 4-bet");
     assert_eq!(
         four_bet_amt, 3080,
-        "Preflop 4-bet vs 1400 (14 BB) must size compactly at 2.2x (3080), got {}",
-        four_bet_amt
+        "Preflop 4-bet vs 1400 (14 BB) must size compactly at 2.2x (3080), got {four_bet_amt}"
     );
+}
+
+#[test]
+fn test_sb_150_300_allin_never_leaves_one_chip() {
+    let legal_with_allin = vec![
+        "fold".to_string(),
+        "call".to_string(),
+        "raise".to_string(),
+        "all_in".to_string(),
+    ];
+    let (act, amt) = map_action_index(&ActionMapRequest {
+        action_idx: ALL_IN as usize,
+        legal: &legal_with_allin,
+        to_call: 150,
+        pot: 450,
+        is_wet: false,
+        round: 1,
+        table_bb: 300,
+        my_chips: 4381,
+        current_bet: 300,
+    })
+    .expect("map SB 150/300 all_in");
+    assert_eq!(act, "all_in");
+    assert_eq!(amt, 0);
+
+    let legal_raise_only = vec!["fold".to_string(), "call".to_string(), "raise".to_string()];
+    let (raise_act, raise_amt) = map_action_index(&ActionMapRequest {
+        action_idx: ALL_IN as usize,
+        legal: &legal_raise_only,
+        to_call: 150,
+        pot: 450,
+        is_wet: false,
+        round: 1,
+        table_bb: 300,
+        my_chips: 4381,
+        current_bet: 300,
+    })
+    .expect("map SB 150/300 raise fallback for full stack");
+    assert_eq!(raise_act, "raise");
+    assert_eq!(raise_amt, 4531);
 }

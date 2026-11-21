@@ -3,9 +3,10 @@ use super::super::tracker::OpponentTracker;
 use super::helpers::{is_three_straight_board, river_nut_blocker_allowed};
 use crate::cfr::abstraction::{
     detect_board_texture, detect_river_nut_blocker, is_dangerous_board, is_four_flush_board,
-    is_four_straight_board, preflop_strength_tier,
+    is_four_straight_board, preflop_strength_tier, BUCKET_NUT_FLUSH, BUCKET_SECOND_NUT_FLUSH,
+    BUCKET_WEAK_PAIR_MIN,
 };
-use crate::game::config::{ALL_IN, RAISE_MIN};
+use crate::game::config::{ALL_IN, RAISE_MIN, ROUND_PREFLOP, ROUND_RIVER};
 use crate::game::holdem::Card;
 
 pub(in crate::cfr::opponent_model) struct GuardInput<'a> {
@@ -66,7 +67,7 @@ pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
 
 impl<'a> GuardContext<'a> {
     pub(super) fn new(tracker: &OpponentTracker, input: GuardInput<'a>) -> Self {
-        let is_preflop = input.round == 1;
+        let is_preflop = input.round == ROUND_PREFLOP;
         let is_allin_call = input.my_chips > 0 && input.to_call >= input.my_chips;
         let eff_stack_bb = if input.my_chips > 0 {
             input.my_chips / input.bb.max(1)
@@ -108,33 +109,33 @@ impl<'a> GuardContext<'a> {
 
         let is_paired_board = input
             .board
-            .map(|b| detect_board_texture(b).is_paired)
-            .unwrap_or(false);
-        let is_four_flush = input.board.map(is_four_flush_board).unwrap_or(false);
-        let is_four_straight = input.board.map(is_four_straight_board).unwrap_or(false);
+            .is_some_and(|b| detect_board_texture(b).is_paired);
+        let is_four_flush = input.board.is_some_and(is_four_flush_board);
+        let is_four_straight = input.board.is_some_and(is_four_straight_board);
         let is_four_board_danger = is_four_straight || is_four_flush;
-        let is_dangerous = input.board.map(is_dangerous_board).unwrap_or(false);
-        let is_three_straight = input.board.map(is_three_straight_board).unwrap_or(false);
+        let is_dangerous = input.board.is_some_and(is_dangerous_board);
+        let is_three_straight = input.board.is_some_and(is_three_straight_board);
 
         let never_fold_postflop = !is_preflop
-            && (input.bucket >= 83
-                || (input.bucket == 82 && !is_four_flush && input.to_call < input.pot * 2)
+            && (input.bucket >= BUCKET_NUT_FLUSH
+                || (input.bucket == BUCKET_SECOND_NUT_FLUSH
+                    && !is_four_flush
+                    && input.to_call < input.pot * 2)
                 || (input.bucket == 81 && !is_four_flush && !is_paired_board));
         let allow_pot_commit_rescue = !(is_preflop
             && preflop_strength_tier(input.bucket) >= 7
             && input.to_call > input.bb * 2);
-        let has_river_nut_blocker = input.round == 4
+        let has_river_nut_blocker = input.round == ROUND_RIVER
             && input.active_opponents == 1
             && input.to_call == 0
-            && input.bucket < 28
+            && input.bucket < BUCKET_WEAK_PAIR_MIN
             && !is_passive_station
             && (tracker.total_actions() < 6 || tracker.fold_ratio() >= 0.30)
             && river_nut_blocker_allowed(input.pot, input.bb, input.my_chips)
             && input
                 .hole
                 .zip(input.board)
-                .map(|(h, b)| detect_river_nut_blocker(h, b))
-                .unwrap_or(false);
+                .is_some_and(|(h, b)| detect_river_nut_blocker(h, b));
 
         Self {
             legal_actions: input.legal_actions,

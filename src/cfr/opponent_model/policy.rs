@@ -4,7 +4,9 @@ use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
     nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
 };
-use crate::game::config::*;
+use crate::game::config::{
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_FLOP,
+};
 use crate::game::holdem::Card;
 use rand::Rng;
 
@@ -21,7 +23,7 @@ pub struct PolicyRequest<'a> {
     pub active_opponents: usize,
     pub table_bb: i32,
     pub my_chips: i32,
-    pub opp_chips: i32,
+    pub opp_chips: Option<i32>,
     pub from_subgame: bool,
 }
 
@@ -31,7 +33,7 @@ impl Default for PolicyRequest<'_> {
             raw_probs: &[],
             legal_actions: &[],
             bucket: 0,
-            round: 2,
+            round: ROUND_FLOP,
             to_call: 0,
             pot: 0,
             hole: None,
@@ -39,7 +41,7 @@ impl Default for PolicyRequest<'_> {
             active_opponents: 1,
             table_bb: BIG_BLIND,
             my_chips: 0,
-            opp_chips: 0,
+            opp_chips: None,
             from_subgame: false,
         }
     }
@@ -53,7 +55,7 @@ pub struct ShortStackRequest<'a> {
     pub active_opponents: usize,
     pub table_bb: i32,
     pub my_chips: i32,
-    pub opp_chips: i32,
+    pub opp_chips: Option<i32>,
     pub legal_actions: &'a [u8],
 }
 
@@ -66,7 +68,7 @@ impl Default for ShortStackRequest<'_> {
             active_opponents: 1,
             table_bb: BIG_BLIND,
             my_chips: 0,
-            opp_chips: 0,
+            opp_chips: None,
             legal_actions: &[],
         }
     }
@@ -89,7 +91,7 @@ impl OpponentTracker {
         self.select_action_traced(req, rng).0
     }
 
-    /** Contextual purified action sampling that also returns a structured DecisionTrace */
+    /** Contextual purified action sampling that also returns a structured `DecisionTrace` */
     pub fn select_action_traced<R: Rng>(
         &self,
         req: &PolicyRequest<'_>,
@@ -170,7 +172,7 @@ impl OpponentTracker {
     }
 
     /** Unified <= 12 BB Nash Push/Fold preflop engine shared by live play and simulation.
-     * Returns Some((action, reason_code)) when stack <= 12 BB preflop, else None. */
+     * Returns `Some((action, reason_code))` when stack <= 12 BB preflop, else `None`. */
     pub fn select_short_stack_preflop_action(
         &self,
         req: &ShortStackRequest<'_>,
@@ -263,15 +265,13 @@ fn top_legal_action(raw_probs: &[f64], legal_actions: &[u8]) -> u8 {
 }
 
 fn has_three_flush(board: Option<&[Card]>) -> bool {
-    board
-        .map(|b| {
-            let mut sc = [0u8; 4];
-            for c in b {
-                sc[c.suit as usize] += 1;
-            }
-            sc.iter().any(|&cnt| cnt >= 3)
-        })
-        .unwrap_or(false)
+    board.is_some_and(|b| {
+        let mut sc = [0u8; 4];
+        for c in b {
+            sc[c.suit as usize] += 1;
+        }
+        sc.iter().any(|&cnt| cnt >= 3)
+    })
 }
 
 fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut R) -> u8 {
@@ -304,7 +304,7 @@ fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut 
         let norm: Vec<f64> = probs.iter().map(|p| p / sum).collect();
         let r: f64 = rng.gen();
         let mut cum = 0.0;
-        let mut picked = *legal_actions.last().unwrap();
+        let mut picked = legal_actions.last().copied().unwrap_or(CALL_CHECK);
         for (i, &p) in norm.iter().enumerate() {
             cum += p;
             if r < cum {
@@ -316,21 +316,16 @@ fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut 
     } else if let Some(&c) = legal_actions.iter().find(|&&a| a == CALL_CHECK) {
         c
     } else {
-        *legal_actions.first().unwrap_or(&1)
+        *legal_actions.first().unwrap_or(&CALL_CHECK)
     }
 }
 
+/** Effective remaining chips hero can play for, distinguishing unknown opponent stack (None) from all-in (Some(0)) */
 #[inline]
-fn effective_remaining_chips(my_chips: i32, opp_chips: i32, to_call: i32) -> i32 {
-    if my_chips > 0 && opp_chips > 0 {
-        let opp_max_callable = if to_call > opp_chips {
-            opp_chips + to_call.max(0)
-        } else {
-            opp_chips
-        };
-        my_chips.min(opp_max_callable)
-    } else {
-        my_chips
+pub fn effective_remaining_chips(my_chips: i32, opp_chips: Option<i32>, to_call: i32) -> i32 {
+    match opp_chips {
+        Some(opp) if my_chips > 0 => my_chips.min(opp.max(0) + to_call.max(0)),
+        _ => my_chips,
     }
 }
 

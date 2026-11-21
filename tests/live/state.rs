@@ -1,8 +1,11 @@
 use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key_rich;
 use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical;
-use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+use lil_poker_mccfr::cfr::opponent_model::{effective_remaining_chips, OpponentTracker};
 use lil_poker_mccfr::game::holdem::{
     Card, Rank, RoundHistory, Suit, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
+};
+use lil_poker_mccfr::live::client::{
+    build_emergency_fallback_candidates, EmergencyFallbackRequest,
 };
 use lil_poker_mccfr::live::decision::{decide_action, LiveDecisionRequest};
 use lil_poker_mccfr::live::state::{
@@ -147,7 +150,7 @@ fn test_derive_legal_actions_and_live_state_without_legal_actions() {
     assert_eq!(snapshot.to_call, 0);
     assert_eq!(snapshot.pot, 200);
     assert_eq!(snapshot.my_chips, 9600);
-    assert_eq!(snapshot.opp_chips, 10400);
+    assert_eq!(snapshot.opp_chips, Some(10400));
     assert!(snapshot.legal_actions.contains(&"raise".to_string()));
     assert!(snapshot.legal_actions.contains(&"check".to_string()));
 }
@@ -183,8 +186,7 @@ fn test_live_street_transition_closes_preflop_for_rich_keys() {
     let rich_key = get_holdem_infoset_key_rich(&hole, &board, 2, &tracker.live_history);
     assert!(
         rich_key.starts_with("P:rc|F:B"),
-        "Flop key must start with P:rc|F:B, got: {}",
-        rich_key
+        "Flop key must start with P:rc|F:B, got: {rich_key}"
     );
 
     /* Test hierarchical strategy lookup succeeds */
@@ -650,4 +652,159 @@ fn test_postflop_overbet_bluffer_detection() {
         tracker.is_overbet_bluffer(),
         "4 postflop 1.5x overbets must activate is_overbet_bluffer()"
     );
+}
+
+#[test]
+fn test_effective_remaining_chips_and_snapshot_opp_stack_parsing() {
+    assert_eq!(effective_remaining_chips(18000, None, 2000), 18000);
+    assert_eq!(effective_remaining_chips(18000, Some(0), 2000), 2000);
+    assert_eq!(effective_remaining_chips(15000, Some(2000), 2000), 4000);
+    assert_eq!(effective_remaining_chips(1500, Some(2000), 2000), 1500);
+
+    let hu_allin_snap = parse_live_state(
+        &json!({
+            "hand_id": 6001,
+            "phase": "River",
+            "pot": 4000,
+            "current_bet": 2000,
+            "big_blind": 200,
+            "small_blind": 100,
+            "active_player_id": "hero",
+            "board": ["As", "Kd", "6c", "6h", "2d"],
+            "players": [
+                { "id": "hero", "name": "Hero", "chips": 18000, "bet": 0, "hole": ["Js", "Jh"] },
+                { "id": "opp", "name": "Villain", "chips": 0, "bet": 2000 }
+            ]
+        }),
+        "hero",
+    )
+    .expect("parse explicit zero-chips opponent snapshot");
+    assert_eq!(hu_allin_snap.opp_chips, Some(0));
+    assert_eq!(
+        effective_remaining_chips(
+            hu_allin_snap.my_chips,
+            hu_allin_snap.opp_chips,
+            hu_allin_snap.to_call
+        ),
+        2000
+    );
+
+    let omitted_chips_snap = parse_live_state(
+        &json!({
+            "hand_id": 6002,
+            "phase": "Flop",
+            "pot": 600,
+            "current_bet": 200,
+            "big_blind": 100,
+            "small_blind": 50,
+            "active_player_id": "hero",
+            "board": ["As", "Kd", "2c"],
+            "players": [
+                { "id": "hero", "name": "Hero", "chips": 10000, "bet": 0, "hole": ["Ah", "Qd"] },
+                { "id": "opp", "name": "Villain", "bet": 200 }
+            ]
+        }),
+        "hero",
+    )
+    .expect("parse omitted-chips opponent snapshot");
+    assert_eq!(omitted_chips_snap.opp_chips, None);
+    assert_eq!(
+        effective_remaining_chips(
+            omitted_chips_snap.my_chips,
+            omitted_chips_snap.opp_chips,
+            omitted_chips_snap.to_call
+        ),
+        10000
+    );
+
+    /* Multiway: a short all-in must not cap effective stack when a deep active opponent remains */
+    let multiway_snap = parse_live_state(
+        &json!({
+            "hand_id": 6003,
+            "phase": "Turn",
+            "pot": 2200,
+            "current_bet": 1000,
+            "big_blind": 100,
+            "small_blind": 50,
+            "active_player_id": "hero",
+            "board": ["As", "Kd", "6c", "2h"],
+            "players": [
+                { "id": "hero", "name": "Hero", "chips": 10000, "bet": 0, "folded": false, "hole": ["Ah", "Kc"] },
+                { "id": "short_allin", "name": "Short", "chips": 0, "bet": 1000, "folded": false },
+                { "id": "folded_opp", "name": "Folded", "chips": 20000, "bet": 0, "folded": true },
+                { "id": "deep_opp", "name": "Deep", "chips": 10000, "bet": 200, "folded": false }
+            ]
+        }),
+        "hero",
+    )
+    .expect("parse multiway mixed-stack snapshot");
+    assert_eq!(multiway_snap.opp_chips, Some(9200));
+    assert_eq!(
+        effective_remaining_chips(
+            multiway_snap.my_chips,
+            multiway_snap.opp_chips,
+            multiway_snap.to_call
+        ),
+        10000
+    );
+}
+
+#[test]
+fn test_emergency_fallback_candidate_order_and_safety() {
+    let deep_legal = vec![
+        "fold".to_string(),
+        "call".to_string(),
+        "raise".to_string(),
+        "all_in".to_string(),
+        "allin".to_string(),
+    ];
+    let deep_cands = build_emergency_fallback_candidates(&EmergencyFallbackRequest {
+        legal_actions: &deep_legal,
+        chosen_action: "call",
+        chosen_amount: 0,
+        first_retry: None,
+        err_text: "invalid call amount",
+        to_call: 200,
+        my_chips: 10000,
+    });
+    assert_eq!(deep_cands, vec![("call", 200)]);
+
+    let sb_cands = build_emergency_fallback_candidates(&EmergencyFallbackRequest {
+        legal_actions: &deep_legal,
+        chosen_action: "call",
+        chosen_amount: 0,
+        first_retry: Some(("call", 50)),
+        err_text: "rejected",
+        to_call: 50,
+        my_chips: 10000,
+    });
+    assert!(
+        sb_cands
+            .iter()
+            .all(|(a, _)| *a != "all_in" && *a != "allin"),
+        "Deep-stack SB fallback must never escalate to all-in, got {sb_cands:?}"
+    );
+
+    let one_chip_legal = vec!["fold".to_string(), "call".to_string(), "all_in".to_string()];
+    let allin_call_cands = build_emergency_fallback_candidates(&EmergencyFallbackRequest {
+        legal_actions: &one_chip_legal,
+        chosen_action: "call",
+        chosen_amount: 0,
+        first_retry: None,
+        err_text: "amount mismatch",
+        to_call: 1,
+        my_chips: 1,
+    });
+    assert_eq!(allin_call_cands, vec![("call", 1), ("all_in", 0)]);
+
+    let allin_call_after_retry = build_emergency_fallback_candidates(&EmergencyFallbackRequest {
+        legal_actions: &one_chip_legal,
+        chosen_action: "call",
+        chosen_amount: 0,
+        first_retry: Some(("call", 1)),
+        err_text: "amount mismatch",
+        to_call: 1,
+        my_chips: 1,
+    });
+    assert_eq!(allin_call_after_retry, vec![("all_in", 0)]);
 }
