@@ -142,6 +142,44 @@ fn test_sb_limper_iso_raise_in_bb() {
         iso_raises >= 35 && iso_raises > baseline_raises + 15,
         "BB ISO-raise rate ({iso_raises}/100) vs serial SB limper must exceed baseline ({baseline_raises}/100)"
     );
+
+    /* Tier 6 playable hands vs >30% SB limper must not be zeroed by PF_DISCIPLINE_GUARD */
+    for hole_t6 in [
+        [
+            Card::new(Rank::King, Suit::Diamonds),
+            Card::new(Rank::Seven, Suit::Clubs),
+        ],
+        [
+            Card::new(Rank::Ace, Suit::Clubs),
+            Card::new(Rank::Three, Suit::Hearts),
+        ],
+        [
+            Card::new(Rank::Seven, Suit::Hearts),
+            Card::new(Rank::Six, Suit::Clubs),
+        ],
+    ] {
+        let pf_b = preflop_bucket(hole_t6[0], hole_t6[1]).0;
+        let mut t6_iso = 0usize;
+        for _ in 0..100 {
+            let req_t6 = PolicyRequest {
+                raw_probs: &passive_pf,
+                legal_actions: &legal_bb,
+                bucket: pf_b,
+                round: 1,
+                pot: 200,
+                hole: Some(&hole_t6),
+                my_chips: 10_000,
+                ..Default::default()
+            };
+            if limper.select_action_traced(&req_t6, &mut rng).0 >= RAISE_MIN {
+                t6_iso += 1;
+            }
+        }
+        assert!(
+            t6_iso >= 20,
+            "HU BB Tier 6 {hole_t6:?} vs frequent SB limper must ISO-raise frequently (got {t6_iso}/100)"
+        );
+    }
 }
 
 #[test]
@@ -319,6 +357,89 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
     assert!(
         raises >= 70,
         "A8o at 25 BB HU SB should open-raise (got {raises}/100)"
+    );
+
+    /* Tier 5 suited (Qd 8d) at 20 BB HU SB opens compactly via RAISE_MIN rather than limping or 3.5x */
+    let hole_qd8d = [
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Diamonds),
+    ];
+    let b_qd8d = preflop_bucket(hole_qd8d[0], hole_qd8d[1]).0;
+    let mixed_limp_half: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.55, 0.05, 0.10, 0.25, 0.0];
+    let mut min_raises = 0usize;
+    let mut oversized = 0usize;
+    for _ in 0..100 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &mixed_limp_half,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_qd8d,
+                round: 1,
+                to_call: 150,
+                pot: 450,
+                hole: Some(&hole_qd8d),
+                table_bb: 300,
+                my_chips: 6000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == RAISE_MIN {
+            min_raises += 1;
+        } else if act == RAISE_THIRD_POT || act == RAISE_HALF_POT {
+            oversized += 1;
+        }
+    }
+    assert!(
+        min_raises >= 85 && oversized == 0,
+        "Tier 5 Qd8d at 20 BB HU SB must compactly RAISE_MIN (got {min_raises}/100, oversized={oversized})"
+    );
+
+    /* Suited Tier 7 (4c 2c) at 11 BB HU SB must delegate cleanly instead of auto-folding and open-raise */
+    let hole_42c = [
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let b_42c = preflop_bucket(hole_42c[0], hole_42c[1]).0;
+    assert!(
+        tracker
+            .select_short_stack_preflop_action(&ShortStackRequest {
+                bucket: b_42c,
+                to_call: 200,
+                pot: 600,
+                table_bb: 400,
+                my_chips: 4400,
+                legal_actions: &LEGAL_FULL,
+                ..Default::default()
+            })
+            .is_none(),
+        "Suited Tier 7 at 11 BB HU SB must not auto-fold in short-stack Nash table"
+    );
+    let fold_biased: [f64; HOLDEM_NUM_ACTIONS] = [0.65, 0.20, 0.15, 0.0, 0.0, 0.0];
+    let mut open_42c = 0usize;
+    for _ in 0..100 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &fold_biased,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_42c,
+                round: 1,
+                to_call: 200,
+                pot: 600,
+                hole: Some(&hole_42c),
+                table_bb: 400,
+                my_chips: 4400,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            open_42c += 1;
+        }
+    }
+    assert!(
+        open_42c >= 65,
+        "Suited 42s at 11 BB HU SB must open predominantly instead of folding (got {open_42c}/100)"
     );
 }
 

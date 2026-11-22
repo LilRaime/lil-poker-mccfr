@@ -410,6 +410,114 @@ fn test_subgame_turn_and_river_one_pair_shove_folds() {
         "Qh Qd underpair on Ks 9h 6c 5h 9s must fold to river jam in subgame (reasons: {:?})",
         tr_qq.guard_reasons
     );
+
+    /* Dry short-SPR river 2nd-pair facing ~82% pot all-in (pot_odds ~31%, <10 BB) must NOT auto-fold */
+    let hole_8d6h = [
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Hearts),
+    ];
+    let board_dry_river = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+    ];
+    let b_86 = postflop_equity_bucket(&hole_8d6h, &board_dry_river);
+    assert_eq!(b_86, 35);
+    let (act_86, tr_86) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_86,
+            round: 4,
+            to_call: 1961,
+            pot: 4361,
+            hole: Some(&hole_8d6h),
+            board: Some(&board_dry_river),
+            table_bb: 300,
+            my_chips: 1961,
+            opp_chips: Some(0),
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert!(
+        act_86 != FOLD && !tr_86.guard_reasons.contains(&"SHOVE_DEFENSE_FOLD"),
+        "Dry short-SPR river 2nd pair facing 82% pot bet must not auto-fold (reasons: {:?})",
+        tr_86.guard_reasons
+    );
+
+    /* Turn paired board weak/mid underpair facing heavy commitment barrel (~29% odds, >40% stack) must fold */
+    let hole_7k = [
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let board_paired_turn = [
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Hearts),
+    ];
+    let b_7k = postflop_equity_bucket(&hole_7k, &board_paired_turn);
+    let (act_7k, tr_7k) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_7k,
+            round: 3,
+            to_call: 1906,
+            pot: 4578,
+            hole: Some(&hole_7k),
+            board: Some(&board_paired_turn),
+            table_bb: 300,
+            my_chips: 3285,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_7k, FOLD,
+        "Turn middle pair on paired J-high board facing committing barrel must fold (reasons: {:?})",
+        tr_7k.guard_reasons
+    );
+
+    /* Turn paired + 3-flush board underpair without flush redraw facing >= 3.5 BB donk (25% odds) must fold */
+    let hole_44 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let board_paired_three_flush_turn = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Hearts),
+    ];
+    let b_44 = postflop_equity_bucket(&hole_44, &board_paired_three_flush_turn);
+    let (act_44, tr_44) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_44,
+            round: 3,
+            to_call: 1500,
+            pot: 4500,
+            hole: Some(&hole_44),
+            board: Some(&board_paired_three_flush_turn),
+            table_bb: 400,
+            my_chips: 7164,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_44, FOLD,
+        "Underpair without flush suit on paired 3-flush turn must fold to 3.75 BB bet (reasons: {:?})",
+        tr_44.guard_reasons
+    );
 }
 
 #[test]

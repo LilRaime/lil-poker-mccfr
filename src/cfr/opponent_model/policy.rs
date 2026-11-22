@@ -407,6 +407,8 @@ fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
         }
     } else if c.to_call == 0 && c.has_call_check {
         return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+    } else if is_hu_sb_open && c.bucket < 91 && c.pf_tier <= 7 && !c.is_maniac {
+        return None;
     } else if c.can_fold {
         return Some((FOLD, "SHORT_STACK_FOLD"));
     }

@@ -197,6 +197,72 @@ fn test_shove_defense_river_overcards_and_flop_air_cap() {
         act < RAISE_MIN,
         "Pure air facing a flop bet must not bluff-raise or shove, got {act}"
     );
+
+    /* Flop small 1 BB bet (~25% pot odds) with Ace-high overcards must not force 100% fold */
+    let hole_a9 = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Diamonds),
+    ];
+    let board_q72_dry = [
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let b_a9 = postflop_equity_bucket(&hole_a9, &board_q72_dry);
+    let act_small_stab = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &[0.05, 0.90, 0.05, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_a9,
+            round: 2,
+            to_call: 100,
+            pot: 300,
+            hole: Some(&hole_a9),
+            board: Some(&board_q72_dry),
+            table_bb: 100,
+            my_chips: 9000,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_ne!(
+        act_small_stab, FOLD,
+        "Ace-high two overcards facing 1 BB flop bet must not force-fold"
+    );
+
+    /* Loose sticky caller (calls and raises ~30%, low folds < 20%) suppresses pure-air flop c-bets */
+    let mut sticky = OpponentTracker::new();
+    for _ in 0..14 {
+        sticky.record_action_street(CALL_CHECK, 2, true);
+    }
+    for _ in 0..6 {
+        sticky.record_action_street(RAISE_MIN, 1, false);
+    }
+    sticky.record_action_street(FOLD, 2, true);
+    let mut sticky_checks = 0usize;
+    for _ in 0..80 {
+        let a = sticky.select_action(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.15, 0.35, 0.30, 0.20, 0.0],
+                legal_actions: &LEGAL_OPEN,
+                bucket: 4,
+                round: 2,
+                to_call: 0,
+                pot: 300,
+                table_bb: 100,
+                my_chips: 9000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if a == CALL_CHECK {
+            sticky_checks += 1;
+        }
+    }
+    assert!(
+        sticky_checks >= 60,
+        "Pure air vs sticky caller on flop must check mostly (got {sticky_checks}/80 checks)"
+    );
 }
 
 #[test]
@@ -276,6 +342,38 @@ fn test_postflop_barrel_folds_and_turn_pot_commit() {
     assert_ne!(
         act_committed, FOLD,
         "Calling 600 into 9400 (6% pot odds) with overpair must never fold!"
+    );
+
+    /* Flop 3-bet pot underpair below 2 overcards facing large barrel must fold */
+    let hole_55 = [
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Spades),
+    ];
+    let board_at2 = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let b_55 = postflop_equity_bucket(&hole_55, &board_at2);
+    let act_underpair_3bp = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &[0.05, 0.95, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_55,
+            round: 2,
+            to_call: 2206,
+            pot: 5206,
+            hole: Some(&hole_55),
+            board: Some(&board_at2),
+            table_bb: 200,
+            my_chips: 6682,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_underpair_3bp, FOLD,
+        "Underpair 55 under A-T in bloated 3-bet pot must fold to 11 BB flop barrel"
     );
 }
 

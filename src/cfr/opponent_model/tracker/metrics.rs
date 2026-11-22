@@ -147,11 +147,21 @@ impl OpponentTracker {
         }
     }
 
+    pub fn river_overbet_ratio(&self) -> f64 {
+        let river_bets = self.river_actions[2].max(self.river_overbets);
+        if river_bets == 0 {
+            0.0
+        } else {
+            self.river_overbets as f64 / river_bets as f64
+        }
+    }
+
     pub fn is_overbet_bluffer(&self) -> bool {
         self.exploit_enabled
             && self.postflop_bets_total >= 4
-            && self.postflop_overbets >= 3
-            && self.postflop_overbet_ratio() >= 0.40
+            && ((self.postflop_overbets >= 3 && self.postflop_overbet_ratio() >= 0.40)
+                || (self.river_overbets >= 2 && self.river_overbet_ratio() >= 0.30)
+                || self.river_overbets >= 3)
     }
 
     /** Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)

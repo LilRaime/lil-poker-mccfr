@@ -43,6 +43,8 @@ pub struct OpponentTracker {
     #[serde(default)]
     pub postflop_overbets: u64,
     #[serde(default)]
+    pub river_overbets: u64,
+    #[serde(default)]
     pub postflop_bets_total: u64,
     pub showdown_small_bluff_count: u64,
     pub showdown_large_monster_count: u64,
@@ -114,6 +116,7 @@ impl OpponentTracker {
             sizing_mid_bets: 0,
             sizing_large_bets: 0,
             postflop_overbets: 0,
+            river_overbets: 0,
             postflop_bets_total: 0,
             showdown_small_bluff_count: 0,
             showdown_large_monster_count: 0,
@@ -297,6 +300,9 @@ impl OpponentTracker {
             self.postflop_bets_total += 1;
             if (bet_amt as i64) * 10 > (pot as i64) * 12 {
                 self.postflop_overbets += 1;
+                if round == ROUND_RIVER {
+                    self.river_overbets += 1;
+                }
             }
         }
     }

@@ -54,6 +54,7 @@ pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
     pub is_hyper_aggressor: bool,
     pub is_tight_passive_bb: bool,
     pub is_tight_passive_postflop: bool,
+    pub is_frequent_sb_limper: bool,
     pub is_paired_board: bool,
     pub is_four_flush_board: bool,
     pub is_four_straight_board: bool,
@@ -106,6 +107,7 @@ impl<'a> GuardContext<'a> {
         let is_tight_passive_postflop = tracker.total_hands >= 8
             && ((sm_vpip < 0.30 && sm_pfr < 0.18)
                 || (tracker.vpip_ratio() < 0.26 && tracker.pfr_ratio() < 0.16));
+        let is_frequent_sb_limper = tracker.sb_total_hands >= 5 && tracker.sb_limp_ratio() > 0.30;
 
         let is_paired_board = input
             .board
@@ -165,6 +167,7 @@ impl<'a> GuardContext<'a> {
             is_hyper_aggressor,
             is_tight_passive_bb,
             is_tight_passive_postflop,
+            is_frequent_sb_limper,
             is_paired_board,
             is_four_flush_board: is_four_flush,
             is_four_straight_board: is_four_straight,

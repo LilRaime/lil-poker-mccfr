@@ -45,6 +45,7 @@ impl OpponentTracker {
         scale(&mut self.sizing_mid_bets);
         scale(&mut self.sizing_large_bets);
         scale(&mut self.postflop_overbets);
+        scale(&mut self.river_overbets);
         scale(&mut self.postflop_bets_total);
         scale(&mut self.showdown_small_bluff_count);
         scale(&mut self.showdown_large_monster_count);
@@ -63,6 +64,7 @@ impl OpponentTracker {
         self.vpip_hands = self.vpip_hands.min(self.total_hands);
         self.pfr_hands = self.pfr_hands.min(self.vpip_hands);
         self.postflop_overbets = self.postflop_overbets.min(self.postflop_bets_total);
+        self.river_overbets = self.river_overbets.min(self.postflop_overbets);
         self.sb_vpip_hands = self.sb_vpip_hands.min(self.sb_total_hands);
         self.sb_pfr_hands = self.sb_pfr_hands.min(self.sb_vpip_hands);
         self.bb_vpip_hands = self.bb_vpip_hands.min(self.bb_total_hands);

@@ -98,30 +98,58 @@ impl OpponentTracker {
             && self.is_guard_enabled("PF_SB_AGGRESSOR_TRAP")
         {
             Self::apply_sb_aggressor_limp_trap(probs, ctx, reasons);
-        } else if ctx.to_call <= steal_max_call
-            && pf_tier_now <= max_steal_tier
-            && self.is_guard_enabled("PF_BUTTON_STEAL")
-        {
-            self.apply_sb_button_steal_shift(probs, ctx, pf_tier_now, reasons);
-        } else if ctx.active_opponents == 1
-            && ctx.to_call > steal_max_call
-            && ctx.to_call <= ctx.bb * 3
-            && (10..=20).contains(&ctx.eff_stack_bb)
-            && (pf_tier_now <= 2
-                || (pf_tier_now == 3 && (ctx.is_hyper_aggressor || ctx.eff_stack_bb <= 16)))
-            && self.is_guard_enabled("PF_BUTTON_STEAL")
-        {
-            Self::apply_short_3bet_resteal_shove(probs, ctx, reasons);
-        } else if ctx.active_opponents == 1
-            && ctx.to_call > steal_max_call
-            && ctx.to_call <= ctx.bb * 3
-            && self.faced_3bet_count >= 3
-            && self.fold_to_3bet_ratio() > 0.60
-            && (2..=4).contains(&pf_tier_now)
-            && self.is_guard_enabled("PF_BUTTON_STEAL")
-        {
-            Self::apply_fold_to_3bet_exploit(probs, ctx, reasons);
+        } else {
+            if self.is_guard_enabled("PF_BUTTON_STEAL") {
+                Self::compact_hu_sb_open_sizing(probs, ctx);
+            }
+            if ctx.to_call <= steal_max_call
+                && pf_tier_now <= max_steal_tier
+                && self.is_guard_enabled("PF_BUTTON_STEAL")
+            {
+                self.apply_sb_button_steal_shift(probs, ctx, pf_tier_now, reasons);
+            } else if ctx.active_opponents == 1
+                && ctx.to_call > steal_max_call
+                && ctx.to_call <= ctx.bb * 3
+                && (10..=20).contains(&ctx.eff_stack_bb)
+                && (pf_tier_now <= 2
+                    || (pf_tier_now == 3 && (ctx.is_hyper_aggressor || ctx.eff_stack_bb <= 16)))
+                && self.is_guard_enabled("PF_BUTTON_STEAL")
+            {
+                Self::apply_short_3bet_resteal_shove(probs, ctx, reasons);
+            } else if ctx.active_opponents == 1
+                && ctx.to_call > steal_max_call
+                && ctx.to_call <= ctx.bb * 3
+                && self.faced_3bet_count >= 3
+                && self.fold_to_3bet_ratio() > 0.60
+                && (2..=4).contains(&pf_tier_now)
+                && self.is_guard_enabled("PF_BUTTON_STEAL")
+            {
+                Self::apply_fold_to_3bet_exploit(probs, ctx, reasons);
+            }
         }
+    }
+
+    fn compact_hu_sb_open_sizing(probs: &mut [f64], ctx: &GuardContext<'_>) {
+        if ctx.active_opponents != 1
+            || ctx.to_call == 0
+            || ctx.to_call > ctx.bb / 2
+            || ctx.pot > ctx.bb * 2
+            || ctx.eff_stack_bb <= 15
+            || ctx.is_passive_station
+        {
+            return;
+        }
+        let Some(min_i) = action_idx(ctx.legal_actions, RAISE_MIN) else {
+            return;
+        };
+        let mut shifted = 0.0f64;
+        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+            if a == RAISE_THIRD_POT || a == RAISE_HALF_POT {
+                shifted += probs[i];
+                probs[i] = 0.0;
+            }
+        }
+        probs[min_i] += shifted;
     }
 
     fn apply_sb_aggressor_limp_trap(
@@ -158,9 +186,11 @@ impl OpponentTracker {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
             return;
         };
-        /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4; leave strong blueprint raises untouched. */
+        /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4 (or deep Tier 5); leave strong blueprint raises untouched. */
         let passive_mass = fold_idx.map_or(0.0, |i| probs[i]) + call_idx.map_or(0.0, |i| probs[i]);
-        if !((ctx.to_call > 0 && pf_tier_now <= 4)
+        let force_sb_open_tier =
+            ctx.to_call > 0 && (pf_tier_now <= 4 || (pf_tier_now == 5 && ctx.eff_stack_bb > 15));
+        if !(force_sb_open_tier
             || passive_mass > 0.55
             || ctx.is_passive_station
             || ctx.is_tight_passive_bb)
@@ -178,10 +208,8 @@ impl OpponentTracker {
             if let Some(c_i) = call_idx {
                 let limp_shift = if pf_tier_now <= 3 {
                     0.98
-                } else if pf_tier_now == 4 {
-                    0.90
-                } else if ctx.eff_stack_bb > 15 {
-                    0.80
+                } else if pf_tier_now == 4 || (pf_tier_now == 5 && ctx.eff_stack_bb > 15) {
+                    0.95
                 } else {
                     0.55
                 };
@@ -198,14 +226,29 @@ impl OpponentTracker {
                 probs[r_i] -= s;
                 probs[ai_i] += s;
             }
-        } else if (pf_tier_now <= 3
-            || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5))
-            && let Some(c_i) = call_idx
-        {
-            let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
-            let shifted = probs[c_i] * limp_shift;
-            probs[r_i] += shifted;
-            probs[c_i] -= shifted;
+        } else if let Some(c_i) = call_idx {
+            let allow_tier6_iso = ctx.active_opponents == 1
+                && ctx.is_frequent_sb_limper
+                && ctx.eff_stack_bb > 12
+                && pf_tier_now == 6
+                && (ctx.bucket <= 117
+                    || matches!(ctx.bucket, 125 | 134 | 141 | 148 | 154 | 159 | 163));
+            let limp_shift = if pf_tier_now <= 3 {
+                0.55
+            } else if pf_tier_now <= 5 && ctx.is_frequent_sb_limper {
+                0.50
+            } else if pf_tier_now <= 5 && self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 {
+                0.40
+            } else if allow_tier6_iso {
+                0.35
+            } else {
+                0.0
+            };
+            if limp_shift > 0.0 {
+                let shifted = probs[c_i] * limp_shift;
+                probs[r_i] += shifted;
+                probs[c_i] -= shifted;
+            }
         }
     }
 

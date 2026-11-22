@@ -243,6 +243,25 @@ impl LiveSession {
             trace.final_action,
             trace.guard_reasons
         );
+        let max_total = eff_chips.saturating_add(snapshot.my_bet);
+        let bb = snapshot.big_blind.max(1);
+        if matches!(chosen_action.as_str(), "all_in" | "allin")
+            || (matches!(chosen_action.as_str(), "raise" | "bet")
+                && eff_chips > 0
+                && amount >= max_total.saturating_sub(bb))
+        {
+            println!(
+                "   [allin-diag] my_chips={} my_bet={} eff_chips={} bb={} max_total={} sent=({}, {}) legal={:?}",
+                snapshot.my_chips,
+                snapshot.my_bet,
+                eff_chips,
+                bb,
+                max_total,
+                chosen_action,
+                amount,
+                snapshot.legal_actions
+            );
+        }
 
         self.last_action_key = snapshot.action_seq_key.clone();
         self.submit_action_with_fallback(

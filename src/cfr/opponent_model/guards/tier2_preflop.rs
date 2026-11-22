@@ -49,7 +49,13 @@ impl OpponentTracker {
             && ctx.to_call <= max_nash_bb * ctx.bb
             && pf_tier <= 5;
 
-        if ctx.to_call == 0 && pf_tier >= 6 {
+        let allow_hu_bb_tier6_iso = ctx.active_opponents == 1
+            && ctx.is_frequent_sb_limper
+            && ctx.eff_stack_bb > 12
+            && pf_tier == 6
+            && (ctx.bucket <= 117 || matches!(ctx.bucket, 125 | 134 | 141 | 148 | 154 | 159 | 163));
+
+        if ctx.to_call == 0 && pf_tier >= 6 && !allow_hu_bb_tier6_iso {
             reasons.push("PF_DISCIPLINE_GUARD");
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
@@ -122,10 +128,16 @@ impl OpponentTracker {
                     || (111..=123).contains(&ctx.bucket)
                     || (128..=130).contains(&ctx.bucket)
                     || ctx.bucket == 136);
+            let is_short_suited_hu_open = ctx.active_opponents == 1
+                && ctx.eff_stack_bb <= 15
+                && ctx.bucket < 91
+                && pf_tier == 7;
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 let limp_w = probs[c_i];
                 probs[c_i] = 0.0;
-                let steal_share = if is_playable_hu_steal && pf_tier == 7 {
+                let steal_share = if is_short_suited_hu_open {
+                    0.90
+                } else if is_playable_hu_steal && pf_tier == 7 {
                     0.65
                 } else if is_playable_hu_steal {
                     0.45
@@ -147,7 +159,13 @@ impl OpponentTracker {
                     first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]),
                 )
             {
-                let fold_shift = if pf_tier == 7 { 0.30 } else { 0.25 };
+                let fold_shift = if is_short_suited_hu_open {
+                    0.85
+                } else if pf_tier == 7 {
+                    0.30
+                } else {
+                    0.25
+                };
                 let s = probs[f_i] * fold_shift;
                 probs[f_i] -= s;
                 probs[r_i] += s;

@@ -310,8 +310,7 @@ impl HoldemMCCFRSolver {
                     (global_idx - warmup + 1) as f64 / train_iters_after_warmup
                 };
 
-                let allow_prune =
-                    self.pruning && global_idx >= warmup && rng.random::<f64>() < 0.95;
+                let allow_prune = self.pruning && global_idx >= warmup && rng.random::<f64>() < 0.95;
                 self.traverse_precomputed(
                     &game,
                     updating_player,

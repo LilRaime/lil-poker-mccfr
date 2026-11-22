@@ -232,6 +232,8 @@ impl OpponentTracker {
         reasons: &mut Vec<&'static str>,
     ) {
         if self.is_guard_enabled("POST_BARREL_FOLD") {
+            let is_weak_underpair =
+                (BUCKET_WEAK_PAIR_MIN..=34).contains(&ctx.bucket) && ctx.bucket != 33;
             let fold_three_flush_air = !ctx.is_preflop
                 && ctx.is_three_flush
                 && ctx.to_call >= ctx.bb
@@ -240,12 +242,27 @@ impl OpponentTracker {
             if fold_three_flush_air && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_BARREL_FOLD");
             }
-            if ctx.round == ROUND_FLOP
-                && ctx.to_call >= ctx.bb * 4
-                && (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket)
+            let fold_flop_weak_pair = ctx.round == ROUND_FLOP
                 && ctx.pot_odds >= 0.28
-                && force_action(probs, ctx.legal_actions, FOLD)
-            {
+                && ((ctx.to_call >= ctx.bb * 4
+                    && (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket))
+                    || (ctx.pot >= ctx.bb * 10 && ctx.to_call >= ctx.bb * 6 && is_weak_underpair));
+            if fold_flop_weak_pair && force_action(probs, ctx.legal_actions, FOLD) {
+                reasons.push("POST_BARREL_FOLD");
+            }
+            let fold_turn_paired_or_flush_underpair = ctx.round == ROUND_TURN
+                && is_weak_underpair
+                && !ctx.is_overbet_bluffer
+                && ((ctx.is_paired_board
+                    && ctx.is_three_flush
+                    && ctx.to_call * 2 >= ctx.bb * 7
+                    && ctx.pot_odds >= 0.24)
+                    || ((ctx.is_paired_board || ctx.is_three_flush)
+                        && ctx.to_call * 2 >= ctx.bb * 7
+                        && ctx.pot_odds >= 0.25
+                        && (ctx.to_call >= ctx.bb * 5
+                            || (ctx.my_chips > 0 && ctx.to_call * 5 >= ctx.my_chips * 2))));
+            if fold_turn_paired_or_flush_underpair && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_BARREL_FOLD");
             }
             if ctx.round >= ROUND_TURN && ctx.to_call >= ctx.bb * 5 {

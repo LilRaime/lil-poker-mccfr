@@ -52,6 +52,13 @@ impl OpponentTracker {
                         || (ctx.round == ROUND_TURN
                             && ctx.to_call >= ctx.bb * 12
                             && ctx.pot_odds >= 0.30)
+                        || (ctx.round == ROUND_TURN
+                            && ctx.is_three_flush
+                            && ctx.is_paired_board
+                            && ctx.bucket <= 34
+                            && ctx.bucket != 33
+                            && ctx.to_call * 2 >= ctx.bb * 7
+                            && ctx.pot_odds >= 0.24)
                         || (ctx.round == ROUND_FLOP && ctx.to_call >= ctx.bb * 20))));
         (is_shove_faced, is_stack_commit_draw_bet)
     }
@@ -173,12 +180,20 @@ impl OpponentTracker {
     }
 
     fn is_river_shove_trash(ctx: &GuardContext<'_>) -> bool {
+        let pre_pot = (ctx.pot - ctx.to_call).max(1);
+        let is_dry_short_spr_river_bet = ctx.to_call < ctx.bb * 10
+            && ctx.pot_odds <= 0.33
+            && ctx.to_call <= pre_pot
+            && !ctx.is_paired_board
+            && !ctx.is_three_flush
+            && !ctx.is_dangerous_board
+            && !ctx.is_four_board_danger;
         let min_river_shove_bucket = if ctx.is_overbet_bluffer {
             if ctx.pot_odds <= 0.26 { 29 } else { 34 }
         } else if ctx.is_known_maniac {
             BUCKET_TOP_PAIR_MIN
         } else if ctx.hole.is_some() && ctx.board.is_some() {
-            44
+            if is_dry_short_spr_river_bet { 35 } else { 44 }
         } else {
             52
         };

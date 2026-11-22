@@ -69,8 +69,16 @@ impl OpponentTracker {
                 && (ctx.bucket < BUCKET_STRONG_DRAW_MIN || ctx.bucket == BUCKET_WEAK_PAIR_MIN)
             {
                 let shifted_raise = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
-                let overpriced =
-                    (ctx.round < ROUND_RIVER && ctx.to_call >= ctx.bb * 2 && ctx.pot_odds >= 0.25)
+                let is_flop_small_overcard_float = ctx.round == ROUND_FLOP
+                    && ctx.active_opponents == 1
+                    && !ctx.is_three_flush
+                    && ctx.to_call <= ctx.bb * 2
+                    && ctx.pot_odds <= 0.27
+                    && (8..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket);
+                let overpriced = !is_flop_small_overcard_float
+                    && ((ctx.round < ROUND_RIVER
+                        && ctx.to_call >= ctx.bb * 2
+                        && ctx.pot_odds >= 0.25)
                         || (ctx.round == ROUND_TURN
                             && ctx.to_call >= ctx.bb
                             && ctx.pot_odds >= 0.16
@@ -79,11 +87,11 @@ impl OpponentTracker {
                             && ctx.to_call >= ctx.bb
                             && ctx.pot_odds > 0.12
                             && (ctx.bucket < BUCKET_WEAK_DRAW_MIN
-                                || ctx.bucket == BUCKET_WEAK_PAIR_MIN));
+                                || ctx.bucket == BUCKET_WEAK_PAIR_MIN)));
                 if overpriced && force_action(probs, ctx.legal_actions, FOLD) {
                     reasons.push("POST_AIR_GUTSHOT_GUARD");
                 } else if !overpriced && shifted_raise > 0.0 {
-                    let target = if ctx.pot_odds <= 0.16 {
+                    let target = if ctx.pot_odds <= 0.16 || is_flop_small_overcard_float {
                         CALL_CHECK
                     } else {
                         FOLD
@@ -126,13 +134,31 @@ impl OpponentTracker {
     fn apply_free_pot_control_caps(&self, probs: &mut [f64], ctx: &GuardContext<'_>) {
         if ctx.round == ROUND_FLOP
             && ctx.to_call == 0
-            && ((ctx.bucket < BUCKET_STRONG_DRAW_MIN && ctx.pot >= ctx.bb * 8)
-                || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&ctx.bucket) && ctx.pot >= ctx.bb * 10))
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
-            let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
-            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                probs[c_i] = (probs[c_i] + shifted).max(0.95);
+            let clean_hu_3bet_cbet = ctx.active_opponents == 1
+                && !ctx.is_sticky_caller
+                && !ctx.is_passive_station
+                && !ctx.is_three_flush
+                && (ctx.my_chips == 0 || ctx.my_chips > ctx.pot * 2);
+            let air_cap = if clean_hu_3bet_cbet {
+                7
+            } else {
+                BUCKET_STRONG_DRAW_MIN
+            };
+            let should_cap_flop = (ctx.bucket < air_cap && ctx.pot >= ctx.bb * 8)
+                || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&ctx.bucket) && ctx.pot >= ctx.bb * 10)
+                || (ctx.is_sticky_caller && ctx.bucket < 7);
+            if should_cap_flop {
+                let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                    let floor = if ctx.is_sticky_caller && ctx.pot < ctx.bb * 8 {
+                        0.90
+                    } else {
+                        0.95
+                    };
+                    probs[c_i] = (probs[c_i] + shifted).max(floor);
+                }
             }
         }
 

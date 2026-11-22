@@ -268,7 +268,12 @@ impl LiveRoundTracker {
             }
         } else {
             let bet_amt = snapshot.opp_bet.max(snapshot.to_call);
-            let pre_bet_pot = (snapshot.pot - bet_amt).max(bb);
+            let callable_bet = if snapshot.my_chips > 0 {
+                bet_amt.min(snapshot.my_bet.saturating_add(snapshot.my_chips))
+            } else {
+                bet_amt
+            };
+            let pre_bet_pot = (snapshot.pot - callable_bet).max(bb);
             let bet_act =
                 if bet_amt >= bb * 10 && (bet_amt as i64) * 10 >= (pre_bet_pot as i64) * 15 {
                     ALL_IN
@@ -300,7 +305,15 @@ impl LiveRoundTracker {
         let mut rng = rand::rng();
         let bot_bet_this_round = hist.iter().any(|&a| a >= RAISE_MIN);
         let opp_diff = (snapshot.opp_bet - self.last_opp_bet).max(snapshot.to_call);
-        let pre_bet_pot = (snapshot.pot - opp_diff).max(bb);
+        let callable_opp_bet = if snapshot.my_chips > 0 {
+            snapshot
+                .opp_bet
+                .min(snapshot.my_bet.saturating_add(snapshot.my_chips))
+        } else {
+            snapshot.opp_bet
+        };
+        let callable_opp_diff = (callable_opp_bet - self.last_opp_bet).max(snapshot.to_call);
+        let pre_bet_pot = (snapshot.pot - callable_opp_diff).max(bb);
         let raise_act = if round_idx >= 1
             && opp_diff >= bb * 10
             && (opp_diff as i64) * 10 >= (pre_bet_pot as i64) * 15

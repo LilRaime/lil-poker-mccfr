@@ -276,34 +276,41 @@ fn test_sb_150_300_allin_never_leaves_one_chip() {
         "raise".to_string(),
         "all_in".to_string(),
     ];
-    let (act, amt) = map_action_index(&ActionMapRequest {
-        action_idx: ALL_IN as usize,
-        legal: &legal_with_allin,
-        to_call: 150,
-        pot: 450,
-        is_wet: false,
-        round: 1,
-        table_bb: 300,
-        my_chips: 4381,
-        current_bet: 300,
-    })
-    .expect("map SB 150/300 all_in");
-    assert_eq!(act, "all_in");
-    assert_eq!(amt, 0);
-
     let legal_raise_only = vec!["fold".to_string(), "call".to_string(), "raise".to_string()];
-    let (raise_act, raise_amt) = map_action_index(&ActionMapRequest {
-        action_idx: ALL_IN as usize,
-        legal: &legal_raise_only,
-        to_call: 150,
-        pot: 450,
-        is_wet: false,
-        round: 1,
-        table_bb: 300,
-        my_chips: 4381,
-        current_bet: 300,
-    })
-    .expect("map SB 150/300 raise fallback for full stack");
-    assert_eq!(raise_act, "raise");
-    assert_eq!(raise_amt, 4531);
+
+    for (bb, sb, stack, expected_total) in [
+        (300, 150, 4381, 4531),
+        (400, 200, 1761, 1961),
+        (600, 300, 4364, 4664),
+    ] {
+        let (act, amt) = map_action_index(&ActionMapRequest {
+            action_idx: ALL_IN as usize,
+            legal: &legal_with_allin,
+            to_call: sb,
+            pot: bb + sb,
+            is_wet: false,
+            round: 1,
+            table_bb: bb,
+            my_chips: stack,
+            current_bet: bb,
+        })
+        .expect("map SB all_in");
+        assert_eq!(act, "all_in");
+        assert_eq!(amt, 0);
+
+        let (raise_act, raise_amt) = map_action_index(&ActionMapRequest {
+            action_idx: ALL_IN as usize,
+            legal: &legal_raise_only,
+            to_call: sb,
+            pot: bb + sb,
+            is_wet: false,
+            round: 1,
+            table_bb: bb,
+            my_chips: stack,
+            current_bet: bb,
+        })
+        .expect("map SB raise fallback for full stack");
+        assert_eq!(raise_act, "raise");
+        assert_eq!(raise_amt, expected_total);
+    }
 }

@@ -453,7 +453,7 @@ fn apply_live_post_selection_guards(
     trace: &mut DecisionTrace,
 ) {
     apply_live_street_action_guards(s, tracker, chosen_idx, trace);
-    apply_live_commit_and_spr_guards(s, chosen_idx, trace);
+    apply_live_commit_and_spr_guards(s, tracker, chosen_idx, trace);
 }
 
 fn apply_live_street_action_guards(
@@ -504,6 +504,7 @@ fn apply_live_street_action_guards(
 
 fn apply_live_commit_and_spr_guards(
     s: &LiveDecisionState<'_>,
+    tracker: &OpponentTracker,
     chosen_idx: &mut usize,
     trace: &mut DecisionTrace,
 ) {
@@ -534,8 +535,19 @@ fn apply_live_commit_and_spr_guards(
             && ((s.bucket < BUCKET_STRONG_DRAW_MIN
                 && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
                 || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
+        let is_sticky_or_station = tracker.is_passive_station()
+            || (tracker.total_actions() >= 10 && tracker.smoothed_fold_ratio() < 0.26);
+        let allow_hu_3bet_overcard_cbet = s.round == ROUND_FLOP
+            && s.active_opponents == 1
+            && !is_sticky_or_station
+            && s.eff_chips > s.pot * 2
+            && s.pot >= s.bb * 8
+            && s.bucket >= 7
+            && s.bucket < BUCKET_STRONG_DRAW_MIN
+            && *chosen_idx <= RAISE_THIRD_POT as usize;
         if s.to_call == 0
             && *chosen_idx >= RAISE_MIN as usize
+            && !allow_hu_3bet_overcard_cbet
             && (is_four_board_pair
                 || is_bloated_flop_weak
                 || (s.bucket < BUCKET_WEAK_DRAW_MIN

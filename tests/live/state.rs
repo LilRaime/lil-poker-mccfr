@@ -616,6 +616,74 @@ fn test_postflop_overbet_bluffer_detection() {
         tracker.is_overbet_bluffer(),
         "4 postflop 1.5x overbets must activate is_overbet_bluffer()"
     );
+
+    /* Villain betting 50% pot frequently on flop/turn plus >= 2 river overbets (including uncallable shove) */
+    let mut rt_river = LiveRoundTracker::new();
+    let mut river_spammer = OpponentTracker::new();
+    for idx in 1..=10u64 {
+        let snap = parse_live_state(
+            &json!({
+                "hand_id": 100 + idx,
+                "phase": "Flop",
+                "pot": 1500,
+                "current_bet": 500,
+                "big_blind": 200,
+                "small_blind": 100,
+                "active_player_id": "hero",
+                "board": ["Js", "5d", "2c"],
+                "players": [
+                    { "id": "hero", "name": "Hero", "chips": 9000, "bet": 0, "is_small_blind": true, "hole": ["Kh", "Td"] },
+                    { "id": "villain", "name": "Villain", "chips": 8500, "bet": 500, "is_small_blind": false }
+                ]
+            }),
+            "hero",
+        )
+        .expect("parse normal flop bet snapshot");
+        rt_river.reset_hand(100 + idx);
+        rt_river.update_street(snap.board.len());
+        rt_river.infer_and_record_opponent_action(&snap, &mut river_spammer);
+        river_spammer.end_hand();
+    }
+    assert!(
+        !river_spammer.is_overbet_bluffer(),
+        "Normal 50% flop bets must not trigger is_overbet_bluffer()"
+    );
+
+    for (hand_id, raw_pot, opp_bet, my_chips, opp_chips) in [
+        (201u64, 5400, 3400, 5000, 0),
+        (202u64, 18039, 15639, 1961, 0),
+    ] {
+        let snap = parse_live_state(
+            &json!({
+                "hand_id": hand_id,
+                "phase": "River",
+                "pot": raw_pot,
+                "current_bet": opp_bet,
+                "big_blind": 300,
+                "small_blind": 150,
+                "active_player_id": "hero",
+                "board": ["Jh", "5s", "8s", "2d", "Qc"],
+                "players": [
+                    { "id": "hero", "name": "Hero", "chips": my_chips, "bet": 0, "is_small_blind": false, "hole": ["8d", "6h"] },
+                    { "id": "villain", "name": "Villain", "chips": opp_chips, "bet": opp_bet, "is_small_blind": true }
+                ]
+            }),
+            "hero",
+        )
+        .expect("parse river overbet jam snapshot");
+        rt_river.reset_hand(hand_id);
+        rt_river.update_street(snap.board.len());
+        rt_river.infer_and_record_opponent_action(&snap, &mut river_spammer);
+        river_spammer.end_hand();
+    }
+    assert_eq!(
+        river_spammer.river_overbets, 2,
+        "Must count both river overbets including uncallable shove without pre_bet_pot underflow"
+    );
+    assert!(
+        river_spammer.is_overbet_bluffer(),
+        "Repeated river overbets alongside 50% flop bets must trigger is_overbet_bluffer()"
+    );
 }
 
 #[test]
