@@ -302,6 +302,7 @@ fn compute_bot_raw_probs(
                 raises_this_round: game.raises_this_round,
                 opp_vpip: obs_vpip,
                 opp_pfr: obs_pfr,
+                opp_aggression: opp_tracker.subgame_bluff_multiplier(),
             },
             &game.history,
             cfg.strategy,

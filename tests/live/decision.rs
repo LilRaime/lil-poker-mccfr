@@ -564,3 +564,65 @@ fn test_preflop_micro_stack_1chip_calls() {
         tr_1chip.guard_reasons
     );
 }
+
+#[test]
+fn test_flop_oop_donk_suppresses_min_and_third_pot() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+
+    let tracker = OpponentTracker::new();
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+
+    let hole = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Six, Suit::Hearts),
+    ];
+    let board = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let bucket = postflop_equity_bucket(&hole, &board);
+    let key = format!("P:rc|F:B{bucket:02}/");
+    let legal = vec![
+        "fold".to_string(),
+        "check".to_string(),
+        "bet".to_string(),
+        "allin".to_string(),
+    ];
+
+    for probs in [
+        vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    ] {
+        let mut strategy_map = HashMap::new();
+        strategy_map.insert(key.clone(), probs);
+        let (act, amt, tr) = decide_action_traced(
+            &LiveDecisionRequest {
+                hole,
+                board: &board,
+                legal: &legal,
+                pot: 800,
+                subgame_search: false,
+                history,
+                my_player: 1,
+                contributions: [400, 400],
+                big_blind: 200,
+                my_chips: 4400,
+                opp_chips: Some(15000),
+                ..Default::default()
+            },
+            &strategy_map,
+            &tracker,
+            None,
+        );
+        assert_eq!(
+            act, "check",
+            "OOP flop micro/33% donk with bucket {bucket} into PF aggressor must suppress to check (reasons: {:?})",
+            tr.guard_reasons
+        );
+        assert_eq!(amt, 0);
+        assert!(tr.guard_reasons.contains(&"FLOP_OOP_MICRO_DONK_SUPPRESS"));
+    }
+}

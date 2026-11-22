@@ -83,6 +83,29 @@ impl OpponentTracker {
             reasons.push("PF_DISCIPLINE_GUARD");
             force_action(probs, ctx.legal_actions, FOLD);
             true
+        } else if is_sb_open && ctx.is_hyper_aggressor && pf_tier == 6 && ctx.eff_stack_bb > 15 {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                let limp_w = probs[c_i];
+                probs[c_i] = 0.0;
+                if ctx.bucket <= 117
+                    && let Some(r_i) =
+                        first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT])
+                {
+                    probs[r_i] += limp_w;
+                } else if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+                    probs[f_i] += limp_w;
+                }
+            }
+            if ctx.bucket > 117
+                && let Some(r_i) = action_idx(ctx.legal_actions, RAISE_MIN)
+                && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
+            {
+                let cut = probs[r_i] * 0.65;
+                probs[r_i] -= cut;
+                probs[f_i] += cut;
+            }
+            true
         } else if is_sb_open && pf_tier >= 7 {
             reasons.push("PF_DISCIPLINE_GUARD");
             Self::apply_sb_trash_steal_or_fold(probs, ctx, pf_tier);
@@ -188,20 +211,29 @@ impl OpponentTracker {
                 && ctx.pot_odds <= 0.33
                 && pf_tier == 7
                 && ctx.bucket < 135;
-            if ctx.pot_odds <= 0.22 || (ctx.pot_odds <= 0.26 && pf_tier <= 7) {
-                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
-                    probs[c_i] += shifted;
-                }
-            } else if is_hu_small_open {
+            let is_hu_min_open_playable_t8 = ctx.active_opponents == 1
+                && ctx.to_call <= ctx.bb
+                && ctx.pot <= ctx.bb * 3
+                && ctx.pot_odds <= 0.26
+                && matches!(ctx.bucket, 121..=123 | 128..=130 | 136 | 144);
+            if is_hu_small_open {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
                     if ctx.pot_odds <= 0.32
                         && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
                     {
-                        let defend = probs[f_i] * 0.65;
+                        let defend_frac = if ctx.pot_odds <= 0.26 { 0.80 } else { 0.65 };
+                        let defend = probs[f_i] * defend_frac;
                         probs[f_i] -= defend;
                         probs[c_i] += defend;
                     }
+                }
+            } else if ctx.pot_odds <= 0.22
+                || (ctx.pot_odds <= 0.26 && pf_tier <= 7)
+                || is_hu_min_open_playable_t8
+            {
+                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
+                    probs[c_i] += shifted;
                 }
             } else if ctx.to_call > ctx.bb / 2 && (pf_tier == 8 || ctx.pot_odds > 0.28) {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.98);

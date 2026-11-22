@@ -1290,3 +1290,152 @@ fn test_preflop_deep_and_multiway_shove_defense() {
         "KQs must fold to a 19.4 BB multiway cold 3-bet squeeze shove with no reads"
     );
 }
+
+#[test]
+fn test_preflop_hu_minraise_defense_zero_limps_and_linear_3bet() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(20_261_122);
+    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
+
+    /* 1. HU BB vs 2.0x min-raise (pot_odds = 25%): connected Tier 7 (94s, Q5o) must defend predominantly */
+    for hole in [
+        [
+            Card::new(Rank::Nine, Suit::Hearts),
+            Card::new(Rank::Four, Suit::Hearts),
+        ],
+        [
+            Card::new(Rank::Queen, Suit::Hearts),
+            Card::new(Rank::Five, Suit::Diamonds),
+        ],
+    ] {
+        let b = preflop_bucket(hole[0], hole[1]).0;
+        let mut calls = 0usize;
+        for _ in 0..80 {
+            let (act, _) = tracker.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &fold_heavy,
+                    legal_actions: &LEGAL_FULL,
+                    bucket: b,
+                    round: 1,
+                    to_call: 300,
+                    pot: 900,
+                    hole: Some(&hole),
+                    active_opponents: 1,
+                    table_bb: 300,
+                    my_chips: 5000,
+                    ..Default::default()
+                },
+                &mut rng,
+            );
+            if act == CALL_CHECK {
+                calls += 1;
+            }
+        }
+        assert!(
+            calls >= 55,
+            "HU BB {hole:?} facing 2.0x min-raise must call frequently (got {calls}/80)"
+        );
+    }
+
+    /* 2. Zero residual HU SB limps at 16 BB (Q6s), 100 BB (A2o), and Tier 6 vs hyper-aggressor */
+    let limp_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.70, 0.25, 0.0, 0.0, 0.0];
+    let hole_q6s = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Clubs),
+    ];
+    let hole_a2o = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Diamonds),
+    ];
+    for (hole, my_chips, bb) in [(hole_q6s, 6400, 400), (hole_a2o, 10_000, 100)] {
+        let b = preflop_bucket(hole[0], hole[1]).0;
+        for _ in 0..40 {
+            let (act, _) = tracker.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &limp_heavy,
+                    legal_actions: &LEGAL_FULL,
+                    bucket: b,
+                    round: 1,
+                    to_call: bb / 2,
+                    pot: bb + bb / 2,
+                    hole: Some(&hole),
+                    active_opponents: 1,
+                    table_bb: bb,
+                    my_chips,
+                    ..Default::default()
+                },
+                &mut rng,
+            );
+            assert_ne!(
+                act,
+                CALL_CHECK,
+                "HU SB {hole:?} at {} BB must never limp",
+                my_chips / bb
+            );
+        }
+    }
+
+    let mut hyper_agg = OpponentTracker::new();
+    for _ in 0..14 {
+        hyper_agg.record_action_street_detailed(RAISE_MIN, 1, false, 300, 150);
+        hyper_agg.record_preflop_positional(true, true, true);
+        hyper_agg.end_hand();
+    }
+    let b_q6s = preflop_bucket(hole_q6s[0], hole_q6s[1]).0;
+    for _ in 0..40 {
+        let (act, _) = hyper_agg.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &limp_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_q6s,
+                round: 1,
+                to_call: 100,
+                pot: 300,
+                hole: Some(&hole_q6s),
+                active_opponents: 1,
+                table_bb: 200,
+                my_chips: 3800,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_ne!(
+            act, CALL_CHECK,
+            "HU SB Tier 6 vs hyper-aggressor must open-raise or fold, never limp"
+        );
+    }
+
+    /* 3. HU linear BB 3-bet shift with Tier 2-3 hands vs high-PFR opponent */
+    let hole_ajs = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let b_ajs = preflop_bucket(hole_ajs[0], hole_ajs[1]).0;
+    let flat_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.90, 0.05, 0.05, 0.0, 0.0];
+    let mut three_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = hyper_agg.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &flat_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_ajs,
+                round: 1,
+                to_call: 150,
+                pot: 350,
+                hole: Some(&hole_ajs),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 9000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            three_bets += 1;
+        }
+    }
+    assert!(
+        three_bets >= 18,
+        "HU BB AJs vs >=42% PFR opener must 3-bet frequently (got {three_bets}/80)"
+    );
+}

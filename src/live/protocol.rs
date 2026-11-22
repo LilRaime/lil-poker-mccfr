@@ -193,19 +193,25 @@ fn compute_half_pot_raise(
     } else if is_preflop_4bet_plus {
         (opp_bet_pf * 23 / 10).max(min_raise)
     } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
-        (opp_bet_pf * 3)
-            .min(opp_bet_pf + c.pot)
-            .max(opp_bet_pf * 11 / 4)
-            .max(min_raise)
+        if c.pot <= opp_bet_pf * 2 {
+            (opp_bet_pf * 7 / 2).max(min_raise)
+        } else {
+            (opp_bet_pf * 3)
+                .min(opp_bet_pf + c.pot)
+                .max(opp_bet_pf * 11 / 4)
+                .max(min_raise)
+        }
     } else {
         let s = if c.round == ROUND_RIVER && base_bet == 0 {
-            (c.pot * 5 / 4).max((bb * 5 / 2).max(bb))
+            (c.pot * 3 / 2).max((bb * 5 / 2).max(bb))
+        } else if c.round == ROUND_TURN && base_bet == 0 {
+            (c.pot * 3 / 2).max((bb * 2).max(bb))
         } else if c.round >= ROUND_TURN {
-            (c.pot * 3 / 4).max((bb * 2).max(bb))
+            c.pot.max((bb * 2).max(bb))
         } else if c.is_wet {
-            (c.pot * 3 / 4).max((bb * 3 / 2).max(bb))
+            c.pot.max((bb * 3 / 2).max(bb))
         } else {
-            (c.pot / 2).max(bb)
+            (c.pot * 3 / 4).max(bb)
         };
         if base_bet > 0 {
             (base_bet + s).max(min_raise)
@@ -261,9 +267,9 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
             } else if is_preflop_4bet_plus {
                 (opp_bet_pf * 11 / 5).max(min_raise)
             } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
-                (opp_bet_pf * 11 / 4).max(min_raise)
+                (opp_bet_pf * 7 / 2).max(min_raise)
             } else {
-                let s = (c.pot / 3).max(bb);
+                let s = (c.pot * 3 / 5).max(bb);
                 if base_bet > 0 {
                     (base_bet + s).max(min_raise)
                 } else {
@@ -285,14 +291,14 @@ fn compute_raise_amount(idx: u8, c: &ActionMapRequest<'_>) -> (i32, i32) {
             } else if is_preflop_4bet_plus {
                 (opp_bet_pf * 21 / 10).max(min_raise)
             } else if c.round == ROUND_PREFLOP && c.to_call > 0 {
-                (opp_bet_pf * 5 / 2).max(min_raise)
+                (opp_bet_pf * 3).max(min_raise)
             } else if c.round == ROUND_PREFLOP {
                 (base_bet + bb).max(min_raise)
             } else if c.to_call > 0 {
-                let s = ((c.pot + c.to_call) / 4).max(bb);
+                let s = ((c.pot + c.to_call) / 3).max(bb);
                 (c.to_call + s).max(min_raise)
             } else {
-                (c.pot / 4).max(min_raise)
+                (c.pot / 3).max(min_raise)
             }
         }
     };
@@ -398,9 +404,9 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
     }
 
     let eff_bb = (allin_threshold / 35).max(1);
-    let s_min = eff_bb;
-    let s_third = (pot / 3).max(eff_bb);
-    let s_half = (pot / 2).max(eff_bb);
+    let s_min = (pot / 3).max(eff_bb);
+    let s_third = (pot * 3 / 5).max(s_min + eff_bb);
+    let s_half = pot.max(s_third + eff_bb);
 
     if bet_amt <= s_min {
         return RAISE_MIN;

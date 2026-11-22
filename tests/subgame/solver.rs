@@ -267,8 +267,10 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
         (sum - 1.0).abs() < 1e-6,
         "Solver probs must sum to 1.0, got {sum}"
     );
-    let value_bet_prob =
-        probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] + probs[ALL_IN as usize];
+    let value_bet_prob = probs[RAISE_MIN as usize]
+        + probs[RAISE_THIRD_POT as usize]
+        + probs[RAISE_HALF_POT as usize]
+        + probs[ALL_IN as usize];
     assert!(
         probs[FOLD as usize] < 0.01
             && value_bet_prob > 0.45

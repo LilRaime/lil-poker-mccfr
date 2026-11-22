@@ -405,6 +405,7 @@ fn resolve_raw_strategy_probs(
                 raises_this_round: sp.raises_this_round,
                 opp_vpip: opp_vpip_opt,
                 opp_pfr: opp_pfr_opt,
+                opp_aggression: tracker.subgame_bluff_multiplier(),
             },
             s.history,
             Some(sp.strategy_map),
@@ -487,7 +488,7 @@ fn apply_live_street_action_guards(
     if s.round == ROUND_FLOP
         && s.to_call == 0
         && s.my_player == 1
-        && *chosen_idx == RAISE_MIN as usize
+        && (*chosen_idx == RAISE_MIN as usize || *chosen_idx == RAISE_THIRD_POT as usize)
         && s.bucket < BUCKET_TOP_PAIR_MIN
         && tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
     {

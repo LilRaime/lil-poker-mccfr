@@ -22,6 +22,7 @@ pub struct ReachRequest<'a> {
     pub active_player: Option<usize>,
     pub opp_vpip: Option<f64>,
     pub opp_pfr: Option<f64>,
+    pub opp_aggression: Option<f64>,
 }
 
 impl Default for ReachRequest<'_> {
@@ -34,6 +35,7 @@ impl Default for ReachRequest<'_> {
             active_player: None,
             opp_vpip: None,
             opp_pfr: None,
+            opp_aggression: None,
         }
     }
 }
@@ -66,6 +68,7 @@ pub(super) struct ReachContext {
     pub monotone_suit: Option<Suit>,
     pub has_flop_actions: bool,
     pub has_turn_actions: bool,
+    pub bluff_mult: f64,
 }
 
 fn collect_target_actions(
@@ -129,6 +132,7 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
     history: &H,
     target_player: Option<usize>,
     active_player: Option<usize>,
+    opp_aggression: Option<f64>,
 ) -> ReachContext {
     let (opp_raised_pf, opp_called_pf, opp_3bet_pf, opp_limped_pf) = if let Some(tp) = target_player
     {
@@ -236,6 +240,7 @@ fn extract_reach_context<H: crate::cfr::abstraction::HistoryActions + ?Sized>(
         monotone_suit: find_monotone_suit(board),
         has_flop_actions: !flop_actions.is_empty(),
         has_turn_actions: !turn_actions.is_empty(),
+        bluff_mult: opp_aggression.unwrap_or(1.0).clamp(0.30, 4.5),
     }
 }
 
@@ -315,6 +320,7 @@ impl OpponentReachDistribution {
             history,
             req.target_player,
             req.active_player,
+            req.opp_aggression,
         );
         let mut sum_w = 0.0f64;
 

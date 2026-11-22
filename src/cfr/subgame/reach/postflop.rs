@@ -16,6 +16,20 @@ fn effective_category(cand: [Card; 2], street_board: &[Card], board_paired: bool
     }
 }
 
+#[inline]
+fn scaled_pair_raise_weight(base: f64, sizing: u8, bluff_mult: f64) -> f64 {
+    if bluff_mult > 1.2 && (sizing == ALL_IN || sizing == RAISE_HALF_POT) {
+        (base * bluff_mult.sqrt().clamp(1.0, 1.8)).min(0.85)
+    } else {
+        base
+    }
+}
+
+#[inline]
+fn scaled_air_raise_weight(base: f64, bluff_mult: f64) -> f64 {
+    (base * bluff_mult).min(0.45)
+}
+
 /** 2. Flop Bayesian Likelihood Update (active on Flop once opponent acts, and on Turn/River) */
 pub(super) fn flop_likelihood(
     cand: [Card; 2],
@@ -35,11 +49,12 @@ pub(super) fn flop_likelihood(
         if f_cat >= 2 {
             1.0 /* Two pair+ */
         } else if f_cat == 1 {
-            match ctx.max_opp_raise_flop {
+            let base = match ctx.max_opp_raise_flop {
                 ALL_IN => 0.25,
                 RAISE_HALF_POT => 0.55,
                 _ => 0.85,
-            }
+            };
+            scaled_pair_raise_weight(base, ctx.max_opp_raise_flop, ctx.bluff_mult)
         } else if fd && sd {
             0.95 /* Combo draw */
         } else if fd || sd {
@@ -49,11 +64,12 @@ pub(super) fn flop_likelihood(
                 _ => 0.75,
             }
         } else {
-            match ctx.max_opp_raise_flop {
+            let base = match ctx.max_opp_raise_flop {
                 ALL_IN => 0.03,
                 RAISE_HALF_POT => 0.06,
                 _ => 0.08,
-            }
+            };
+            scaled_air_raise_weight(base, ctx.bluff_mult)
         }
     } else if ctx.opp_called_flop {
         /* Opponent check-called on flop: mostly draws, middle pairs, floaters */
@@ -94,11 +110,12 @@ pub(super) fn turn_likelihood(
         if t_cat >= 2 {
             1.0
         } else if t_cat == 1 {
-            match ctx.max_opp_raise_turn {
+            let base = match ctx.max_opp_raise_turn {
                 ALL_IN => 0.15,
                 RAISE_HALF_POT => 0.45,
                 _ => 0.70,
-            }
+            };
+            scaled_pair_raise_weight(base, ctx.max_opp_raise_turn, ctx.bluff_mult)
         } else if fd || sd {
             match ctx.max_opp_raise_turn {
                 ALL_IN => 0.30,
@@ -106,11 +123,12 @@ pub(super) fn turn_likelihood(
                 _ => 0.65,
             }
         } else {
-            match ctx.max_opp_raise_turn {
+            let base = match ctx.max_opp_raise_turn {
                 ALL_IN => 0.02,
                 RAISE_HALF_POT => 0.04,
                 _ => 0.05,
-            }
+            };
+            scaled_air_raise_weight(base, ctx.bluff_mult)
         }
     } else if ctx.opp_called_turn {
         if t_cat >= 2 {
@@ -147,17 +165,19 @@ pub(super) fn river_likelihood(
     if r_cat >= 2 {
         1.0
     } else if r_cat == 1 {
-        match ctx.max_opp_raise_river {
+        let base = match ctx.max_opp_raise_river {
             ALL_IN => 0.12,
             RAISE_HALF_POT => 0.30,
             _ => 0.60,
-        }
+        };
+        scaled_pair_raise_weight(base, ctx.max_opp_raise_river, ctx.bluff_mult)
     } else {
-        match ctx.max_opp_raise_river {
+        let base = match ctx.max_opp_raise_river {
             ALL_IN => 0.03,
             RAISE_HALF_POT => 0.06,
             _ => 0.08,
-        }
+        };
+        scaled_air_raise_weight(base, ctx.bluff_mult)
     }
 }
 

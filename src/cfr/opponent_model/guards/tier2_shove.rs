@@ -233,7 +233,11 @@ impl OpponentTracker {
         if draw_can_call_shove {
             false
         } else if (ctx.is_known_maniac || ctx.is_overbet_bluffer) && !ctx.is_three_flush {
-            let min_b = if ctx.is_overbet_bluffer { 34 } else { 38 };
+            let min_b = if ctx.is_overbet_bluffer {
+                if ctx.round == ROUND_FLOP { 30 } else { 34 }
+            } else {
+                38
+            };
             ctx.bucket < min_b
                 || (is_stack_commit_draw_bet && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket))
                 || (ctx.round == ROUND_TURN

@@ -243,6 +243,7 @@ impl OpponentTracker {
                 reasons.push("POST_BARREL_FOLD");
             }
             let fold_flop_weak_pair = ctx.round == ROUND_FLOP
+                && !ctx.is_overbet_bluffer
                 && ctx.pot_odds >= 0.28
                 && ((ctx.to_call >= ctx.bb * 4
                     && (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket))
@@ -292,6 +293,27 @@ impl OpponentTracker {
                     reasons.push("POST_BARREL_FOLD");
                 }
             }
+        }
+
+        if ctx.round == ROUND_FLOP
+            && ctx.is_overbet_bluffer
+            && ctx.to_call > 0
+            && !ctx.is_three_flush
+            && !ctx.is_four_board_danger
+            && ctx.to_call * 10 > (ctx.pot - ctx.to_call).max(1) * 12
+            && ((BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
+                || ctx.bucket >= 30)
+            && self.is_guard_enabled("OVERBET_BLUFF_CATCH")
+            && let (Some(f_i), Some(c_i)) = (
+                action_idx(ctx.legal_actions, FOLD),
+                action_idx(ctx.legal_actions, CALL_CHECK),
+            )
+            && probs[f_i] > 0.30
+        {
+            reasons.push("OVERBET_BLUFF_CATCH");
+            let s = probs[f_i] * 0.65;
+            probs[f_i] -= s;
+            probs[c_i] += s;
         }
 
         /* Final Unconditional Pot-Commitment Rescue */

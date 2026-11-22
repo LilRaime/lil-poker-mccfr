@@ -53,7 +53,17 @@ impl OpponentTracker {
             if let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT) {
                 probs[hp_i] = 0.0;
             }
-            let air_pot_cap = if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
+            let allow_clean_hu_river_stab = ctx.round == ROUND_RIVER
+                && ctx.active_opponents == 1
+                && !ctx.is_paired_board
+                && !ctx.is_three_flush
+                && !ctx.is_four_board_danger
+                && !ctx.is_passive_station
+                && !ctx.is_sticky_caller
+                && ctx.bucket <= 6;
+            let air_pot_cap = if allow_clean_hu_river_stab {
+                ctx.bb * 14
+            } else if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
                 ctx.bb * 8
             } else {
                 ctx.bb * 18
@@ -72,6 +82,11 @@ impl OpponentTracker {
         } else if ctx.pot >= ctx.bb * 5
             && (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
             && !(ctx.is_passive_station && ctx.bucket >= 35 && !ctx.is_three_flush)
+            && (ctx.round == ROUND_TURN
+                || ctx.bucket <= 33
+                || ctx.is_paired_board
+                || ctx.is_three_flush
+                || ctx.is_four_board_danger)
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
@@ -216,10 +231,17 @@ impl OpponentTracker {
             && (ctx.is_dangerous_board || ctx.is_three_flush || ctx.is_three_straight_board)
             && (BUCKET_WEAK_PAIR_MIN..=72).contains(&ctx.bucket)
             && (ctx.bucket < 61 || ctx.to_call >= ctx.bb * 4);
+        let cap_deep_bottom_two_pair = ctx.round == ROUND_TURN
+            && (BUCKET_TWO_PAIR_MIN..=58).contains(&ctx.bucket)
+            && ctx.my_chips > ctx.bb * 55
+            && ctx.to_call >= ctx.bb * 5
+            && !ctx.is_known_maniac
+            && !ctx.is_overbet_bluffer;
         if !cap_one_pair
             && !cap_four_board_river
             && !cap_three_flush_non_flush
             && !cap_dangerous_river_non_nut
+            && !cap_deep_bottom_two_pair
         {
             return;
         }

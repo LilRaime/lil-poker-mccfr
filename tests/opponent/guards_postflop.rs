@@ -1,4 +1,4 @@
-use super::{LEGAL_FULL, LEGAL_OPEN, LEGAL_SHOVE, make_passive_station};
+use super::{LEGAL_FULL, LEGAL_OPEN, LEGAL_SHOVE, make_overbet_bluffer, make_passive_station};
 use lil_poker_mccfr::cfr::abstraction::{detect_river_nut_blocker, postflop_equity_bucket};
 use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
@@ -952,5 +952,190 @@ fn test_flop_wet_set_value_floor() {
     assert!(
         low_spr_bets >= 50,
         "Overpair 88 at SPR 0.34 on flop must push value mostly (got {low_spr_bets}/80)"
+    );
+}
+
+#[test]
+fn test_flop_floats_overbet_bluff_catch_and_polarized_sizing() {
+    let mut rng = SmallRng::seed_from_u64(20_261_123);
+    let neutral = OpponentTracker::new();
+    let overbet_villain = make_overbet_bluffer();
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
+
+    /* 1. Single-raised pot flop floats (50%–60% pot, 2.5–3.0 BB) must NOT auto-fold */
+    let hole_ako = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Clubs),
+    ];
+    let board_99t = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Spades),
+    ];
+    let hole_j5 = [
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Hearts),
+    ];
+    let board_986 = [
+        Card::new(Rank::Nine, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Clubs),
+    ];
+    let hole_kj = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Hearts),
+    ];
+    let board_764 = [
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    for (hole, board, to_call, pot, bb) in [
+        (hole_ako, board_99t, 900, 2400, 300),
+        (hole_j5, board_986, 1200, 3200, 400),
+        (hole_kj, board_764, 375, 1125, 150),
+    ] {
+        let b = postflop_equity_bucket(&hole, &board);
+        let (act, tr) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &call_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b,
+                round: 2,
+                to_call,
+                pot,
+                hole: Some(&hole),
+                board: Some(&board),
+                table_bb: bb,
+                my_chips: bb * 20,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_ne!(
+            act, FOLD,
+            "Single-raised flop float {hole:?} (bucket {b}) must not force-fold (reasons: {:?})",
+            tr.guard_reasons
+        );
+    }
+
+    /* 2. Flop OVERBET_BLUFF_CATCH vs 150% overbet bluffer: bottom pair (K2s), underpair (22), and OESD (Q9o) */
+    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
+    let hole_k2s = [
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let board_298 = [
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Hearts),
+    ];
+    let hole_q9 = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let board_jt4 = [
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Diamonds),
+    ];
+    for (hole, board) in [(hole_k2s, board_298), (hole_q9, board_jt4)] {
+        let b = postflop_equity_bucket(&hole, &board);
+        let mut calls = 0usize;
+        for _ in 0..80 {
+            let (act, _) = overbet_villain.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &fold_heavy,
+                    legal_actions: &LEGAL_FULL,
+                    bucket: b,
+                    round: 2,
+                    to_call: 1200,
+                    pot: 2000,
+                    hole: Some(&hole),
+                    board: Some(&board),
+                    table_bb: 150,
+                    my_chips: 6000,
+                    ..Default::default()
+                },
+                &mut rng,
+            );
+            if act == CALL_CHECK {
+                calls += 1;
+            }
+        }
+        assert!(
+            calls >= 40,
+            "Flop bluff-catcher/OESD {hole:?} vs overbet bluffer must call often (got {calls}/80)"
+        );
+    }
+
+    /* 3. Flop TPTK / TopPair value check-raise unlock & Turn polarized RAISE_HALF_POT sizing */
+    let hole_ak = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::King, Suit::Hearts),
+    ];
+    let board_a83 = [
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Three, Suit::Clubs),
+    ];
+    let b_ak = postflop_equity_bucket(&hole_ak, &board_a83);
+    let mut xrs = 0usize;
+    for _ in 0..80 {
+        let (act, _) = overbet_villain.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.85, 0.05, 0.10, 0.0, 0.0],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_ak,
+                round: 2,
+                to_call: 400,
+                pot: 1200,
+                hole: Some(&hole_ak),
+                board: Some(&board_a83),
+                table_bb: 100,
+                my_chips: 9000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            xrs += 1;
+        }
+    }
+    assert!(
+        xrs >= 15,
+        "TPTK on dry flop vs aggro opponent must check-raise sometimes (got {xrs}/80)"
+    );
+
+    let board_turn_a834 = [
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let mut polarized_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.45, 0.35, 0.10, 0.10, 0.0],
+                legal_actions: &LEGAL_OPEN,
+                bucket: 70,
+                round: 3,
+                pot: 1000,
+                hole: Some(&hole_ak),
+                board: Some(&board_turn_a834),
+                table_bb: 100,
+                my_chips: 8000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == RAISE_HALF_POT {
+            polarized_bets += 1;
+        }
+    }
+    assert!(
+        polarized_bets >= 20,
+        "Set on dry Turn must shift weight into polarized RAISE_HALF_POT sizing (got {polarized_bets}/80)"
     );
 }

@@ -1,5 +1,6 @@
 use lil_poker_mccfr::game::holdem::{
-    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, Rank, Suit, calculate_geometric_bet_size,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
+    calculate_geometric_bet_size,
 };
 use lil_poker_mccfr::live::protocol::{
     ActionMapRequest, map_action_index, parse_card_str, parse_json_i32,
@@ -152,7 +153,7 @@ fn test_live_map_action_index_round() {
         "allin".to_string(),
     ];
 
-    /* On River (round 4), Index 4 should be polarized 125% pot overbet (1250 chips) */
+    /* On River (round 4), RAISE_HALF_POT should be polarized 150% pot overbet (1500 chips) */
     let (_, amt_river) = map_action_index(&ActionMapRequest {
         action_idx: RAISE_HALF_POT as usize,
         legal: &legal,
@@ -162,11 +163,11 @@ fn test_live_map_action_index_round() {
     })
     .expect("river bet sizing");
     assert_eq!(
-        amt_river, 1250,
-        "River bet sizing must scale to 125% pot overbet"
+        amt_river, 1500,
+        "River bet sizing must scale to 150% pot overbet"
     );
 
-    /* On Turn (round 3), Index 4 should be 75% pot (750 chips) */
+    /* On Turn (round 3), RAISE_HALF_POT should be polarized 150% pot overbet (1500 chips) */
     let (_, amt_turn) = map_action_index(&ActionMapRequest {
         action_idx: RAISE_HALF_POT as usize,
         legal: &legal,
@@ -175,7 +176,67 @@ fn test_live_map_action_index_round() {
         ..Default::default()
     })
     .expect("turn bet sizing");
-    assert_eq!(amt_turn, 750, "Turn bet sizing must scale to 75% pot");
+    assert_eq!(
+        amt_turn, 1500,
+        "Turn bet sizing must scale to 150% pot overbet"
+    );
+
+    /* On Flop (round 2): 33% RAISE_MIN (333), 60% RAISE_THIRD_POT (600), 75% dry (750), 100% wet (1000) */
+    let (_, amt_flop_33) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_MIN as usize,
+        legal: &legal,
+        pot: 1000,
+        round: 2,
+        ..Default::default()
+    })
+    .expect("flop 33% sizing");
+    assert_eq!(amt_flop_33, 333);
+
+    let (_, amt_flop_60) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_THIRD_POT as usize,
+        legal: &legal,
+        pot: 1000,
+        round: 2,
+        ..Default::default()
+    })
+    .expect("flop 60% sizing");
+    assert_eq!(amt_flop_60, 600);
+
+    let (_, amt_flop_dry) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_HALF_POT as usize,
+        legal: &legal,
+        pot: 1000,
+        round: 2,
+        is_wet: false,
+        ..Default::default()
+    })
+    .expect("flop dry 75% sizing");
+    let (_, amt_flop_wet) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_HALF_POT as usize,
+        legal: &legal,
+        pot: 1000,
+        round: 2,
+        is_wet: true,
+        ..Default::default()
+    })
+    .expect("flop wet 100% sizing");
+    assert_eq!(amt_flop_dry, 750);
+    assert_eq!(amt_flop_wet, 1000);
+
+    /* HU Preflop 3.5x 3-bet against 250 open (100 BB stack) -> 875 total */
+    let (_, hu_3bet_amt) = map_action_index(&ActionMapRequest {
+        action_idx: RAISE_THIRD_POT as usize,
+        legal: &legal,
+        to_call: 150,
+        pot: 350,
+        round: 1,
+        table_bb: 100,
+        my_chips: 9900,
+        current_bet: 250,
+        ..Default::default()
+    })
+    .expect("HU 3.5x 3bet");
+    assert_eq!(hu_3bet_amt, 875);
 }
 
 #[test]

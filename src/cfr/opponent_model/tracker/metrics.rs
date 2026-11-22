@@ -157,11 +157,62 @@ impl OpponentTracker {
     }
 
     pub fn is_overbet_bluffer(&self) -> bool {
-        self.exploit_enabled
-            && self.postflop_bets_total >= 4
-            && ((self.postflop_overbets >= 3 && self.postflop_overbet_ratio() >= 0.40)
-                || (self.river_overbets >= 2 && self.river_overbet_ratio() >= 0.30)
-                || self.river_overbets >= 3)
+        if !self.exploit_enabled {
+            return false;
+        }
+        /* Value-heavy showdowns veto bluff classification for polarized value bettors */
+        if self.showdown_large_monster_count >= 2
+            && self.showdown_large_monster_count > self.showdown_bluff_count * 2
+        {
+            return false;
+        }
+        /* Passive or balanced opponents who merely use occasional 150% value sizes are not spammers */
+        if self.total_actions() >= 12 && self.raise_ratio() < 0.30 {
+            return false;
+        }
+        let pf_ob_ratio = self.postflop_overbet_ratio();
+        let high_postflop_overbet =
+            self.postflop_bets_total >= 4 && self.postflop_overbets >= 3 && pf_ob_ratio >= 0.45;
+        let high_river_overbet = self.postflop_bets_total >= 4
+            && self.river_overbets >= 2
+            && self.river_overbet_ratio() >= 0.45
+            && (self.total_hands <= 20 || pf_ob_ratio >= 0.25 || self.raise_ratio() >= 0.40);
+        let early_overbet_burst = (2..=3).contains(&self.postflop_bets_total)
+            && self.postflop_overbets >= 2
+            && pf_ob_ratio >= 0.65;
+        high_postflop_overbet || high_river_overbet || early_overbet_burst
+    }
+
+    /** Opponent bluff-density multiplier passed to `SubgameSolver` reach likelihoods. */
+    pub fn subgame_bluff_multiplier(&self) -> Option<f64> {
+        if !self.exploit_enabled {
+            None
+        } else if self.is_overbet_bluffer() {
+            let confirmed_maniac = self.smoothed_raise_ratio() >= 0.45
+                || (self.showdown_hands >= 2 && self.showdown_bluff_rate() >= 0.35);
+            if confirmed_maniac {
+                Some((1.5 + self.postflop_overbet_ratio() * 1.3).clamp(1.7, 2.6))
+            } else {
+                Some((1.2 + self.postflop_overbet_ratio() * 0.7).clamp(1.3, 1.8))
+            }
+        } else if self.total_actions() >= 12
+            && self.smoothed_raise_ratio() > 0.40
+            && self.showdown_large_monster_count <= self.showdown_bluff_count + 1
+        {
+            Some((1.2 + (self.smoothed_raise_ratio() - 0.35) * 3.0).clamp(1.2, 2.1))
+        } else if self.showdown_hands >= 3
+            && self.showdown_bluff_rate() > 0.40
+            && self.showdown_large_monster_count <= self.showdown_bluff_count
+        {
+            Some(1.6)
+        } else if self.total_actions() >= 12
+            && self.smoothed_vpip() < 0.28
+            && self.smoothed_raise_ratio() < 0.20
+        {
+            Some(0.55)
+        } else {
+            None
+        }
     }
 
     /** Bayesian Beta-prior smoothed estimators (population prior + pseudo-count k)

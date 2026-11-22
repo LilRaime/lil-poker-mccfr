@@ -54,28 +54,34 @@ fn test_holdem_raise_third_pot_and_all_in() {
     assert!(legal.contains(&RAISE_THIRD_POT));
     assert!(legal.contains(&RAISE_HALF_POT));
     assert!(legal.contains(&RAISE_MIN));
-    assert!(legal.contains(&ALL_IN));
+    assert!(
+        !legal.contains(&ALL_IN),
+        "Deep 100 BB unopened preflop must prune >4x pot ALL_IN shoves"
+    );
 
-    /* Preflop pot is small blind + big blind */
-    let g1 = game.apply_action(RAISE_THIRD_POT);
+    /* Short-stack 20 BB game (2000 chips) keeps ALL_IN legal from preflop */
+    let short_game = TexasHoldemGame::new_random_with_stack(&mut rng, 2000);
+    let short_legal = short_game.legal_actions();
+    assert!(short_legal.contains(&ALL_IN));
+
+    let g1 = short_game.apply_action(RAISE_THIRD_POT);
     let expected_raise = ((SMALL_BLIND + BIG_BLIND) / 3).max(RAISE_THIRD_POT_FLOOR);
     assert_eq!(
         g1.contributions[0],
         SMALL_BLIND + (BIG_BLIND - SMALL_BLIND) + expected_raise
     );
 
-    /* P1 goes ALL_IN: P1 contrib becomes stack_limit (STACK_SIZE). */
     let g2 = g1.apply_action(ALL_IN);
-    assert_eq!(g2.contributions[1], STACK_SIZE);
+    assert_eq!(g2.contributions[1], 2000);
 
-    /* P0 calls all-in: both contribs are STACK_SIZE -> round over -> auto deals to river -> showdown! */
     let g3 = g2.apply_action(CALL_CHECK);
-    assert_eq!(g3.contributions[0], STACK_SIZE);
-    assert_eq!(g3.contributions[1], STACK_SIZE);
+    assert_eq!(g3.contributions[0], 2000);
+    assert_eq!(g3.contributions[1], 2000);
     assert_eq!(g3.board.len(), 5);
     assert!(g3.is_terminal());
     let ret = g3.get_returns();
     assert_eq!(ret[0] + ret[1], 0.0);
+    assert_eq!(game.stack_size, STACK_SIZE);
 }
 
 #[test]
@@ -155,9 +161,14 @@ fn test_geometric_street_aware_bet_sizing() {
         "BB (player 1) must act first on Turn"
     );
 
-    /* On Turn: P1 applies RAISE_HALF_POT (geometric 75% pot bet) */
+    /* On Turn: P1 applies RAISE_HALF_POT (polarized 150% pot overbet) */
+    let turn_pot = game.contributions[0] + game.contributions[1];
     let turn_g = game.apply_action(RAISE_HALF_POT);
-    assert!(turn_g.contributions[1] >= game.contributions[1] + RAISE_HALF_POT_FLOOR_TURN);
+    assert_eq!(
+        turn_g.contributions[1] - game.contributions[1],
+        (turn_pot * 3 / 2).max(RAISE_HALF_POT_FLOOR_TURN),
+        "Turn RAISE_HALF_POT must be 150% pot overbet"
+    );
 
     /* P1 and P0 transition to River (round 4) */
     game = game.apply_action(CALL_CHECK);
@@ -170,14 +181,21 @@ fn test_geometric_street_aware_bet_sizing() {
     );
     let river_pot = game.contributions[0] + game.contributions[1];
 
-    /* On River: P1 applies RAISE_HALF_POT (polarized 125% pot overbet!) */
+    /* On River: P1 applies RAISE_HALF_POT (polarized 150% pot overbet) */
     let river_g = game.apply_action(RAISE_HALF_POT);
     let river_bet = river_g.contributions[1] - game.contributions[1];
     assert_eq!(
         river_bet,
-        (river_pot * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER),
-        "River RAISE_HALF_POT must be 125% pot overbet"
+        (river_pot * 3 / 2).max(RAISE_HALF_POT_FLOOR_RIVER),
+        "River RAISE_HALF_POT must be 150% pot overbet"
     );
+
+    /* Preflop 3.5x 3-bet via RAISE_THIRD_POT against 2.5x open (250 -> 875 total) */
+    let pf_game = TexasHoldemGame::new_random(&mut rng);
+    let pf_open = pf_game.apply_action(RAISE_MIN);
+    assert_eq!(pf_open.contributions[0], 250);
+    let pf_3bet = pf_open.apply_action(RAISE_THIRD_POT);
+    assert_eq!(pf_3bet.contributions[1], 875);
 }
 
 #[test]

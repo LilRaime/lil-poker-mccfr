@@ -180,6 +180,7 @@ pub struct SubgameRequest<'a> {
     pub raises_this_round: u8,
     pub opp_vpip: Option<f64>,
     pub opp_pfr: Option<f64>,
+    pub opp_aggression: Option<f64>,
 }
 
 impl Default for SubgameRequest<'_> {
@@ -193,6 +194,7 @@ impl Default for SubgameRequest<'_> {
             raises_this_round: 0,
             opp_vpip: None,
             opp_pfr: None,
+            opp_aggression: None,
         }
     }
 }
@@ -594,9 +596,13 @@ fn apply_safe_resolving(
         }
     }
     let (solved_w, fb_w) = if is_air_or_board_pair {
-        (0.35, 0.65)
+        if to_call == 0 {
+            (0.65, 0.35)
+        } else {
+            (0.40, 0.60)
+        }
     } else {
-        (0.85, 0.15)
+        (0.88, 0.12)
     };
     let mut resolved = vec![0.0f64; HOLDEM_NUM_ACTIONS];
     let mut sum = 0.0f64;
@@ -709,6 +715,7 @@ where
             active_player: Some(req.my_player),
             opp_vpip: req.opp_vpip,
             opp_pfr: req.opp_pfr,
+            opp_aggression: req.opp_aggression,
         },
         history,
         strategy_map,
@@ -722,6 +729,7 @@ where
             active_player: Some(req.my_player),
             opp_vpip: None,
             opp_pfr: None,
+            opp_aggression: None,
         },
         history,
         strategy_map,

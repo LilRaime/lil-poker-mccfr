@@ -166,6 +166,18 @@ impl TexasHoldemGame {
         let my_contrib = self.contributions[self.current_player];
         let raise_capped = self.raises_this_round >= MAX_RAISES_PER_ROUND;
         let stack_cap = self.stack_size;
+        let pot = (self.contributions[0] + self.contributions[1]).max(1);
+        let rem_stack = (stack_cap - my_contrib).max(0);
+        let call_need = diff.max(0);
+        let rem_after_call = (rem_stack - call_need).max(0);
+        let pot_after_call = pot + call_need;
+        let allow_allin = if self.round == ROUND_PREFLOP {
+            stack_cap <= BIG_BLIND * 25
+                || self.raises_this_round >= 2
+                || rem_after_call <= pot_after_call * 4
+        } else {
+            rem_after_call <= pot_after_call * 3
+        };
 
         if my_contrib >= stack_cap || self.contributions[opp] >= stack_cap {
             if diff > 0 {
@@ -193,15 +205,23 @@ impl TexasHoldemGame {
             out[2] = RAISE_MIN;
             out[3] = RAISE_THIRD_POT;
             out[4] = RAISE_HALF_POT;
-            out[5] = ALL_IN;
-            HOLDEM_NUM_ACTIONS
+            if allow_allin {
+                out[5] = ALL_IN;
+                HOLDEM_NUM_ACTIONS
+            } else {
+                HOLDEM_NUM_ACTIONS - 1
+            }
         } else {
             out[0] = CALL_CHECK;
             out[1] = RAISE_MIN;
             out[2] = RAISE_THIRD_POT;
             out[3] = RAISE_HALF_POT;
-            out[4] = ALL_IN;
-            5
+            if allow_allin {
+                out[4] = ALL_IN;
+                5
+            } else {
+                4
+            }
         }
     }
 
@@ -248,11 +268,11 @@ impl TexasHoldemGame {
                 } else if next.round == ROUND_PREFLOP {
                     RAISE_MIN_AMT
                 } else {
-                    /* Postflop small bet / min-raise: 25% pot (floored at BIG_BLIND, or RAISE_MIN_AMT on raises) */
+                    /* Postflop small bet / thin value / stab: 33% pot */
                     if diff > 0 {
-                        (pot_with_call / 4).max(RAISE_MIN_AMT)
+                        (pot_with_call / 3).max(RAISE_MIN_AMT)
                     } else {
-                        (pot_with_call / 4).max(BIG_BLIND)
+                        (pot_with_call / 3).max(BIG_BLIND)
                     }
                 };
                 next.contributions[next.current_player] =
@@ -263,7 +283,21 @@ impl TexasHoldemGame {
                 let diff =
                     (next.contributions[opp] - next.contributions[next.current_player]).max(0);
                 let pot_with_call = pot + diff;
-                let raise_amt = (pot_with_call / 3).max(RAISE_THIRD_POT_FLOOR);
+                let raise_amt = if next.round == ROUND_PREFLOP && next.raises_this_round == 0 {
+                    (pot_with_call / 3).max(RAISE_THIRD_POT_FLOOR)
+                } else if next.round == ROUND_PREFLOP {
+                    /* Preflop 3-bet / re-raise target: 3.5x opponent bet */
+                    let target_total = next.contributions[opp] * 7 / 2;
+                    target_total
+                        .saturating_sub(next.contributions[next.current_player] + diff)
+                        .max(RAISE_THIRD_POT_FLOOR)
+                } else if diff > 0 {
+                    /* Postflop raise: 60% pot */
+                    (pot_with_call * 3 / 5).max(RAISE_THIRD_POT_FLOOR)
+                } else {
+                    /* Postflop standard c-bet / barrel: 60% pot */
+                    (pot_with_call * 3 / 5).max(BIG_BLIND * 2)
+                };
                 next.contributions[next.current_player] =
                     (next.contributions[next.current_player] + diff + raise_amt).min(stack_cap);
                 next.raises_this_round += 1;
@@ -274,16 +308,19 @@ impl TexasHoldemGame {
                 let is_wet = next.round == ROUND_FLOP && next.is_wet_flop;
                 let pot_with_call = pot + diff;
                 let raise_amt = if next.round == ROUND_RIVER {
-                    /* River: Polarized 125% pot overbet */
-                    (pot_with_call * 5 / 4).max(RAISE_HALF_POT_FLOOR_RIVER)
+                    /* River: Polarized 150% pot overbet */
+                    (pot_with_call * 3 / 2).max(RAISE_HALF_POT_FLOOR_RIVER)
                 } else if next.round == ROUND_TURN {
-                    /* Turn: 75% pot bet for geometric pot growth */
-                    (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_TURN)
+                    /* Turn: Polarized 150% pot overbet for maximum value/semi-bluff pressure */
+                    (pot_with_call * 3 / 2).max(RAISE_HALF_POT_FLOOR_TURN)
                 } else if is_wet {
-                    /* Flop (wet): 75% pot bet */
-                    (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_WET)
+                    /* Flop (wet): 100% pot polarized bet */
+                    pot_with_call.max(RAISE_HALF_POT_FLOOR_WET)
+                } else if next.round == ROUND_FLOP {
+                    /* Flop (dry): 75% pot bet */
+                    (pot_with_call * 3 / 4).max(RAISE_HALF_POT_FLOOR_DRY)
                 } else {
-                    /* Flop (dry) or Preflop: 50% pot bet */
+                    /* Preflop large bet: 50% pot */
                     (pot_with_call / 2).max(RAISE_HALF_POT_FLOOR_DRY)
                 };
                 next.contributions[next.current_player] =

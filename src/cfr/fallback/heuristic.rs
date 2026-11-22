@@ -5,8 +5,8 @@
 
 use crate::cfr::abstraction::{
     BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN,
-    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
-    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN,
+    BUCKET_WEAK_PAIR_MIN, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
 use crate::game::config::{
     BIG_BLIND, HOLDEM_NUM_ACTIONS, NUM_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER,
@@ -242,40 +242,62 @@ fn postflop_checked_to_fallback(bucket: usize, round: u8) -> [f64; HOLDEM_NUM_AC
         s[RAISE_HALF_POT as usize] = 0.45;
         s[ALL_IN as usize] = 0.25;
     } else if bucket >= BUCKET_STRAIGHT_MIN {
-        s[CALL_CHECK as usize] = 0.20;
+        s[CALL_CHECK as usize] = 0.18;
+        s[RAISE_MIN as usize] = 0.07;
         s[RAISE_THIRD_POT as usize] = 0.35;
-        s[RAISE_HALF_POT as usize] = 0.35;
+        s[RAISE_HALF_POT as usize] = 0.30;
         s[ALL_IN as usize] = 0.10;
     } else if bucket >= BUCKET_TRIPS_MIN {
         s[CALL_CHECK as usize] = 0.15;
-        s[RAISE_THIRD_POT as usize] = 0.30;
-        s[RAISE_HALF_POT as usize] = 0.40;
-        s[ALL_IN as usize] = 0.15;
-    } else if bucket >= BUCKET_TOP_PAIR_MIN {
-        s[CALL_CHECK as usize] = 0.35;
-        s[RAISE_THIRD_POT as usize] = 0.35;
-        s[RAISE_HALF_POT as usize] = 0.25;
         s[RAISE_MIN as usize] = 0.05;
+        s[RAISE_THIRD_POT as usize] = 0.30;
+        s[RAISE_HALF_POT as usize] = 0.35;
+        s[ALL_IN as usize] = 0.15;
+    } else if bucket >= BUCKET_TWO_PAIR_MIN {
+        s[CALL_CHECK as usize] = 0.18;
+        s[RAISE_MIN as usize] = 0.12;
+        s[RAISE_THIRD_POT as usize] = 0.35;
+        s[RAISE_HALF_POT as usize] = 0.27;
+        s[ALL_IN as usize] = 0.08;
+    } else if bucket >= BUCKET_TOP_PAIR_MIN {
+        if round == ROUND_FLOP {
+            s[CALL_CHECK as usize] = 0.30;
+            s[RAISE_MIN as usize] = 0.25;
+            s[RAISE_THIRD_POT as usize] = 0.30;
+            s[RAISE_HALF_POT as usize] = 0.15;
+        } else {
+            /* Turn/River: RAISE_HALF_POT is a 150% overbet, so lean toward 33%/60% with 1-pair hands */
+            s[CALL_CHECK as usize] = 0.38;
+            s[RAISE_MIN as usize] = 0.24;
+            s[RAISE_THIRD_POT as usize] = 0.30;
+            s[RAISE_HALF_POT as usize] = 0.08;
+        }
     } else if round < ROUND_RIVER && (bucket == 33 || bucket == 38) {
-        s[CALL_CHECK as usize] = 0.75;
-        s[RAISE_THIRD_POT as usize] = 0.20;
-        s[RAISE_HALF_POT as usize] = 0.05;
+        s[CALL_CHECK as usize] = 0.72;
+        s[RAISE_MIN as usize] = 0.18;
+        s[RAISE_THIRD_POT as usize] = 0.10;
     } else if bucket >= BUCKET_WEAK_PAIR_MIN {
-        s[CALL_CHECK as usize] = 0.95;
-        s[RAISE_THIRD_POT as usize] = 0.05;
+        s[CALL_CHECK as usize] = 0.90;
+        s[RAISE_MIN as usize] = 0.08;
+        s[RAISE_THIRD_POT as usize] = 0.02;
     } else if round < ROUND_RIVER && bucket >= BUCKET_STRONG_DRAW_MIN {
-        s[CALL_CHECK as usize] = 0.40;
-        s[RAISE_THIRD_POT as usize] = 0.40;
-        s[RAISE_HALF_POT as usize] = 0.15;
+        s[RAISE_MIN as usize] = 0.10;
+        s[RAISE_THIRD_POT as usize] = 0.30;
+        s[RAISE_HALF_POT as usize] = 0.20;
         if round == ROUND_FLOP || bucket >= 24 {
+            s[CALL_CHECK as usize] = 0.35;
             s[ALL_IN as usize] = 0.05;
+        } else {
+            s[CALL_CHECK as usize] = 0.40;
         }
     } else if round < ROUND_RIVER && bucket >= BUCKET_WEAK_DRAW_MIN {
-        s[CALL_CHECK as usize] = 0.80;
-        s[RAISE_THIRD_POT as usize] = 0.20;
+        s[CALL_CHECK as usize] = 0.78;
+        s[RAISE_MIN as usize] = 0.15;
+        s[RAISE_THIRD_POT as usize] = 0.07;
     } else {
-        s[CALL_CHECK as usize] = 0.90;
-        s[RAISE_THIRD_POT as usize] = 0.10;
+        s[CALL_CHECK as usize] = 0.88;
+        s[RAISE_MIN as usize] = 0.08;
+        s[RAISE_THIRD_POT as usize] = 0.04;
     }
     s
 }
@@ -318,6 +340,18 @@ fn postflop_facing_bet_fallback(
         s[CALL_CHECK as usize] = 0.45;
         s[RAISE_HALF_POT as usize] = 0.30;
         s[ALL_IN as usize] = 0.25;
+    } else if bucket >= BUCKET_TWO_PAIR_MIN {
+        if pot_odds <= 0.35 {
+            s[CALL_CHECK as usize] = 0.55;
+            s[RAISE_THIRD_POT as usize] = 0.20;
+            s[RAISE_HALF_POT as usize] = 0.15;
+            s[ALL_IN as usize] = 0.10;
+        } else {
+            s[CALL_CHECK as usize] = 0.65;
+            s[RAISE_HALF_POT as usize] = 0.15;
+            s[ALL_IN as usize] = 0.10;
+            s[FOLD as usize] = 0.10;
+        }
     } else if bucket >= BUCKET_TOP_PAIR_MIN {
         if pot_odds <= 0.30 {
             s[CALL_CHECK as usize] = 0.70;
@@ -339,15 +373,15 @@ fn postflop_facing_bet_fallback(
             s[FOLD as usize] = 0.65;
         }
     } else if bucket >= BUCKET_WEAK_PAIR_MIN {
-        if pot_odds <= 0.15 {
-            s[CALL_CHECK as usize] = 0.65;
-            s[FOLD as usize] = 0.35;
-        } else if pot_odds <= 0.25 {
+        if pot_odds <= 0.20 {
+            s[CALL_CHECK as usize] = 0.60;
+            s[FOLD as usize] = 0.40;
+        } else if pot_odds <= 0.29 {
             s[CALL_CHECK as usize] = 0.35;
             s[FOLD as usize] = 0.65;
         } else {
-            s[CALL_CHECK as usize] = 0.10;
-            s[FOLD as usize] = 0.90;
+            s[CALL_CHECK as usize] = 0.12;
+            s[FOLD as usize] = 0.88;
         }
     } else if round < ROUND_RIVER && bucket >= BUCKET_WEAK_DRAW_MIN {
         if pot_odds <= 0.18 {

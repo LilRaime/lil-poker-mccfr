@@ -72,9 +72,14 @@ impl OpponentTracker {
                 let is_flop_small_overcard_float = ctx.round == ROUND_FLOP
                     && ctx.active_opponents == 1
                     && !ctx.is_three_flush
-                    && ctx.to_call <= ctx.bb * 2
-                    && ctx.pot_odds <= 0.27
-                    && (8..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket);
+                    && ((ctx.to_call <= ctx.bb * 4
+                        && ((ctx.pot_odds <= 0.28
+                            && (9..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket))
+                            || (ctx.pot_odds <= 0.26 && (7..=8).contains(&ctx.bucket))))
+                        || (ctx.to_call <= ctx.bb * 9
+                            && ctx.pot_odds <= 0.28
+                            && (12..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket)
+                            && (ctx.my_chips <= 0 || ctx.to_call * 5 < ctx.my_chips)));
                 let overpriced = !is_flop_small_overcard_float
                     && ((ctx.round < ROUND_RIVER
                         && ctx.to_call >= ctx.bb * 2
@@ -111,6 +116,7 @@ impl OpponentTracker {
         reasons: &mut Vec<&'static str>,
     ) {
         if ctx.round == ROUND_FLOP
+            && !ctx.is_overbet_bluffer
             && ctx.to_call >= ctx.bb * 4
             && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket)
             && self.is_guard_enabled("FLOP_DRAW_ODDS_FOLD")
@@ -211,7 +217,17 @@ impl OpponentTracker {
             if let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT) {
                 probs[hp_i] = 0.0;
             }
-            let air_pot_cap = if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
+            let allow_clean_hu_river_stab = ctx.round == ROUND_RIVER
+                && ctx.active_opponents == 1
+                && !ctx.is_paired_board
+                && !ctx.is_three_flush
+                && !ctx.is_four_board_danger
+                && !ctx.is_passive_station
+                && !ctx.is_sticky_caller
+                && ctx.bucket <= 6;
+            let air_pot_cap = if allow_clean_hu_river_stab {
+                ctx.bb * 14
+            } else if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
                 ctx.bb * 8
             } else {
                 ctx.bb * 18
@@ -248,6 +264,11 @@ impl OpponentTracker {
             && ctx.pot >= ctx.bb * 8
             && (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
             && !(ctx.is_passive_station && ctx.bucket >= 35 && !ctx.is_three_flush)
+            && (ctx.round == ROUND_TURN
+                || ctx.bucket <= 33
+                || ctx.is_paired_board
+                || ctx.is_three_flush
+                || ctx.is_four_board_danger)
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
@@ -274,9 +295,15 @@ impl OpponentTracker {
             probs[c_i] = (probs[c_i] + shift).max(0.80);
         }
 
-        /* Flop facing a significant bet: call only with bare pair/draw instead of check-raising */
+        /* Flop facing a significant bet: call only with weak/medium pairs & bare draws instead of check-raising */
+        let flop_pair_cap_max =
+            if ctx.is_known_maniac || ctx.is_overbet_bluffer || ctx.is_hyper_aggressor {
+                43
+            } else {
+                46
+            };
         if ctx.round == ROUND_FLOP
-            && (((BUCKET_WEAK_PAIR_MIN..=47).contains(&ctx.bucket)
+            && (((BUCKET_WEAK_PAIR_MIN..=flop_pair_cap_max).contains(&ctx.bucket)
                 && ctx.to_call >= ctx.bb * 2
                 && ctx.pot_odds >= 0.24)
                 || ((BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket)

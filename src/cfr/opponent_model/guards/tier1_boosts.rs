@@ -3,11 +3,12 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
-    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BoardFlushTexture,
-    detect_board_texture, nash_open_push_max_bb, preflop_strength_tier,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TRIPS_MIN,
+    BoardFlushTexture, detect_board_texture, nash_open_push_max_bb, preflop_strength_tier,
 };
 use crate::game::config::{
-    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
+    ROUND_TURN,
 };
 
 impl OpponentTracker {
@@ -26,6 +27,9 @@ impl OpponentTracker {
         self.apply_preflop_steal_and_trap(probs, ctx, reasons);
         self.apply_river_nut_blocker_bluff(probs, ctx, reasons);
         self.apply_flop_wet_set_value(probs, ctx, reasons);
+        self.apply_flop_value_check_raise(probs, ctx, reasons);
+        self.apply_polarized_value_and_draw_sizing(probs, ctx, reasons);
+        self.apply_river_thin_value_boost(probs, ctx, reasons);
         self.apply_low_spr_strong_hand_value_floor(probs, ctx, reasons);
     }
 
@@ -126,6 +130,16 @@ impl OpponentTracker {
                 && self.is_guard_enabled("PF_BUTTON_STEAL")
             {
                 Self::apply_fold_to_3bet_exploit(probs, ctx, reasons);
+            } else if ctx.active_opponents == 1
+                && ctx.to_call > steal_max_call
+                && ctx.to_call <= ctx.bb * 3
+                && ctx.eff_stack_bb > 20
+                && self.total_hands >= 8
+                && self.smoothed_pfr() >= 0.42
+                && pf_tier_now <= 3
+                && self.is_guard_enabled("PF_BUTTON_STEAL")
+            {
+                Self::apply_hu_linear_bb_3bet(probs, ctx, reasons);
             }
         }
     }
@@ -213,12 +227,15 @@ impl OpponentTracker {
         }
         if ctx.to_call > 0 {
             if let Some(c_i) = call_idx {
-                let limp_shift = if pf_tier_now <= 3 {
+                let limp_shift = if ctx.active_opponents == 1
+                    && ctx.eff_stack_bb > 15
+                    && (pf_tier_now <= 5 || is_deep_hu_tier6_sb)
+                {
+                    1.0
+                } else if pf_tier_now <= 3 {
                     0.98
                 } else if pf_tier_now == 4 || (pf_tier_now == 5 && ctx.eff_stack_bb > 15) {
                     0.95
-                } else if is_deep_hu_tier6_sb {
-                    0.92
                 } else {
                     0.55
                 };
@@ -415,6 +432,161 @@ impl OpponentTracker {
                 probs[h_i] += shift;
             }
             (None, None) => {}
+        }
+    }
+
+    fn apply_hu_linear_bb_3bet(
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
+            return;
+        };
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        let shift = probs[c_i] * 0.35;
+        if shift > 0.01 {
+            reasons.push("PF_BUTTON_STEAL");
+            probs[c_i] -= shift;
+            probs[r_i] += shift;
+        }
+    }
+
+    fn apply_flop_value_check_raise(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        let is_aggro_opp = ctx.is_known_maniac || ctx.is_overbet_bluffer || ctx.is_hyper_aggressor;
+        let eligible_hand = ctx.bucket >= 48
+            || (ctx.bucket >= 47 && !ctx.is_paired_board)
+            || (25..=27).contains(&ctx.bucket)
+            || (is_aggro_opp && ctx.bucket >= 44);
+        if ctx.round != ROUND_FLOP
+            || ctx.to_call <= 0
+            || ctx.is_allin_call
+            || ctx.is_three_flush
+            || ctx.pot_odds > 0.34
+            || !eligible_hand
+            || !self.is_guard_enabled("FLOP_VALUE_CHECK_RAISE")
+        {
+            return;
+        }
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
+            return;
+        };
+        if probs[c_i] > 0.65 {
+            let shift = probs[c_i] * 0.35;
+            probs[c_i] -= shift;
+            probs[r_i] += shift;
+            reasons.push("FLOP_VALUE_CHECK_RAISE");
+        }
+    }
+
+    fn apply_polarized_value_and_draw_sizing(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.is_preflop
+            || ctx.to_call != 0
+            || ctx.is_four_board_danger
+            || ctx.is_three_flush
+            || !self.is_guard_enabled("POST_POLARIZED_VALUE_SIZING")
+        {
+            return;
+        }
+        if ctx.round == ROUND_FLOP
+            && !ctx.is_passive_station
+            && ((22..=27).contains(&ctx.bucket)
+                || ((15..=21).contains(&ctx.bucket) && ctx.pot < ctx.bb * 8))
+            && let Some(hp_i) =
+                first_action_idx(ctx.legal_actions, &[RAISE_HALF_POT, RAISE_THIRD_POT])
+        {
+            let mut shifted = 0.0f64;
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK)
+                && probs[c_i] > 0.35
+            {
+                let s = probs[c_i] * 0.40;
+                probs[c_i] -= s;
+                shifted += s;
+            }
+            if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN)
+                && m_i != hp_i
+            {
+                let s = probs[m_i] * 0.40;
+                probs[m_i] -= s;
+                shifted += s;
+            }
+            if shifted > 0.0 {
+                probs[hp_i] += shifted;
+                reasons.push("POST_POLARIZED_VALUE_SIZING");
+            }
+            return;
+        }
+        let turn_river_eligible = ctx.round >= ROUND_TURN
+            && !(ctx.is_paired_board && ctx.bucket < BUCKET_TRIPS_MIN)
+            && (!ctx.is_dangerous_board || ctx.bucket >= 75)
+            && ctx.bucket != 73
+            && (ctx.bucket >= BUCKET_TRIPS_MIN
+                || (!ctx.is_paired_board && !ctx.is_dangerous_board && ctx.bucket >= 61));
+        if turn_river_eligible && let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT) {
+            let mut shifted = 0.0f64;
+            if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN) {
+                let s = probs[m_i] * 0.45;
+                probs[m_i] -= s;
+                shifted += s;
+            }
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK)
+                && probs[c_i] > 0.30
+            {
+                let s = probs[c_i] * 0.30;
+                probs[c_i] -= s;
+                shifted += s;
+            }
+            if shifted > 0.0 {
+                probs[hp_i] += shifted;
+                reasons.push("POST_POLARIZED_VALUE_SIZING");
+            }
+        }
+    }
+
+    fn apply_river_thin_value_boost(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.round != ROUND_RIVER
+            || ctx.to_call != 0
+            || ctx.is_paired_board
+            || ctx.is_three_flush
+            || ctx.is_four_board_danger
+            || ctx.is_dangerous_board
+            || !(35..=38).contains(&ctx.bucket)
+            || ctx.pot > ctx.bb * 16
+            || !self.is_guard_enabled("RIVER_THIN_VALUE_BET")
+        {
+            return;
+        }
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        let Some(r_i) = action_idx(ctx.legal_actions, RAISE_MIN) else {
+            return;
+        };
+        if probs[c_i] > 0.50 {
+            let shift = probs[c_i] * 0.45;
+            probs[c_i] -= shift;
+            probs[r_i] += shift;
+            reasons.push("RIVER_THIN_VALUE_BET");
         }
     }
 }

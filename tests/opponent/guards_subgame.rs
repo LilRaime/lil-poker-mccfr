@@ -3,7 +3,7 @@ use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
 use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
-    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, Rank, Suit,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -1092,5 +1092,179 @@ fn test_subgame_turn_pot_control_three_flush_and_four_straight_folds() {
         act_qq, FOLD,
         "Underpair QQ on K-high turn facing 18 BB barrel committing >50% stack must fold (reasons: {:?})",
         tr_qq.guard_reasons
+    );
+}
+
+#[test]
+fn test_subgame_early_overbet_river_thin_value_and_turn_two_pair_cap() {
+    let mut rng = SmallRng::seed_from_u64(20_261_123);
+    let mut early_overbet = OpponentTracker::new();
+    /* 2 overbets out of first 2 postflop bets must already mark is_overbet_bluffer() */
+    early_overbet.record_action_street_detailed(RAISE_HALF_POT, 3, false, 2400, 1600);
+    early_overbet.record_action_street_detailed(RAISE_HALF_POT, 4, false, 9184, 2666);
+    assert!(early_overbet.is_overbet_bluffer());
+
+    /* 1. Top pair Qc Js on paired Q-high river vs early 3.4x overbet-jam must not force-fold */
+    let hole_qj = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let board_paired_q = [
+        Card::new(Rank::Eight, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Queen, Suit::Spades),
+    ];
+    let b_qj = postflop_equity_bucket(&hole_qj, &board_paired_q);
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
+    let (act_qj, tr_qj) = early_overbet.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_qj,
+            round: 4,
+            to_call: 9184,
+            pot: 11850,
+            hole: Some(&hole_qj),
+            board: Some(&board_paired_q),
+            table_bb: 100,
+            my_chips: 9184,
+            opp_chips: Some(0),
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert!(
+        act_qj != FOLD && !tr_qj.guard_reasons.contains(&"SHOVE_DEFENSE_FOLD"),
+        "Top pair Qc Js vs early overbet spammer must not force-fold (reasons: {:?})",
+        tr_qj.guard_reasons
+    );
+
+    /* 2. Clean unpaired River middle pair (bucket 36) fires 33% thin value instead of 95% CHECK cap */
+    let neutral = OpponentTracker::new();
+    let hole_qt = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Ten, Suit::Clubs),
+    ];
+    let board_clean_river = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Spades),
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Spades),
+    ];
+    let b_qt = postflop_equity_bucket(&hole_qt, &board_clean_river);
+    let mut thin_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.70, 0.25, 0.05, 0.0, 0.0],
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_qt,
+                round: 4,
+                pot: 800,
+                hole: Some(&hole_qt),
+                board: Some(&board_clean_river),
+                table_bb: 100,
+                my_chips: 8000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == RAISE_MIN {
+            thin_bets += 1;
+        }
+    }
+    assert!(
+        thin_bets >= 30,
+        "Clean unpaired River middle pair must thin-value bet frequently (got {thin_bets}/80)"
+    );
+
+    /* 3. Deep-stack (>55 BB) Turn bottom two pair (bucket 58) facing 15 BB raise must flat-call, not 3-bet */
+    let hole_34 = [
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let board_aj43 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let b_34 = postflop_equity_bucket(&hole_34, &board_aj43);
+    assert_eq!(b_34, 58);
+    let raise_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.20, 0.30, 0.30, 0.20, 0.0];
+    for _ in 0..40 {
+        let (act_34, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &raise_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_34,
+                round: 3,
+                to_call: 1574,
+                pot: 3411,
+                hole: Some(&hole_34),
+                board: Some(&board_aj43),
+                table_bb: 100,
+                my_chips: 9000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_eq!(
+            act_34, CALL_CHECK,
+            "Deep-stack Turn bottom two pair facing raise must flat-call instead of 3-betting (got {act_34})"
+        );
+    }
+
+    /* 4. Low-aggression polarized bettor with sporadic 150% river value bets must NOT trigger is_overbet_bluffer() */
+    let mut balanced_polarized = OpponentTracker::new();
+    for _ in 0..8 {
+        balanced_polarized.record_action_street_detailed(CALL_CHECK, 1, true, 0, 300);
+        balanced_polarized.record_action_street_detailed(CALL_CHECK, 2, false, 0, 500);
+        balanced_polarized.record_action_street_detailed(CALL_CHECK, 3, false, 0, 500);
+        balanced_polarized.end_hand();
+    }
+    for _ in 0..4 {
+        balanced_polarized.record_action_street_detailed(RAISE_THIRD_POT, 2, false, 300, 500);
+        balanced_polarized.record_action_street_detailed(RAISE_HALF_POT, 4, false, 1650, 1100);
+        balanced_polarized.end_hand();
+    }
+    assert!(
+        !balanced_polarized.is_overbet_bluffer(),
+        "Low-aggression opponent (raise_ratio < 0.30) with sporadic river overbets must not be flagged"
+    );
+    assert!(
+        balanced_polarized
+            .subgame_bluff_multiplier()
+            .is_none_or(|m| m < 1.0),
+        "Balanced polarized bettor must not receive inflated subgame bluff multiplier"
+    );
+
+    /* 5. Value-heavy trapper showing monsters at showdown vetoes is_overbet_bluffer() */
+    let mut value_trapper = OpponentTracker::new();
+    let hole_set = [
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Hearts),
+    ];
+    let board_set = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    for _ in 0..4 {
+        value_trapper.record_action_street_detailed(RAISE_HALF_POT, 4, false, 1500, 1000);
+        value_trapper.record_showdown_hand_detailed(hole_set, &board_set, true, 1500, 1000);
+        value_trapper.end_hand();
+    }
+    assert!(
+        !value_trapper.is_overbet_bluffer(),
+        "Showdown-confirmed value monster overbettor must be vetoed from is_overbet_bluffer()"
     );
 }

@@ -345,6 +345,7 @@ fn test_vpip_adapted_bayesian_reach_narrowing() {
             active_player: Some(0),
             opp_vpip: Some(0.15),
             opp_pfr: Some(0.12),
+            ..Default::default()
         },
         &history,
     );
@@ -357,6 +358,7 @@ fn test_vpip_adapted_bayesian_reach_narrowing() {
             active_player: Some(0),
             opp_vpip: Some(0.75),
             opp_pfr: Some(0.10),
+            ..Default::default()
         },
         &history,
     );
@@ -435,5 +437,58 @@ fn test_subgame_reach_active_street_actor_separation() {
     assert!(
         w_check > w_bet * 2.0 && target0_as_checker.total_weight > target0_as_bettor.total_weight,
         "Active-street parity must assign idx 0 (check, air w={w_check:.4}) to target=0 when active=0 rather than idx 1 (bet, air w={w_bet:.4})"
+    );
+}
+
+#[test]
+fn test_subgame_reach_aggression_bluff_multiplier() {
+    let board = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Three, Suit::Spades),
+    ];
+    let used = [
+        board[0],
+        board[1],
+        board[2],
+        board[3],
+        board[4],
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Diamonds),
+    ];
+    let rem = remaining_deck_excluding(&used);
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(2);
+    history[0].push(CALL_CHECK);
+    history[3].push(RAISE_HALF_POT);
+
+    let build_with_agg = |opp_aggression: Option<f64>| {
+        OpponentReachDistribution::build(
+            &ReachRequest {
+                remaining_deck: &rem,
+                board: &board,
+                round: 4,
+                target_player: Some(0),
+                active_player: Some(1),
+                opp_aggression,
+                ..Default::default()
+            },
+            &history,
+        )
+    };
+    let dist_aggro = build_with_agg(Some(3.5));
+    let dist_neutral = build_with_agg(None);
+    let dist_nit = build_with_agg(Some(0.45));
+
+    let air_c1 = Card::new(Rank::Five, Suit::Clubs);
+    let air_c2 = Card::new(Rank::Nine, Suit::Diamonds);
+    let w_aggro = combo_weight(&dist_aggro, air_c1, air_c2);
+    let w_neutral = combo_weight(&dist_neutral, air_c1, air_c2);
+    let w_nit = combo_weight(&dist_nit, air_c1, air_c2);
+    assert!(
+        w_aggro > w_neutral * 2.5 && w_neutral > w_nit * 1.8,
+        "River bluff air likelihood must scale with opp_aggression: aggro={w_aggro:.5}, neutral={w_neutral:.5}, nit={w_nit:.5}"
     );
 }
