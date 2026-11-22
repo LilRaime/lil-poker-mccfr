@@ -807,6 +807,73 @@ fn test_flop_commit_draw_fold() {
         act_fd_commit, FOLD,
         "Bare flush draw facing 1.5x pot flop overbet committing 48% of stack must fold"
     );
+
+    /* Bare OESD on deep stack facing 1.5x pot flop overbet (37.5% pot odds > 34%) must fold */
+    let hole_q9 = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let board_j2t_flop = [
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Clubs),
+    ];
+    let b_q9 = postflop_equity_bucket(&hole_q9, &board_j2t_flop);
+    let (act_oesd_overbet, tr_oesd) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_q9,
+            round: 2,
+            to_call: 1200,
+            pot: 2000,
+            hole: Some(&hole_q9),
+            board: Some(&board_j2t_flop),
+            table_bb: 150,
+            my_chips: 13500,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_oesd_overbet, FOLD,
+        "Bare OESD on deep stack facing 1.5x pot flop overbet must fold (reasons: {:?})",
+        tr_oesd.guard_reasons
+    );
+
+    /* Bare draw in bloated 3-bet flop pot must cap oversized c-bet sizing (no half/all-in) */
+    let hole_56h = [
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Six, Suit::Hearts),
+    ];
+    let board_8a7_flop = [
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Clubs),
+    ];
+    let b_56h = postflop_equity_bucket(&hole_56h, &board_8a7_flop);
+    let half_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.05, 0.15, 0.55, 0.10];
+    for _ in 0..40 {
+        let (act_draw_cbet, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &half_heavy,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_56h,
+                round: 2,
+                pot: 2202,
+                hole: Some(&hole_56h),
+                board: Some(&board_8a7_flop),
+                table_bb: 150,
+                my_chips: 11500,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act_draw_cbet != RAISE_HALF_POT && act_draw_cbet != ALL_IN,
+            "Bare draw in 3-bet flop pot must not fire oversized 75%+ c-bet (got {act_draw_cbet})"
+        );
+    }
 }
 
 #[test]
@@ -848,5 +915,42 @@ fn test_flop_wet_set_value_floor() {
     assert!(
         wet_set_bets >= 45,
         "Top Set on wet flop must value-bet majority of the time, got {wet_set_bets}/80"
+    );
+
+    /* Ultra-low SPR (0.34) overpair on flop must jam/value-bet instead of checking down */
+    let hole_88 = [
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let board_low_spr_flop = [
+        Card::new(Rank::Three, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Spades),
+    ];
+    let b_88 = postflop_equity_bucket(&hole_88, &board_low_spr_flop);
+    let mut low_spr_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &passive_check,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_88,
+                round: 2,
+                pot: 9480,
+                hole: Some(&hole_88),
+                board: Some(&board_low_spr_flop),
+                table_bb: 300,
+                my_chips: 3208,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            low_spr_bets += 1;
+        }
+    }
+    assert!(
+        low_spr_bets >= 50,
+        "Overpair 88 at SPR 0.34 on flop must push value mostly (got {low_spr_bets}/80)"
     );
 }

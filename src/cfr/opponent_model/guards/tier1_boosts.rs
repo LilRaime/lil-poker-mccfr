@@ -3,8 +3,8 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
-    BUCKET_STRONG_DRAW_MIN, BoardFlushTexture, detect_board_texture, nash_open_push_max_bb,
-    preflop_strength_tier,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BoardFlushTexture,
+    detect_board_texture, nash_open_push_max_bb, preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
@@ -26,6 +26,7 @@ impl OpponentTracker {
         self.apply_preflop_steal_and_trap(probs, ctx, reasons);
         self.apply_river_nut_blocker_bluff(probs, ctx, reasons);
         self.apply_flop_wet_set_value(probs, ctx, reasons);
+        self.apply_low_spr_strong_hand_value_floor(probs, ctx, reasons);
     }
 
     fn apply_pot_commit_early(
@@ -186,10 +187,16 @@ impl OpponentTracker {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
             return;
         };
-        /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4 (or deep Tier 5); leave strong blueprint raises untouched. */
+        /* Only intervene when the raw strategy is overly passive or SB holds Tier <= 4 (or deep Tier 5/6 HU); leave strong blueprint raises untouched. */
         let passive_mass = fold_idx.map_or(0.0, |i| probs[i]) + call_idx.map_or(0.0, |i| probs[i]);
-        let force_sb_open_tier =
-            ctx.to_call > 0 && (pf_tier_now <= 4 || (pf_tier_now == 5 && ctx.eff_stack_bb > 15));
+        let is_deep_hu_tier6_sb = ctx.active_opponents == 1
+            && pf_tier_now == 6
+            && ctx.eff_stack_bb > 15
+            && !ctx.is_hyper_aggressor;
+        let force_sb_open_tier = ctx.to_call > 0
+            && (pf_tier_now <= 4
+                || (pf_tier_now == 5 && ctx.eff_stack_bb > 15)
+                || is_deep_hu_tier6_sb);
         if !(force_sb_open_tier
             || passive_mass > 0.55
             || ctx.is_passive_station
@@ -210,6 +217,8 @@ impl OpponentTracker {
                     0.98
                 } else if pf_tier_now == 4 || (pf_tier_now == 5 && ctx.eff_stack_bb > 15) {
                     0.95
+                } else if is_deep_hu_tier6_sb {
+                    0.92
                 } else {
                     0.55
                 };
@@ -248,6 +257,44 @@ impl OpponentTracker {
                 let shifted = probs[c_i] * limp_shift;
                 probs[r_i] += shifted;
                 probs[c_i] -= shifted;
+            }
+        }
+    }
+
+    fn apply_low_spr_strong_hand_value_floor(
+        &self,
+        probs: &mut [f64],
+        ctx: &GuardContext<'_>,
+        reasons: &mut Vec<&'static str>,
+    ) {
+        if ctx.is_preflop
+            || ctx.to_call != 0
+            || ctx.my_chips <= 0
+            || ctx.pot <= 0
+            || ctx.my_chips * 20 > ctx.pot * 13
+            || ctx.bucket < 46
+            || ctx.is_four_board_danger
+            || (ctx.is_three_flush && ctx.bucket < BUCKET_FLUSH_MIN)
+            || (ctx.is_paired_board && ctx.bucket < BUCKET_OVERPAIR_MIN)
+            || !self.is_guard_enabled("POST_NUT_VALUE_FLOOR")
+        {
+            return;
+        }
+        let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
+            return;
+        };
+        if probs[c_i] <= 0.25 {
+            return;
+        }
+        if let Some(t_i) = first_action_idx(
+            ctx.legal_actions,
+            &[ALL_IN, RAISE_HALF_POT, RAISE_THIRD_POT],
+        ) {
+            let shift = (probs[c_i] - 0.10).max(0.0) * 0.85;
+            if shift > 0.0 {
+                reasons.push("POST_NUT_VALUE_FLOOR");
+                probs[c_i] -= shift;
+                probs[t_i] += shift;
             }
         }
     }

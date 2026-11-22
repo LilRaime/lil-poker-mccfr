@@ -195,7 +195,7 @@ impl OpponentTracker {
             } else if is_hu_small_open {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
-                    if ctx.pot_odds <= 0.31
+                    if ctx.pot_odds <= 0.32
                         && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
                     {
                         let defend = probs[f_i] * 0.65;
@@ -214,10 +214,25 @@ impl OpponentTracker {
         {
             reasons.push("PF_DISCIPLINE_GUARD");
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
-            if pf_tier == 6 && ctx.bucket >= 141 && ctx.pot_odds > 0.28 {
+            let is_hu_connected_tier6_defend = ctx.active_opponents == 1
+                && ctx.to_call <= ctx.bb * 2
+                && ctx.pot_odds <= 0.31
+                && matches!(ctx.bucket, 141 | 148 | 154 | 159 | 163);
+            if pf_tier == 6
+                && ctx.bucket >= 141
+                && ctx.pot_odds > 0.28
+                && !is_hu_connected_tier6_defend
+            {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
             } else if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] += shifted;
+                if is_hu_connected_tier6_defend
+                    && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
+                {
+                    let defend = probs[f_i] * 0.60;
+                    probs[f_i] -= defend;
+                    probs[c_i] += defend;
+                }
             }
         } else if ctx.to_call >= ctx.bb * 3 && pf_tier >= 6 {
             reasons.push("PF_DISCIPLINE_GUARD");
@@ -401,6 +416,38 @@ impl OpponentTracker {
             reasons.push("PF_DISCIPLINE_GUARD");
             probs[f_i] += probs[c_i];
             probs[c_i] = 0.0;
+        }
+        if !ctx.is_allin_call
+            && ctx.pot >= ctx.bb * 15
+            && ctx.to_call >= ctx.bb * 6
+            && ctx.my_chips > ctx.to_call
+        {
+            let rem = ctx.my_chips - ctx.to_call;
+            let new_pot = ctx.pot + ctx.to_call;
+            if rem * 20 < new_pot * 11 {
+                if pf_tier <= 2
+                    || (pf_tier == 3
+                        && (ctx.bucket <= 7 || ctx.is_known_maniac || ctx.is_extreme_shove_bot))
+                {
+                    if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
+                        let mut shifted = 0.0f64;
+                        for (i, &a) in ctx.legal_actions.iter().enumerate() {
+                            if a == CALL_CHECK || (RAISE_MIN..ALL_IN).contains(&a) {
+                                shifted += probs[i];
+                                probs[i] = 0.0;
+                            }
+                        }
+                        if shifted > 0.0 {
+                            reasons.push("PF_DISCIPLINE_GUARD");
+                            probs[ai_i] += shifted;
+                        }
+                    }
+                } else if ctx.pot_odds > 0.22 {
+                    reasons.push("PF_DISCIPLINE_GUARD");
+                    let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
+                    force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
+                }
+            }
         }
     }
 }

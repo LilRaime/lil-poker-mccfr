@@ -441,6 +441,38 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
         open_42c >= 65,
         "Suited 42s at 11 BB HU SB must open predominantly instead of folding (got {open_42c}/100)"
     );
+
+    /* Deep HU SB Tier 6 suited/connected (9c 6c) eliminates passive limping in favor of RAISE_MIN */
+    let hole_96c = [
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Clubs),
+    ];
+    let b_96c = preflop_bucket(hole_96c[0], hole_96c[1]).0;
+    let mut open_96c = 0usize;
+    for _ in 0..100 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &limp_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_96c,
+                round: 1,
+                to_call: 50,
+                pot: 150,
+                hole: Some(&hole_96c),
+                table_bb: 100,
+                my_chips: 6000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == RAISE_MIN {
+            open_96c += 1;
+        }
+    }
+    assert!(
+        open_96c >= 80,
+        "Deep HU SB Tier 6 (96s) must open via RAISE_MIN rather than limp (got {open_96c}/100)"
+    );
 }
 
 #[test]
@@ -850,6 +882,73 @@ fn test_preflop_four_bet_discipline_and_hu_bb_small_open_defense() {
             "HU BB Tier-7 {hole:?} vs 2.5x open must defend (got {calls}/80)"
         );
     }
+
+    /* Connected Tier 6 offsuit hands (98o, 76o) in HU BB vs 2.5x open must defend predominantly */
+    for hole in [
+        [
+            Card::new(Rank::Nine, Suit::Diamonds),
+            Card::new(Rank::Eight, Suit::Hearts),
+        ],
+        [
+            Card::new(Rank::Seven, Suit::Hearts),
+            Card::new(Rank::Six, Suit::Spades),
+        ],
+    ] {
+        let b = preflop_bucket(hole[0], hole[1]).0;
+        let mut calls = 0usize;
+        for _ in 0..80 {
+            let (act, _) = tracker.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &fold_heavy,
+                    legal_actions: &LEGAL_FULL,
+                    bucket: b,
+                    round: 1,
+                    to_call: 150,
+                    pot: 350,
+                    hole: Some(&hole),
+                    active_opponents: 1,
+                    table_bb: 100,
+                    my_chips: 10000,
+                    ..Default::default()
+                },
+                &mut rng,
+            );
+            if act == CALL_CHECK {
+                calls += 1;
+            }
+        }
+        assert!(
+            calls >= 45,
+            "HU BB connected Tier 6 {hole:?} vs 2.5x open must defend (got {calls}/80)"
+        );
+    }
+
+    /* Stack-committing preflop 4-bet with 88 (calling leaves SPR < 0.55) must push ALL_IN rather than flat-call OOP */
+    let hole_88 = [
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let b_88 = preflop_bucket(hole_88[0], hole_88[1]).0;
+    let (act_88_4bet, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.05, 0.90, 0.05, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_88,
+            round: 1,
+            to_call: 2679,
+            pot: 6801,
+            hole: Some(&hole_88),
+            active_opponents: 1,
+            table_bb: 300,
+            my_chips: 5887,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_88_4bet, ALL_IN,
+        "Pocket 88 facing stack-committing 4-bet (rem SPR < 0.55) must shove ALL_IN instead of flat-calling OOP"
+    );
 }
 
 #[test]

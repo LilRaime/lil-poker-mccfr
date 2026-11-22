@@ -1020,4 +1020,77 @@ fn test_subgame_turn_pot_control_three_flush_and_four_straight_folds() {
         "Bare top pair on 4-straight turn must fold to 80% pot barrel (reasons: {:?})",
         tr_k7.guard_reasons
     );
+
+    /* 4. Two pair facing 75% pot bet on 3-flush river in subgame must flat-call instead of raising into flush */
+    let hole_qcts = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Spades),
+    ];
+    let board_three_flush_river = [
+        Card::new(Rank::Six, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Queen, Suit::Spades),
+    ];
+    let b_qcts = postflop_equity_bucket(&hole_qcts, &board_three_flush_river);
+    let raise_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.20, 0.25, 0.30, 0.0, 0.20];
+    for _ in 0..40 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &raise_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_qcts,
+                round: 4,
+                to_call: 2478,
+                pot: 5782,
+                hole: Some(&hole_qcts),
+                board: Some(&board_three_flush_river),
+                table_bb: 150,
+                my_chips: 8300,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act < RAISE_MIN,
+            "Two pair without flush facing 75% bet on 3-flush river must never raise (got {act})"
+        );
+    }
+
+    /* 5. Underpair to King in 3-bet pot facing >=15 BB turn barrel committing >=50% stack must fold */
+    let hole_qq = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Queen, Suit::Hearts),
+    ];
+    let board_k_high_turn = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Spades),
+    ];
+    let b_qq = postflop_equity_bucket(&hole_qq, &board_k_high_turn);
+    let (act_qq, tr_qq) = neutral.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_FULL,
+            bucket: b_qq,
+            round: 3,
+            to_call: 3666,
+            pot: 10578,
+            hole: Some(&hole_qq),
+            board: Some(&board_k_high_turn),
+            table_bb: 200,
+            my_chips: 7026,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_qq, FOLD,
+        "Underpair QQ on K-high turn facing 18 BB barrel committing >50% stack must fold (reasons: {:?})",
+        tr_qq.guard_reasons
+    );
 }

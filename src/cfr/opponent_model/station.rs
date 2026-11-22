@@ -265,6 +265,21 @@ impl OpponentTracker {
             if fold_turn_paired_or_flush_underpair && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_BARREL_FOLD");
             }
+            let is_turn_bare_underpair = (BUCKET_WEAK_PAIR_MIN..BUCKET_TOP_PAIR_MIN)
+                .contains(&ctx.bucket)
+                && ctx.bucket != 33
+                && ctx.bucket != 38;
+            let fold_turn_commit_underpair = ctx.round == ROUND_TURN
+                && is_turn_bare_underpair
+                && !ctx.is_overbet_bluffer
+                && !ctx.is_known_maniac
+                && ctx.to_call >= ctx.bb * 15
+                && ctx.pot_odds >= 0.25
+                && ctx.my_chips > 0
+                && ctx.to_call * 2 >= ctx.my_chips;
+            if fold_turn_commit_underpair && force_action(probs, ctx.legal_actions, FOLD) {
+                reasons.push("POST_BARREL_FOLD");
+            }
             if ctx.round >= ROUND_TURN && ctx.to_call >= ctx.bb * 5 {
                 let should_fold_weak_pair =
                     (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket) && ctx.pot_odds >= 0.33;

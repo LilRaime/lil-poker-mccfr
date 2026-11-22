@@ -110,6 +110,17 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
+        if ctx.round == ROUND_FLOP
+            && ctx.to_call >= ctx.bb * 4
+            && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket)
+            && self.is_guard_enabled("FLOP_DRAW_ODDS_FOLD")
+        {
+            let max_flop_draw_odds = if ctx.bucket <= 18 { 0.34 } else { 0.38 };
+            if ctx.pot_odds > max_flop_draw_odds && force_action(probs, ctx.legal_actions, FOLD) {
+                reasons.push("FLOP_DRAW_ODDS_FOLD");
+                return;
+            }
+        }
         if ctx.round != ROUND_TURN
             || ctx.to_call < ctx.bb * 2
             || !(BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
@@ -158,6 +169,25 @@ impl OpponentTracker {
                         0.95
                     };
                     probs[c_i] = (probs[c_i] + shifted).max(floor);
+                }
+            }
+            if ctx.pot >= ctx.bb * 8 && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket) {
+                let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
+                    a == RAISE_HALF_POT || a == ALL_IN
+                });
+                if oversized > 0.0 {
+                    match (
+                        first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]),
+                        action_idx(ctx.legal_actions, CALL_CHECK),
+                    ) {
+                        (Some(s_i), Some(c_i)) => {
+                            probs[s_i] += oversized * 0.50;
+                            probs[c_i] += oversized * 0.50;
+                        }
+                        (Some(s_i), None) => probs[s_i] += oversized,
+                        (None, Some(c_i)) => probs[c_i] += oversized,
+                        (None, None) => {}
+                    }
                 }
             }
         }

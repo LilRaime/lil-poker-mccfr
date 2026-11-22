@@ -208,7 +208,19 @@ impl OpponentTracker {
         let cap_four_board_river = ctx.round == ROUND_RIVER
             && ctx.is_four_board_danger
             && ctx.bucket < BUCKET_STRAIGHT_MIN;
-        if !cap_one_pair && !cap_four_board_river {
+        let cap_three_flush_non_flush = ctx.is_three_flush
+            && ctx.pot_odds >= 0.16
+            && ctx.bucket < BUCKET_FLUSH_MIN
+            && ctx.bucket != 72;
+        let cap_dangerous_river_non_nut = ctx.round == ROUND_RIVER
+            && (ctx.is_dangerous_board || ctx.is_three_flush || ctx.is_three_straight_board)
+            && (BUCKET_WEAK_PAIR_MIN..=72).contains(&ctx.bucket)
+            && (ctx.bucket < 61 || ctx.to_call >= ctx.bb * 4);
+        if !cap_one_pair
+            && !cap_four_board_river
+            && !cap_three_flush_non_flush
+            && !cap_dangerous_river_non_nut
+        {
             return;
         }
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
@@ -355,7 +367,22 @@ impl OpponentTracker {
                     && ctx.pot_odds >= 0.25
                     && (ctx.to_call >= ctx.bb * 5
                         || (ctx.my_chips > 0 && ctx.to_call * 5 >= ctx.my_chips * 2))));
-        if (fold_river_barrel || fold_turn_barrel || fold_turn_paired_or_flush_underpair)
+        let is_turn_bare_underpair = (BUCKET_WEAK_PAIR_MIN..BUCKET_TOP_PAIR_MIN)
+            .contains(&ctx.bucket)
+            && ctx.bucket != 33
+            && ctx.bucket != 38;
+        let fold_turn_commit_underpair = ctx.round == ROUND_TURN
+            && is_turn_bare_underpair
+            && !ctx.is_overbet_bluffer
+            && !ctx.is_known_maniac
+            && ctx.to_call >= ctx.bb * 15
+            && ctx.pot_odds >= 0.25
+            && ctx.my_chips > 0
+            && ctx.to_call * 2 >= ctx.my_chips;
+        if (fold_river_barrel
+            || fold_turn_barrel
+            || fold_turn_paired_or_flush_underpair
+            || fold_turn_commit_underpair)
             && force_action(probs, ctx.legal_actions, FOLD)
         {
             reasons.push("POST_BARREL_FOLD");
