@@ -1,6 +1,7 @@
+use super::{combo_weight, remaining_deck_excluding};
 use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, ReachRequest};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, RoundHistory, Suit, ALL_52_CARDS, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
+    CALL_CHECK, Card, NUM_ROUNDS, RAISE_HALF_POT, Rank, RoundHistory, Suit,
 };
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -18,12 +19,8 @@ fn test_opponent_reach_distribution() {
         card(Rank::Ten, Suit::Clubs),
     ];
 
-    let is_used = |c: Card| hole.contains(&c) || board.contains(&c);
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !is_used(c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     /* Scenario 1: Opponent raised preflop (strong range) */
     let history_raised = [vec![1u8, 2u8], vec![], vec![], vec![]];
@@ -88,11 +85,8 @@ fn test_opponent_reach_with_strategy_map() {
         card(Rank::Eight, Suit::Clubs),
         card(Rank::Nine, Suit::Hearts),
     ];
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     let mut strat_map = HashMap::new();
     strat_map.insert("P:AA/".to_string(), vec![0.0, 0.0, 0.5, 0.3, 0.2, 0.0]);
@@ -129,11 +123,8 @@ fn test_opponent_reach_distribution_position_aware() {
         card(Rank::Two, Suit::Clubs),
     ];
 
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     /* History: Action 0 (Player 0) = Raise (2), Action 1 (Player 1) = Call (1) */
     let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
@@ -165,17 +156,16 @@ fn test_opponent_reach_distribution_position_aware() {
     );
 
     /* Find weight for a premium hand like AA */
-    let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
-    let idx_aa = dist_bot_raised
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == aa_pair[0] && c[1] == aa_pair[1]) || (c[0] == aa_pair[1] && c[1] == aa_pair[0])
-        })
-        .expect("AA combo must exist in remaining deck");
-
-    let w_aa_caller = dist_bot_raised.weights[idx_aa];
-    let w_aa_raiser = dist_opp_raised.weights[idx_aa];
+    let w_aa_caller = combo_weight(
+        &dist_bot_raised,
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Ace, Suit::Hearts),
+    );
+    let w_aa_raiser = combo_weight(
+        &dist_opp_raised,
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::Ace, Suit::Hearts),
+    );
 
     /* Raiser has full weight on AA (1.0), whereas caller has discounted slowplay weight (0.35) */
     assert!(
@@ -184,6 +174,26 @@ fn test_opponent_reach_distribution_position_aware() {
     );
     assert_eq!(w_aa_raiser, 1.0);
     assert_eq!(w_aa_caller, 0.35);
+
+    /* AKo is Tier 1, so for preflop raiser it must have weight 1.0, while 72o junk drops to 0.04 */
+    let w_ako = combo_weight(
+        &dist_opp_raised,
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    );
+    let w_72 = combo_weight(
+        &dist_opp_raised,
+        card(Rank::Seven, Suit::Spades),
+        card(Rank::Two, Suit::Hearts),
+    );
+    assert_eq!(
+        w_ako, 1.0,
+        "AKo for preflop raiser must have full 1.0 weight, got {w_ako}"
+    );
+    assert_eq!(
+        w_72, 0.04,
+        "72o for preflop raiser must have trash 0.04 weight, got {w_72}"
+    );
 }
 
 #[test]
@@ -196,11 +206,8 @@ fn test_opponent_reach_distribution_3bet_and_limp_lines() {
         card(Rank::Nine, Suit::Spades),
     ];
 
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     /* 1. Opponent 3-Bet Line: Bot raises (action 0 = 2), Opponent 3-bets (action 1 = 4) */
     let history_3bet = [vec![2u8, 4u8], vec![], vec![], vec![]];
@@ -216,33 +223,19 @@ fn test_opponent_reach_distribution_3bet_and_limp_lines() {
         &history_3bet,
     );
 
-    let aa_pair = [card(Rank::Ace, Suit::Spades), card(Rank::Ace, Suit::Hearts)];
-    let junk_72 = [
-        card(Rank::Seven, Suit::Clubs),
-        card(Rank::Two, Suit::Diamonds),
-    ];
-
-    let idx_aa = dist_3bet
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == aa_pair[0] && c[1] == aa_pair[1]) || (c[0] == aa_pair[1] && c[1] == aa_pair[0])
-        })
-        .expect("AA combo exists");
-    let idx_72 = dist_3bet
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == junk_72[0] && c[1] == junk_72[1]) || (c[0] == junk_72[1] && c[1] == junk_72[0])
-        })
-        .expect("72 combo exists");
+    let aa_s = card(Rank::Ace, Suit::Spades);
+    let aa_h = card(Rank::Ace, Suit::Hearts);
+    let junk_7 = card(Rank::Seven, Suit::Clubs);
+    let junk_2 = card(Rank::Two, Suit::Diamonds);
 
     assert_eq!(
-        dist_3bet.weights[idx_aa], 1.0,
+        combo_weight(&dist_3bet, aa_s, aa_h),
+        1.0,
         "3-bet range must include AA at 1.0 weight"
     );
     assert_eq!(
-        dist_3bet.weights[idx_72], 0.01,
+        combo_weight(&dist_3bet, junk_7, junk_2),
+        0.01,
         "3-bet range must filter out 72o junk to 0.01"
     );
 
@@ -260,25 +253,18 @@ fn test_opponent_reach_distribution_3bet_and_limp_lines() {
         &history_limp,
     );
 
-    let mid_pair_88 = [
-        card(Rank::Eight, Suit::Spades),
-        card(Rank::Eight, Suit::Clubs),
-    ];
-    let idx_88 = dist_limp
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == mid_pair_88[0] && c[1] == mid_pair_88[1])
-                || (c[0] == mid_pair_88[1] && c[1] == mid_pair_88[0])
-        })
-        .expect("88 combo exists");
-
     assert_eq!(
-        dist_limp.weights[idx_aa], 0.08,
+        combo_weight(&dist_limp, aa_s, aa_h),
+        0.08,
         "Limped pot caps AA to slowplay frequency 0.08"
     );
     assert_eq!(
-        dist_limp.weights[idx_88], 1.00,
+        combo_weight(
+            &dist_limp,
+            card(Rank::Eight, Suit::Spades),
+            card(Rank::Eight, Suit::Clubs)
+        ),
+        1.00,
         "Limped pot contains mid pairs at 1.00 weight"
     );
 }
@@ -294,11 +280,8 @@ fn test_opponent_reach_distribution_monotone_texture() {
         card(Rank::Four, Suit::Spades),
     ];
 
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     /* History: Bot calls (1), Opponent raises (2) on flop */
     let history = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
@@ -314,114 +297,77 @@ fn test_opponent_reach_distribution_monotone_texture() {
         &history,
     );
 
-    /* Candidate 1: Made flush with 2 spades (K♠ Q♠) */
-    let flush_combo = [
+    /* Candidate 1: Made flush with 2 spades (K♠ Q♠) vs Candidate 2: Offsuit no-flush cards (K♥ Q♦) */
+    let w_flush = combo_weight(
+        &dist,
         card(Rank::King, Suit::Spades),
         card(Rank::Queen, Suit::Spades),
-    ];
-    /* Candidate 2: Offsuit no-flush cards (K♥ Q♦) */
-    let no_spade_combo = [
+    );
+    let w_no_spade = combo_weight(
+        &dist,
         card(Rank::King, Suit::Hearts),
         card(Rank::Queen, Suit::Diamonds),
-    ];
-
-    let idx_flush = dist
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == flush_combo[0] && c[1] == flush_combo[1])
-                || (c[0] == flush_combo[1] && c[1] == flush_combo[0])
-        })
-        .expect("K♠ Q♠ exists");
-    let idx_no_spade = dist
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == no_spade_combo[0] && c[1] == no_spade_combo[1])
-                || (c[0] == no_spade_combo[1] && c[1] == no_spade_combo[0])
-        })
-        .expect("K♥ Q♦ exists");
+    );
 
     assert!(
-        dist.weights[idx_flush] > dist.weights[idx_no_spade] * 1.5,
-        "Opponent raising on monotone board should weight flush combo ({}) much higher than no-spade combo ({})",
-        dist.weights[idx_flush],
-        dist.weights[idx_no_spade]
+        w_flush > w_no_spade * 1.5,
+        "Opponent raising on monotone board should weight flush combo ({w_flush}) much higher than no-spade combo ({w_no_spade})"
     );
 }
 
 #[test]
-fn test_opponent_reach_distribution_raiser_ako_weight() {
-    let card = |rank, suit| Card { rank, suit };
-    let hole = [
-        card(Rank::Two, Suit::Diamonds),
-        card(Rank::Three, Suit::Clubs),
+fn test_vpip_adapted_bayesian_reach_narrowing() {
+    let board_flop = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Two, Suit::Clubs),
     ];
-    let board = [
-        card(Rank::Jack, Suit::Hearts),
-        card(Rank::Ten, Suit::Spades),
-        card(Rank::Two, Suit::Clubs),
+    let hole_bot = [
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Diamonds),
     ];
+    let used = [
+        board_flop[0],
+        board_flop[1],
+        board_flop[2],
+        hole_bot[0],
+        hole_bot[1],
+    ];
+    let remaining_deck = remaining_deck_excluding(&used);
+    let history = [vec![RAISE_HALF_POT, CALL_CHECK], vec![], vec![], vec![]];
 
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
-
-    /* Preflop action: Opponent (Player 0) raises (2), Bot (Player 1) calls (1) */
-    let history = [vec![2u8, 1u8], vec![], vec![], vec![]];
-
-    let dist_opp_raised = OpponentReachDistribution::build(
+    let dist_nit = OpponentReachDistribution::build(
         &ReachRequest {
-            remaining_deck: &remaining,
-            board: &board,
+            remaining_deck: &remaining_deck,
+            board: &board_flop,
             round: 2,
-            target_player: Some(0),
-            active_player: Some(1),
-            ..Default::default()
+            target_player: Some(1),
+            active_player: Some(0),
+            opp_vpip: Some(0.15),
+            opp_pfr: Some(0.12),
+        },
+        &history,
+    );
+    let dist_loose = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &remaining_deck,
+            board: &board_flop,
+            round: 2,
+            target_player: Some(1),
+            active_player: Some(0),
+            opp_vpip: Some(0.75),
+            opp_pfr: Some(0.10),
         },
         &history,
     );
 
-    /* AKo combo: A♠ K♥ */
-    let ako_combo = [
-        card(Rank::Ace, Suit::Spades),
-        card(Rank::King, Suit::Hearts),
-    ];
-    let idx_ako = dist_opp_raised
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == ako_combo[0] && c[1] == ako_combo[1])
-                || (c[0] == ako_combo[1] && c[1] == ako_combo[0])
-        })
-        .expect("AKo combo must exist in remaining deck");
-
-    /* 72o junk combo: 7♠ 2♥ (2c is on board, so 7s 2h is valid) */
-    let junk_72 = [
-        card(Rank::Seven, Suit::Spades),
-        card(Rank::Two, Suit::Hearts),
-    ];
-    let idx_72 = dist_opp_raised
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == junk_72[0] && c[1] == junk_72[1]) || (c[0] == junk_72[1] && c[1] == junk_72[0])
-        })
-        .expect("72o combo must exist in remaining deck");
-
-    let w_ako = dist_opp_raised.weights[idx_ako];
-    let w_72 = dist_opp_raised.weights[idx_72];
-
-    /* AKo is Tier 1, so for raiser it must have weight 1.0 (not 0.25 as in buggy index matching!) */
-    assert_eq!(
-        w_ako, 1.0,
-        "AKo for preflop raiser must have full 1.0 weight, got {w_ako}"
-    );
-    assert_eq!(
-        w_72, 0.04,
-        "72o for preflop raiser must have trash 0.04 weight, got {w_72}"
+    let c7h = Card::new(Rank::Seven, Suit::Hearts);
+    let c2d = Card::new(Rank::Two, Suit::Diamonds);
+    let p_nit = combo_weight(&dist_nit, c7h, c2d) / dist_nit.total_weight.max(1e-12);
+    let p_loose = combo_weight(&dist_loose, c7h, c2d) / dist_loose.total_weight.max(1e-12);
+    assert!(
+        p_loose > p_nit,
+        "Loose VPIP opponent must assign higher relative reach probability to weak offsuit combos ({p_loose:.6} vs {p_nit:.6})"
     );
 }
 
@@ -439,11 +385,7 @@ fn test_subgame_reach_active_street_actor_separation() {
         Card::new(Rank::Jack, Suit::Hearts),
         Card::new(Rank::Ten, Suit::Clubs),
     ];
-    let rem: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|c| !used.contains(c))
-        .collect();
+    let rem = remaining_deck_excluding(&used);
     let mut history = [RoundHistory::new(); NUM_ROUNDS];
     history[0].push(CALL_CHECK);
     history[0].push(CALL_CHECK);

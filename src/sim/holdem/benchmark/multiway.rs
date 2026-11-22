@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use super::deal_cards_prefix;
 use crate::cfr::abstraction::{
-    detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
-    BUCKET_WEAK_PAIR_MIN,
+    BUCKET_WEAK_PAIR_MIN, detect_draws, postflop_equity_bucket, preflop_bucket,
+    preflop_strength_tier,
 };
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
@@ -16,10 +16,10 @@ use crate::game::config::{
     ROUND_TURN, SMALL_BLIND, STACK_SIZE,
 };
 use crate::game::holdem::{
-    evaluate_7cards, Card, RoundHistory, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT,
-    RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    RoundHistory, evaluate_7cards,
 };
-use crate::live::{decide_action_traced, LiveDecisionRequest};
+use crate::live::{LiveDecisionRequest, decide_action_traced};
 use crate::sim::stats::SimStats;
 
 const NUM_SEATS: usize = 6;
@@ -206,9 +206,9 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
             }
         }
         "maniac" => {
-            if spot.raises_this_round < MAX_RAISES_PER_ROUND && rng.gen_bool(0.45) {
+            if spot.raises_this_round < MAX_RAISES_PER_ROUND && rng.random_bool(0.45) {
                 RAISE_HALF_POT
-            } else if spot.to_call == 0 || bucket >= 20 || rng.gen_bool(0.50) {
+            } else if spot.to_call == 0 || bucket >= 20 || rng.random_bool(0.50) {
                 CALL_CHECK
             } else {
                 H_FOLD
@@ -218,7 +218,7 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
             if spot.raises_this_round < MAX_RAISES_PER_ROUND
                 && ((spot.round == ROUND_PREFLOP && tier <= 4)
                     || bucket >= 36
-                    || rng.gen_bool(0.20))
+                    || rng.random_bool(0.20))
             {
                 ALL_IN
             } else if spot.to_call == 0 {

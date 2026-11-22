@@ -6,7 +6,7 @@ use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_MIN, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
 };
-use crate::game::holdem::{evaluate_7cards, Card};
+use crate::game::holdem::{Card, evaluate_7cards};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

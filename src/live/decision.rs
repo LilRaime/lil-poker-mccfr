@@ -1,15 +1,15 @@
 /*! Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::{map_action_index, ActionMapRequest};
+use super::protocol::{ActionMapRequest, map_action_index};
 use crate::cfr::abstraction::{
-    postflop_equity_bucket, preflop_bucket, preflop_strength_tier, BUCKET_FLUSH_MIN,
-    BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN,
-    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
+    BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
-use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
+use crate::cfr::fallback::{FallbackRequest, StrategyLookupIndex, get_holdem_fallback_strategy};
 use crate::cfr::opponent_model::{
-    effective_remaining_chips, DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest,
+    DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest, effective_remaining_chips,
 };
 use crate::cfr::subgame::{SubgameContext, SubgameRequest, SubgameSolver};
 use crate::game::config::{
@@ -141,7 +141,7 @@ pub fn decide_action_traced(
         },
     );
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let (chosen_u8, mut trace) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &raw_probs,

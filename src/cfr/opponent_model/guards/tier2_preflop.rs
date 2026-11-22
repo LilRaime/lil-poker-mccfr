@@ -141,16 +141,16 @@ impl OpponentTracker {
                     probs[f_i] += limp_w * (1.0 - steal_share);
                 }
             }
-            if is_playable_hu_steal {
-                if let (Some(f_i), Some(r_i)) = (
+            if is_playable_hu_steal
+                && let (Some(f_i), Some(r_i)) = (
                     action_idx(ctx.legal_actions, FOLD),
                     first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]),
-                ) {
-                    let fold_shift = if pf_tier == 7 { 0.30 } else { 0.25 };
-                    let s = probs[f_i] * fold_shift;
-                    probs[f_i] -= s;
-                    probs[r_i] += s;
-                }
+                )
+            {
+                let fold_shift = if pf_tier == 7 { 0.30 } else { 0.25 };
+                let s = probs[f_i] * fold_shift;
+                probs[f_i] -= s;
+                probs[r_i] += s;
             }
         }
     }
@@ -177,12 +177,12 @@ impl OpponentTracker {
             } else if is_hu_small_open {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
-                    if ctx.pot_odds <= 0.31 {
-                        if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
-                            let defend = probs[f_i] * 0.65;
-                            probs[f_i] -= defend;
-                            probs[c_i] += defend;
-                        }
+                    if ctx.pot_odds <= 0.31
+                        && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
+                    {
+                        let defend = probs[f_i] * 0.65;
+                        probs[f_i] -= defend;
+                        probs[c_i] += defend;
                     }
                 }
             } else if ctx.to_call > ctx.bb / 2 && (pf_tier == 8 || ctx.pot_odds > 0.28) {
@@ -285,16 +285,17 @@ impl OpponentTracker {
                 probs[t_i] += shifted;
             }
         }
-        if ctx.active_opponents == 1 && ctx.to_call <= ctx.bb * 3 && ctx.pot_odds <= 0.40 {
-            if let (Some(f_i), Some(c_i)) = (
+        if ctx.active_opponents == 1
+            && ctx.to_call <= ctx.bb * 3
+            && ctx.pot_odds <= 0.40
+            && let (Some(f_i), Some(c_i)) = (
                 action_idx(ctx.legal_actions, FOLD),
                 action_idx(ctx.legal_actions, CALL_CHECK),
-            ) {
-                if probs[f_i] > 0.0 {
-                    probs[c_i] += probs[f_i];
-                    probs[f_i] = 0.0;
-                }
-            }
+            )
+            && probs[f_i] > 0.0
+        {
+            probs[c_i] += probs[f_i];
+            probs[f_i] = 0.0;
         }
     }
 
@@ -302,36 +303,33 @@ impl OpponentTracker {
         if ctx.eff_stack_bb > 20
             && (ctx.to_call <= ctx.bb
                 || (ctx.to_call <= ctx.bb * 4 && (ctx.bucket >= 3 || ctx.active_opponents >= 2)))
+            && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)
         {
-            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                let s = probs[ai_i];
-                if s > 0.0 {
-                    probs[ai_i] = 0.0;
-                    if let Some(t_i) = first_action_idx(
-                        ctx.legal_actions,
-                        &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
-                    ) {
-                        probs[t_i] += s;
-                    }
+            let s = probs[ai_i];
+            if s > 0.0 {
+                probs[ai_i] = 0.0;
+                if let Some(t_i) =
+                    first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK])
+                {
+                    probs[t_i] += s;
                 }
             }
         }
         if ctx.eff_stack_bb > 20
             && !ctx.is_allin_call
             && (pf_tier >= 4 || (pf_tier >= 3 && (ctx.is_known_maniac || ctx.is_extreme_shove_bot)))
+            && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)
         {
-            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                let s = probs[ai_i];
-                if s > 0.0 {
-                    probs[ai_i] = 0.0;
-                    let target = if ctx.pot_odds <= 0.34 && pf_tier <= 4 {
-                        CALL_CHECK
-                    } else {
-                        FOLD
-                    };
-                    if let Some(t_i) = first_action_idx(ctx.legal_actions, &[target, CALL_CHECK]) {
-                        probs[t_i] += s;
-                    }
+            let s = probs[ai_i];
+            if s > 0.0 {
+                probs[ai_i] = 0.0;
+                let target = if ctx.pot_odds <= 0.34 && pf_tier <= 4 {
+                    CALL_CHECK
+                } else {
+                    FOLD
+                };
+                if let Some(t_i) = first_action_idx(ctx.legal_actions, &[target, CALL_CHECK]) {
+                    probs[t_i] += s;
                 }
             }
         }
@@ -348,24 +346,23 @@ impl OpponentTracker {
             && ctx.to_call >= ctx.bb * 6
             && pf_tier == 2
             && ctx.bucket >= 4
+            && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)
         {
-            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                let s = probs[ai_i];
-                if s > 0.0 {
-                    reasons.push("PF_DISCIPLINE_GUARD");
-                    probs[ai_i] = 0.0;
-                    match (
-                        action_idx(ctx.legal_actions, RAISE_THIRD_POT),
-                        action_idx(ctx.legal_actions, CALL_CHECK),
-                    ) {
-                        (Some(ri), Some(ci)) => {
-                            probs[ri] += s * 0.50;
-                            probs[ci] += s * 0.50;
-                        }
-                        (Some(ri), None) => probs[ri] += s,
-                        (None, Some(ci)) => probs[ci] += s,
-                        (None, None) => {}
+            let s = probs[ai_i];
+            if s > 0.0 {
+                reasons.push("PF_DISCIPLINE_GUARD");
+                probs[ai_i] = 0.0;
+                match (
+                    action_idx(ctx.legal_actions, RAISE_THIRD_POT),
+                    action_idx(ctx.legal_actions, CALL_CHECK),
+                ) {
+                    (Some(ri), Some(ci)) => {
+                        probs[ri] += s * 0.50;
+                        probs[ci] += s * 0.50;
                     }
+                    (Some(ri), None) => probs[ri] += s,
+                    (None, Some(ci)) => probs[ci] += s,
+                    (None, None) => {}
                 }
             }
         }
@@ -377,17 +374,15 @@ impl OpponentTracker {
             && ctx.to_call * 10 >= ctx.my_chips * 3
             && ctx.pot_odds >= 0.35
             && !ctx.is_known_maniac
-        {
-            if let (Some(c_i), Some(f_i)) = (
+            && let (Some(c_i), Some(f_i)) = (
                 action_idx(ctx.legal_actions, CALL_CHECK),
                 action_idx(ctx.legal_actions, FOLD),
-            ) {
-                if probs[c_i] > 0.0 {
-                    reasons.push("PF_DISCIPLINE_GUARD");
-                    probs[f_i] += probs[c_i];
-                    probs[c_i] = 0.0;
-                }
-            }
+            )
+            && probs[c_i] > 0.0
+        {
+            reasons.push("PF_DISCIPLINE_GUARD");
+            probs[f_i] += probs[c_i];
+            probs[c_i] = 0.0;
         }
     }
 }

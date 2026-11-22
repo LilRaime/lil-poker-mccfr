@@ -5,7 +5,7 @@ mod high_card;
 mod pairs;
 
 use crate::game::config::NUM_HOLE_CARDS;
-use crate::game::holdem::{evaluate_7cards, Card};
+use crate::game::holdem::{Card, evaluate_7cards};
 
 use super::draws::detect_draws_detailed;
 use high_card::bucket_high_card_or_draw;

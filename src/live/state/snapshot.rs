@@ -193,11 +193,7 @@ fn compute_hero_position(board_empty: bool, sum: &TablePlayersSummary) -> usize 
             0
         }
     } else if !board_empty {
-        if sum.my_is_sb || sum.my_is_bb {
-            1
-        } else {
-            0
-        }
+        if sum.my_is_sb || sum.my_is_bb { 1 } else { 0 }
     } else if sum.my_is_sb || sum.my_is_bb {
         1
     } else {

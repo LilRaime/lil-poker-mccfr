@@ -1,7 +1,7 @@
 /*! Live Stack-Risk and Stack-Commitment Execution Guards */
 use crate::cfr::abstraction::{
-    detect_river_nut_blocker, postflop_equity_bucket, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_DRAW_MIN,
-    BUCKET_WEAK_PAIR_MIN,
+    BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, detect_river_nut_blocker,
+    postflop_equity_bucket,
 };
 use crate::live::state::LiveSnapshot;
 

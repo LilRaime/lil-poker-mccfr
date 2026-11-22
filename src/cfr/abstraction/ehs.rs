@@ -3,10 +3,10 @@
  */
 
 use crate::game::config::{NUM_CARDS_DECK, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_RANKS};
-use crate::game::holdem::{evaluate_7cards, Card, ALL_52_CARDS};
+use crate::game::holdem::{ALL_52_CARDS, Card, evaluate_7cards};
+use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 /** Computes Expected Hand Strength (EHS / Equity) via Monte Carlo rollouts or River enumeration. */
 pub fn calculate_ehs_equity(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> f64 {
@@ -123,11 +123,7 @@ fn opponent_max_tier(opp_vpip: f64, facing_heavy_bet: bool) -> u8 {
     } else {
         5
     };
-    if facing_heavy_bet {
-        wide - 2
-    } else {
-        wide
-    }
+    if facing_heavy_bet { wide - 2 } else { wide }
 }
 
 fn tier_range_weight(hole: [Card; NUM_HOLE_CARDS], max_tier: u8, out_of_range_weight: f64) -> f64 {

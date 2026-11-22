@@ -7,6 +7,7 @@ mod preflop;
 
 use crate::game::config::{CALL_CHECK, RAISE_MIN, ROUND_FLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::{Card, Rank, Suit};
+use rand::RngExt;
 use std::collections::HashMap;
 
 use postflop::{flop_likelihood, monotone_texture_multiplier, river_likelihood, turn_likelihood};
@@ -113,7 +114,7 @@ fn find_monotone_suit(board: &[Card]) -> Option<Suit> {
     suit_counts
         .iter()
         .enumerate()
-        .find(|(_, &cnt)| cnt >= 3)
+        .find(|&(_, &cnt)| cnt >= 3)
         .map(|(s_idx, _)| match s_idx {
             0 => Suit::Clubs,
             1 => Suit::Diamonds,
@@ -356,7 +357,7 @@ impl OpponentReachDistribution {
         if self.combos.len() == 1 {
             return self.combos[0];
         }
-        let r: f64 = rng.gen();
+        let r: f64 = rng.random();
         let idx = self
             .cdf
             .partition_point(|&w| w < r)

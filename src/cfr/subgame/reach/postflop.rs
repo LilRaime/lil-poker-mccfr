@@ -1,7 +1,7 @@
 use super::ReachContext;
 use crate::cfr::abstraction::detect_draws;
 use crate::game::config::{ALL_IN, RAISE_HALF_POT, ROUND_RIVER, ROUND_TURN};
-use crate::game::holdem::{evaluate_7cards, Card, Rank};
+use crate::game::holdem::{Card, Rank, evaluate_7cards};
 
 fn effective_category(cand: [Card; 2], street_board: &[Card], board_paired: bool) -> u64 {
     let score = evaluate_7cards(&cand, street_board);

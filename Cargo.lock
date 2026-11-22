@@ -689,7 +689,7 @@ dependencies = [
  "clap",
  "dashmap",
  "futures-util",
- "rand 0.8.7",
+ "rand 0.10.2",
  "rayon",
  "reqwest",
  "serde",

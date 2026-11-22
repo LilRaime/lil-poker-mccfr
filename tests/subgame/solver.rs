@@ -1,3 +1,4 @@
+use super::{combo_weight, remaining_deck_excluding};
 use lil_poker_mccfr::cfr::fallback::get_postflop_fallback_by_bucket;
 use lil_poker_mccfr::cfr::subgame::{
     OpponentReachDistribution, ReachRequest, SubgameContext, SubgameRequest, SubgameSolver,
@@ -6,42 +7,7 @@ use lil_poker_mccfr::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, SMALL_BLIND,
     SUBGAME_BET_PRESSURE, SUBGAME_POT_LG,
 };
-use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, ALL_52_CARDS};
-
-#[test]
-fn test_subgame_solver_with_state() {
-    let card = |rank, suit| Card { rank, suit };
-    let hole = [
-        card(Rank::Ace, Suit::Spades),
-        card(Rank::King, Suit::Spades),
-    ];
-    let board = [
-        card(Rank::Queen, Suit::Hearts),
-        card(Rank::Jack, Suit::Hearts),
-        card(Rank::Ten, Suit::Clubs),
-        card(Rank::Two, Suit::Diamonds),
-    ];
-    let history_dummy = [vec![1u8, 2u8], vec![1u8], vec![], vec![]];
-
-    let solver = SubgameSolver::new(100);
-    let probs = solver.solve(
-        &SubgameRequest {
-            hole,
-            board: &board,
-            contributions: [200, 240],
-            raises_this_round: 1,
-            ..Default::default()
-        },
-        &history_dummy,
-        None,
-    );
-    assert_eq!(probs.len(), 6);
-    let sum: f64 = probs.iter().sum();
-    assert!(
-        (sum - 1.0).abs() < 1e-4,
-        "Subgame probs must sum to 1.0, got {sum}"
-    );
-}
+use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
 
 #[test]
 fn test_subgame_solver_adaptive_budget() {
@@ -177,11 +143,8 @@ fn test_bet_size_aware_reach_and_depth_limited_subgame() {
         card(Rank::Seven, Suit::Clubs),
         card(Rank::Three, Suit::Spades),
     ];
-    let remaining: Vec<Card> = ALL_52_CARDS
-        .iter()
-        .copied()
-        .filter(|&c| !hole.contains(&c) && !board.contains(&c))
-        .collect();
+    let used = [hole[0], hole[1], board[0], board[1], board[2]];
+    let remaining = remaining_deck_excluding(&used);
 
     /* Opponent shoves ALL_IN (5) on Flop vs min-bets RAISE_MIN (2) */
     let hist_min = [vec![2u8, 1u8], vec![2u8], vec![], vec![]];
@@ -212,22 +175,19 @@ fn test_bet_size_aware_reach_and_depth_limited_subgame() {
 
     /* Unimproved King-Ten offsuit on 7-7-3 board must be treated as air (not One Pair),
      * and weighted even lower against an ALL_IN shove than against a min-bet */
-    let kt_air = [
+    let w_kt_min = combo_weight(
+        &dist_min,
         card(Rank::King, Suit::Spades),
         card(Rank::Ten, Suit::Hearts),
-    ];
-    let idx_kt = dist_min
-        .combos
-        .iter()
-        .position(|&c| {
-            (c[0] == kt_air[0] && c[1] == kt_air[1]) || (c[0] == kt_air[1] && c[1] == kt_air[0])
-        })
-        .expect("KT combo exists");
+    );
+    let w_kt_shove = combo_weight(
+        &dist_shove,
+        card(Rank::King, Suit::Spades),
+        card(Rank::Ten, Suit::Hearts),
+    );
     assert!(
-        dist_shove.weights[idx_kt] < dist_min.weights[idx_kt],
-        "All-in shove must polarize air weight lower ({}) than min-bet ({})",
-        dist_shove.weights[idx_kt],
-        dist_min.weights[idx_kt]
+        w_kt_shove < w_kt_min,
+        "All-in shove must polarize air weight lower ({w_kt_shove}) than min-bet ({w_kt_min})"
     );
 
     /* Depth-limited subgame solver with max_depth_streets = 1 */
@@ -307,9 +267,12 @@ fn test_subgame_child_prior_and_symmetric_hero_reach() {
         (sum - 1.0).abs() < 1e-6,
         "Solver probs must sum to 1.0, got {sum}"
     );
+    let value_bet_prob =
+        probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] + probs[ALL_IN as usize];
     assert!(
         probs[FOLD as usize] < 0.01
-            && probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.45
+            && value_bet_prob > 0.45
+            && value_bet_prob > probs[CALL_CHECK as usize]
             && (1..=5usize).map(|i| probs[i]).sum::<f64>() > 0.99,
         "Top two pair checked to on Turn should never fold and lean toward value betting: {probs:?}"
     );

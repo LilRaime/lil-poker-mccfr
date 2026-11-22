@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::hu::{run_holdem_benchmark, HoldemBenchmarkConfig};
-use super::telemetry::print_guard_telemetry;
 use super::HoldemBenchmarkResult;
+use super::hu::{HoldemBenchmarkConfig, run_holdem_benchmark};
+use super::telemetry::print_guard_telemetry;
 use crate::game::config::{BIG_BLIND, STACK_SIZE};
 
 #[derive(Debug, Clone, Copy)]

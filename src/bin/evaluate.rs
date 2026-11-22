@@ -332,7 +332,12 @@ fn run_standard_holdem_mode(
         for (bb, r) in rows {
             println!(
                 "  {:>3} BB : {:>+8.2} bb/100 (95% CI [{:>+7.2}, {:>+7.2}]) | SB {:>+7.2} | BB {:>+7.2}",
-                bb, r.win_rate_bb100, r.ci_95_bb100.0, r.ci_95_bb100.1, r.sb_win_rate_bb100, r.bb_win_rate_bb100
+                bb,
+                r.win_rate_bb100,
+                r.ci_95_bb100.0,
+                r.ci_95_bb100.1,
+                r.sb_win_rate_bb100,
+                r.bb_win_rate_bb100
             );
         }
     } else {

@@ -1,6 +1,7 @@
+use super::{LEGAL_FULL, make_passive_station};
 use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentStyle, OpponentTracker};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
 
 #[test]
@@ -37,14 +38,8 @@ fn test_opponent_tracker_advanced_metrics() {
 
 #[test]
 fn test_opponent_style_classification_and_showdown() {
-    let mut tracker = OpponentTracker::new();
+    let mut tracker = make_passive_station();
 
-    /* Simulate a Calling Station: VPIP 100%, almost zero folds, high calls */
-    for _ in 0..10 {
-        tracker.record_action_street(CALL_CHECK, 1, false);
-        tracker.record_action_street(CALL_CHECK, 2, false);
-        tracker.end_hand();
-    }
     let (style, conf) = tracker.classify_style();
     assert_eq!(style, OpponentStyle::CallingStation);
     assert!(conf > 0.50);
@@ -307,18 +302,10 @@ fn test_showdown_trap_false_positive_filtering_and_exploit() {
     assert_eq!(tracker.showdown_trap_count, 2);
 
     /* On River checked to us with marginal/medium equity (bucket 32), exploit trims bluff/big bets toward check-back */
-    let legal = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
     let base: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.40, 0.10, 0.10, 0.30, 0.10];
     let adj = tracker.adjust_strategy(&ExploitRequest {
         blueprint_probs: &base,
-        legal_actions: &legal,
+        legal_actions: &LEGAL_FULL,
         bucket: 32,
         round: 4,
         to_call: 0,
@@ -333,4 +320,53 @@ fn test_showdown_trap_false_positive_filtering_and_exploit() {
         base[RAISE_HALF_POT as usize],
         adj[RAISE_HALF_POT as usize]
     );
+}
+
+#[test]
+fn test_observe_blind_level_decay() {
+    let mut tracker = OpponentTracker::new();
+    tracker.observe_blind_level(100);
+    for i in 0..20 {
+        if i < 10 {
+            tracker.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
+        } else {
+            tracker.record_action_street_detailed(FOLD, 1, true, 0, 250);
+        }
+        tracker.end_hand();
+    }
+    assert_eq!(tracker.total_hands, 20);
+    assert_eq!(tracker.pfr_hands, 10);
+
+    tracker.observe_blind_level(100);
+    assert_eq!(tracker.total_hands, 20);
+
+    tracker.observe_blind_level(200);
+    assert!(
+        tracker.total_hands < 20 && tracker.total_hands >= 12,
+        "Expected soft decay on 2x blind jump (100 -> 200), got total_hands={}",
+        tracker.total_hands
+    );
+    assert!(tracker.pfr_hands <= tracker.vpip_hands && tracker.vpip_hands <= tracker.total_hands);
+}
+
+#[test]
+fn test_opponent_profile_save_and_load() {
+    let mut persisted = OpponentTracker::new();
+    for _ in 0..10 {
+        persisted.record_action_street_detailed(CALL_CHECK, 1, false, 100, 200);
+        persisted.record_action_street_detailed(CALL_CHECK, 1, false, 200, 400);
+        persisted.end_hand();
+    }
+    assert_eq!(persisted.total_hands, 10);
+    assert_eq!(persisted.vpip_hands, 10);
+    assert!((persisted.vpip_ratio() - 1.0).abs() < 1e-6);
+
+    let tmp_path = "/tmp/lil_poker_test_opp_profiles.json";
+    persisted
+        .save_profile(tmp_path, "test_villain")
+        .expect("save profile");
+    let loaded =
+        OpponentTracker::load_profile(tmp_path, "test_villain").expect("load saved profile");
+    assert_eq!(loaded.total_hands, 9);
+    let _ = std::fs::remove_file(tmp_path);
 }

@@ -1,10 +1,10 @@
 /*! Anti-Passive / Calling-Station Value-Extraction Boost & Postflop Barrel Defense */
-use super::guards::{action_idx, first_action_idx, force_action, GuardContext};
+use super::guards::{GuardContext, action_idx, first_action_idx, force_action};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
-    preflop_strength_tier, BUCKET_FLUSH_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN,
-    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN,
-    BUCKET_WEAK_PAIR_MIN,
+    BUCKET_FLUSH_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN,
+    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
@@ -55,26 +55,27 @@ impl OpponentTracker {
                 }
                 probs[t_i] = (probs[t_i] + shifted).max(0.80);
             }
-        } else if pf_tier <= 5 && ctx.bucket <= 105 {
-            if let Some(t_i) = first_action_idx(
+        } else if pf_tier <= 5
+            && ctx.bucket <= 105
+            && let Some(t_i) = first_action_idx(
                 ctx.legal_actions,
                 &[RAISE_THIRD_POT, RAISE_HALF_POT, RAISE_MIN],
-            ) {
-                let mut shifted = 0.0f64;
-                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                    let s = probs[c_i] * 0.85;
-                    probs[c_i] -= s;
-                    shifted += s;
-                }
-                if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN) {
-                    if m_i != t_i {
-                        let s = probs[m_i] * 0.70;
-                        probs[m_i] -= s;
-                        shifted += s;
-                    }
-                }
-                probs[t_i] += shifted;
+            )
+        {
+            let mut shifted = 0.0f64;
+            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
+                let s = probs[c_i] * 0.85;
+                probs[c_i] -= s;
+                shifted += s;
             }
+            if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN)
+                && m_i != t_i
+            {
+                let s = probs[m_i] * 0.70;
+                probs[m_i] -= s;
+                shifted += s;
+            }
+            probs[t_i] += shifted;
         }
     }
 
@@ -213,12 +214,12 @@ impl OpponentTracker {
 
     fn boost_station_thin_value(probs: &mut [f64], ctx: &GuardContext<'_>) {
         /* Top Pair Weak Kicker or Strong Middle Pair: consistent thin value (33% pot) */
-        if let Some(t_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) {
-            if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                let s = probs[c_i] * 0.68;
-                probs[c_i] -= s;
-                probs[t_i] = (probs[t_i] + s).max(0.60);
-            }
+        if let Some(t_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN])
+            && let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK)
+        {
+            let s = probs[c_i] * 0.68;
+            probs[c_i] -= s;
+            probs[t_i] = (probs[t_i] + s).max(0.60);
         }
     }
 
@@ -269,19 +270,18 @@ impl OpponentTracker {
                     && (ctx.is_preflop || ctx.bucket >= BUCKET_STRONG_DRAW_MIN))
                 || ctx.never_fold_postflop)
             && self.is_guard_enabled("POT_COMMIT_TERMINAL")
+            && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
         {
-            if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
-                let f_prob = probs[f_i];
-                if f_prob > 0.0 {
-                    reasons.push("POT_COMMIT_TERMINAL");
-                    probs[f_i] = 0.0;
-                    if let Some(c_i) = ctx
-                        .legal_actions
-                        .iter()
-                        .position(|&a| a == CALL_CHECK || a == ALL_IN)
-                    {
-                        probs[c_i] += f_prob;
-                    }
+            let f_prob = probs[f_i];
+            if f_prob > 0.0 {
+                reasons.push("POT_COMMIT_TERMINAL");
+                probs[f_i] = 0.0;
+                if let Some(c_i) = ctx
+                    .legal_actions
+                    .iter()
+                    .position(|&a| a == CALL_CHECK || a == ALL_IN)
+                {
+                    probs[c_i] += f_prob;
                 }
             }
         }

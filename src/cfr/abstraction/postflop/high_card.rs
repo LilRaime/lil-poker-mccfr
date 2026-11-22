@@ -2,7 +2,7 @@
 use crate::game::config::NUM_HOLE_CARDS;
 use crate::game::holdem::Card;
 
-use super::super::draws::{detect_draws_detailed, DrawInfo};
+use super::super::draws::{DrawInfo, detect_draws_detailed};
 
 pub(super) fn bucket_high_card_or_draw(hole: [Card; NUM_HOLE_CARDS], board: &[Card]) -> usize {
     let hole_high = (hole[0].rank as usize).max(hole[1].rank as usize);

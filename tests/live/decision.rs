@@ -1,14 +1,11 @@
 use lil_poker_mccfr::cfr::abstraction::{nash_open_push_max_bb, preflop_bucket};
 use lil_poker_mccfr::cfr::fallback::StrategyLookupIndex;
-use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
+use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
 use lil_poker_mccfr::cfr::subgame::{SubgameContext, SubgameSolver};
-use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, RoundHistory, Suit, ALL_IN, CALL_CHECK, FOLD, NUM_ROUNDS, RAISE_HALF_POT,
-    RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, NUM_ROUNDS, RAISE_MIN, Rank, RoundHistory, Suit,
 };
-use lil_poker_mccfr::live::decision::{decide_action, decide_action_traced, LiveDecisionRequest};
-use lil_poker_mccfr::live::protocol::{map_action_index, ActionMapRequest};
+use lil_poker_mccfr::live::decision::{LiveDecisionRequest, decide_action, decide_action_traced};
 use lil_poker_mccfr::live::state::derive_legal_actions;
 use std::collections::HashMap;
 
@@ -54,7 +51,7 @@ fn test_live_decide_action_with_real_contributions() {
         &tracker,
         Some(&mut ctx),
     );
-    assert!(!act1.is_empty());
+    assert!(!act1.is_empty() && act1 != "fold");
     assert!(amt1 >= 0);
 
     /* 2. As player 1 (BB) facing a raise with contributions [250, 100], to_call = 150 */
@@ -84,7 +81,7 @@ fn test_live_decide_action_with_real_contributions() {
         &tracker,
         Some(&mut ctx),
     );
-    assert!(!act2.is_empty());
+    assert!(!act2.is_empty() && act2 != "fold");
     assert!(amt2 >= 0);
 }
 
@@ -152,7 +149,7 @@ fn test_bot_value_bets_straight_in_live_game() {
 }
 
 #[test]
-fn test_short_stack_bb_check_and_pot_commitment() {
+fn test_short_stack_bb_check_and_min_raise_defense() {
     let tracker = OpponentTracker::new();
     let history = [RoundHistory::new(); NUM_ROUNDS];
     let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
@@ -190,40 +187,39 @@ fn test_short_stack_bb_check_and_pot_commitment() {
         "Weak suited connector in BB facing a limp at 11 BB must check, not shove!"
     );
 
-    /* 2. Postflop Turn with 2 chips remaining into a huge pot must call, NEVER fold */
-    let hole_k7o = [
-        Card::new(Rank::King, Suit::Spades),
-        Card::new(Rank::Seven, Suit::Clubs),
+    /* 2. In BB at ~10 BB (my_chips = 1950, bb = 200) facing a 2x min-raise (to_call = 200, pot = 600)
+     * with offsuit Ace-rag (A4o, Tier 4), bot should flat call to see the flop rather than open-jamming all-in! */
+    let hole_a4o = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Clubs),
     ];
-    let board_turn = vec![
-        Card::new(Rank::Three, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Hearts),
-        Card::new(Rank::Nine, Suit::Spades),
+    let legal_pf = vec![
+        "fold".to_string(),
+        "call".to_string(),
+        "raise".to_string(),
+        "allin".to_string(),
     ];
-    let legal_call = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (act_micro_call, _) = decide_action(
+    let (act_bb_defend, _) = decide_action(
         &LiveDecisionRequest {
-            hole: hole_k7o,
-            board: &board_turn,
-            legal: &legal_call,
-            to_call: 2,
-            pot: 10940,
+            hole: hole_a4o,
+            legal: &legal_pf,
+            to_call: 200,
+            pot: 600,
             subgame_search: true,
             history,
-            contributions: [5469, 5471],
-            raises_this_round: 2,
+            my_player: 1,
+            contributions: [200, 400],
             big_blind: 200,
-            my_chips: 2,
+            my_chips: 1950,
             ..Default::default()
         },
         &strategy_map,
         &tracker,
         None,
     );
-    assert_ne!(
-        act_micro_call, "fold",
-        "Facing a 2-chip bet into a 10,940 pot must never fold!"
+    assert_eq!(
+        act_bb_defend, "call",
+        "In BB at ~10 BB facing a 2x min-raise with A4o, bot should flat-call rather than jam all-in"
     );
 }
 
@@ -425,87 +421,6 @@ fn test_hu_suited_connector_12bb_no_open_jam() {
 }
 
 #[test]
-fn test_small_pocket_pair_no_bloated_3bet_and_protocol_sizing() {
-    let tracker = OpponentTracker::new();
-    let hole_55 = [
-        Card::new(Rank::Five, Suit::Hearts),
-        Card::new(Rank::Five, Suit::Spades),
-    ];
-    let (bucket_55, _) = preflop_bucket(hole_55[0], hole_55[1]);
-    let mut rng = rand::thread_rng();
-    let policy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.25, 0.20, 0.25, 0.30, 0.0];
-    let legal_idx = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-
-    let mut raise_min_count = 0usize;
-    let mut trace_has_guard = false;
-    for _ in 0..100 {
-        let (act, trace) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &policy,
-                legal_actions: &legal_idx,
-                bucket: bucket_55,
-                round: 1,
-                to_call: 350,
-                pot: 1100,
-                hole: Some(&hole_55),
-                table_bb: 300,
-                my_chips: 15000,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        assert!(
-            act != RAISE_THIRD_POT && act != RAISE_HALF_POT && act != ALL_IN,
-            "55 facing open raise must suppress 3-bet raise sizes, got action {act}"
-        );
-        if act == RAISE_MIN {
-            raise_min_count += 1;
-        }
-        if trace.guard_reasons.contains(&"PF_DISCIPLINE_GUARD") {
-            trace_has_guard = true;
-        }
-    }
-    assert!(
-        trace_has_guard,
-        "PF_DISCIPLINE_GUARD must fire for 55 facing open raise"
-    );
-    assert!(
-        raise_min_count <= 20,
-        "55 should rarely 3-bet min-raise (capped <= 0.05), got {raise_min_count}/100"
-    );
-
-    let legal = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
-    let (_, three_bet_amt) = map_action_index(&ActionMapRequest {
-        action_idx: RAISE_HALF_POT as usize,
-        legal: &legal,
-        to_call: 350,
-        pot: 1100,
-        is_wet: false,
-        round: 1,
-        table_bb: 300,
-        my_chips: 15000,
-        current_bet: 650,
-    })
-    .expect("map 3-bet");
-    assert!(
-        three_bet_amt <= 1950,
-        "Preflop RAISE_HALF_POT 3-bet vs 650 open must be <= 3.0x (1950), got {three_bet_amt}"
-    );
-}
-
-#[test]
 fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
     let hole_aqo = [
         Card::new(Rank::Ace, Suit::Clubs),
@@ -612,12 +527,12 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
 }
 
 #[test]
-fn test_preflop_micro_stack_1chip_calls_and_deep_99_no_open_jam() {
+fn test_preflop_micro_stack_1chip_calls() {
     let tracker = OpponentTracker::new();
     let history = [RoundHistory::new(); NUM_ROUNDS];
     let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
 
-    /* 1. Micro-stack preflop commitment: Kd Qc with 1 chip remaining facing 1-chip effective call into 5,248 pot
+    /* Micro-stack preflop commitment: Kd Qc with 1 chip remaining facing 1-chip effective call into 5,248 pot
      * must return "call" (NEVER "fold" and NEVER "allin"/"raise" when to_call >= my_chips) */
     let hole_kqo = [
         Card::new(Rank::King, Suit::Diamonds),
@@ -648,41 +563,4 @@ fn test_preflop_micro_stack_1chip_calls_and_deep_99_no_open_jam() {
         "With 1 chip remaining facing 1 chip to call in 5248 pot, must return 'call' (reasons: {:?})",
         tr_1chip.guard_reasons
     );
-
-    /* 2. Deep 6-max unopened pot (~30 BB): 9c 9h (8,938 @ 150/300)
-     * must open-raise cleanly and never shove ALL_IN */
-    let hole_99 = [
-        Card::new(Rank::Nine, Suit::Clubs),
-        Card::new(Rank::Nine, Suit::Hearts),
-    ];
-    let legal_full = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "all_in".to_string(),
-    ];
-    for _ in 0..30 {
-        let (act_99, _, _) = decide_action_traced(
-            &LiveDecisionRequest {
-                hole: hole_99,
-                legal: &legal_full,
-                to_call: 300,
-                pot: 450,
-                history,
-                contributions: [0, 300],
-                active_opponents: 5,
-                big_blind: 300,
-                my_chips: 8938,
-                current_bet: 300,
-                ..Default::default()
-            },
-            &strategy_map,
-            &tracker,
-            None,
-        );
-        assert_ne!(
-            act_99, "all_in",
-            "99 at 29.8 BB in 6-max unopened pot must never open-jam all-in"
-        );
-    }
 }

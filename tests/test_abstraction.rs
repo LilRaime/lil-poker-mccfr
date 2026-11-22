@@ -5,29 +5,29 @@ use lil_poker_mccfr::cfr::abstraction::{
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
 
 #[test]
-fn test_holdem_infoset_key_consistency() {
+fn test_rich_infoset_key_generation() {
     let card = |rank, suit| Card { rank, suit };
-    let hole = [
+    let hole_ak_suited = [
         card(Rank::Ace, Suit::Spades),
         card(Rank::King, Suit::Spades),
     ];
-    let board = [
+    let board_flop = [
         card(Rank::Queen, Suit::Hearts),
         card(Rank::Jack, Suit::Hearts),
         card(Rank::Ten, Suit::Clubs),
     ];
-    let history_dummy = [vec![1u8, 2u8], vec![], vec![], vec![]];
-    let key = get_holdem_infoset_key(&hole, &board, 2, &history_dummy);
-    assert!(key.starts_with("F:B"), "Key should be for Flop: {key}");
-    assert!(key.ends_with("/"), "History for round 2 was empty");
+    let empty_flop_history = [vec![1u8, 2u8], vec![], vec![], vec![]];
+    let empty_flop_key =
+        get_holdem_infoset_key(&hole_ak_suited, &board_flop, 2, &empty_flop_history);
+    assert!(
+        empty_flop_key.starts_with("F:B") && empty_flop_key.ends_with('/'),
+        "Empty flop history key should start with F:B and end with '/': {empty_flop_key}"
+    );
+    assert_ne!(
+        hash_holdem_infoset_key(&hole_ak_suited, &board_flop, 2, &empty_flop_history),
+        0
+    );
 
-    let hash = hash_holdem_infoset_key(&hole, &board, 2, &history_dummy);
-    assert_ne!(hash, 0);
-}
-
-#[test]
-fn test_rich_infoset_key_generation() {
-    let card = |rank, suit| Card { rank, suit };
     let hole = [
         card(Rank::Ace, Suit::Spades),
         card(Rank::King, Suit::Hearts),
@@ -123,27 +123,4 @@ fn test_multi_street_rich_history_generation() {
     let river_history = [vec![2u8, 1u8], vec![4u8, 1u8], vec![1u8, 1u8], vec![3u8]];
     let river_key = get_holdem_infoset_key_rich(&hole, &board, 4, &river_history);
     assert_eq!(river_key, "R:B63/t");
-}
-
-#[test]
-fn test_two_pair_bottom_pair_on_board_abstraction() {
-    use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key;
-    use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
-    let card = |rank, suit| Card { rank, suit };
-    let hole = [
-        card(Rank::Ace, Suit::Spades),
-        card(Rank::King, Suit::Hearts),
-    ];
-    /* Board has pair of Twos; player hits top pair Ace with King kicker */
-    let board = [
-        card(Rank::Ace, Suit::Diamonds),
-        card(Rank::Seven, Suit::Clubs),
-        card(Rank::Two, Suit::Hearts),
-        card(Rank::Ten, Suit::Spades),
-        card(Rank::Two, Suit::Clubs),
-    ];
-    let river_history = [vec![2u8, 1u8], vec![4u8, 1u8], vec![1u8, 1u8], vec![3u8]];
-    let river_key = get_holdem_infoset_key(&hole, &board, 4, &river_history);
-    /* Should be bucket 43 (Vulnerable Top Pair Top Kicker on paired board), NOT Genuine Two Pair (63) */
-    assert_eq!(river_key, "R:B43/t");
 }

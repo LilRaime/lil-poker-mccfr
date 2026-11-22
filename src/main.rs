@@ -59,10 +59,10 @@ fn main() {
 
     let json = serde_json::to_string_pretty(&json_map).expect("JSON serialization failed");
 
-    if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).expect("Failed to create output directory");
-        }
+    if let Some(parent) = std::path::Path::new(&args.save_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).expect("Failed to create output directory");
     }
 
     fs::write(&args.save_path, &json).expect("Failed to write strategy file");

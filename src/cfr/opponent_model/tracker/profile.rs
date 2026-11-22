@@ -96,18 +96,18 @@ impl OpponentTracker {
             return Ok(());
         }
         let mut map = read_profile_map(path)?;
-        if path == DEFAULT_PROFILES_PATH {
-            if let Ok(tmp_map) = read_profile_map(TMP_PROFILES_FALLBACK) {
-                for (k, v) in tmp_map {
-                    map.insert(k, v);
-                }
+        if path == DEFAULT_PROFILES_PATH
+            && let Ok(tmp_map) = read_profile_map(TMP_PROFILES_FALLBACK)
+        {
+            for (k, v) in tmp_map {
+                map.insert(k, v);
             }
         }
         map.insert(opp_key.to_string(), self.clone());
-        if let Some(parent) = Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
         }
         if write_profile_map_atomic(path, &map).is_ok() {
             return Ok(());

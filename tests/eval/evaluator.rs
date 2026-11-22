@@ -1,5 +1,5 @@
 use lil_poker_mccfr::cfr::abstraction::{detect_draws, detect_draws_detailed, is_dangerous_board};
-use lil_poker_mccfr::game::holdem::{evaluate_7cards, Card, Rank, Suit};
+use lil_poker_mccfr::game::holdem::{Card, Rank, Suit, evaluate_7cards};
 
 #[test]
 fn test_evaluate_7cards_categories() {

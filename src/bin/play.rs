@@ -5,7 +5,7 @@
  */
 
 use clap::Parser;
-use lil_poker_mccfr::sim::holdem::{run_holdem_benchmark, HoldemBenchmarkConfig};
+use lil_poker_mccfr::sim::holdem::{HoldemBenchmarkConfig, run_holdem_benchmark};
 use lil_poker_mccfr::sim::leduc::{
     load_strategy, run_episodes_log_mode, run_human_mode, run_watch_mode,
 };

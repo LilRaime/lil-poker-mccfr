@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
-use super::super::engine::{simulate_holdem_hand_traced, SimHandConfig};
-use super::super::strategy::{load_holdem_strategy, HoldemStrategy};
-use super::{deal_cards_prefix, HoldemBenchmarkResult};
+use super::super::engine::{SimHandConfig, simulate_holdem_hand_traced};
+use super::super::strategy::{HoldemStrategy, load_holdem_strategy};
+use super::{HoldemBenchmarkResult, deal_cards_prefix};
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::SubgameSolver;
@@ -112,7 +112,7 @@ pub fn run_holdem_blind_schedule_benchmark(cfg: &BlindScheduleConfig<'_>) -> Hol
 
     let mut rng = match cfg.seed {
         Some(s) => SmallRng::seed_from_u64(s),
-        None => SmallRng::from_entropy(),
+        None => rand::make_rng(),
     };
     let subgame_solver = SubgameSolver::default();
     let base_hand_cfg = SimHandConfig {

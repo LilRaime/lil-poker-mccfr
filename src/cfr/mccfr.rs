@@ -1,10 +1,10 @@
 /*! Parallel External Sampling MCCFR with CFR+ for Leduc Poker. */
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use crate::cfr::node::InfosetNode;
 use crate::game::leduc::{LeducGame, NUM_ACTIONS};
@@ -186,7 +186,7 @@ impl MCCFRSolver {
 /** Sample an index from a probability distribution. */
 #[inline(always)]
 fn sample_action_buf(probs: &[f64], rng: &mut SmallRng) -> usize {
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     let mut cumulative = 0.0;
     for (i, &p) in probs.iter().enumerate() {
         cumulative += p;

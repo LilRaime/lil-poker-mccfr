@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::cookie::CookieStore;
-use reqwest::header::{HeaderMap, HeaderValue, COOKIE};
+use reqwest::header::{COOKIE, HeaderMap, HeaderValue};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::game::config::HOLDEM_NUM_ACTIONS;
 use crate::game::holdem::Card;
@@ -86,11 +86,11 @@ pub(super) async fn open_ws_stream(
 
     let mut request = ws_url.into_client_request()?;
     let cookies_url = reqwest::Url::parse(url)?;
-    if let Some(cookie_header) = jar.cookies(&cookies_url) {
-        if let Ok(val) = HeaderValue::from_bytes(cookie_header.as_bytes()) {
-            let headers: &mut HeaderMap = request.headers_mut();
-            headers.insert(COOKIE, val);
-        }
+    if let Some(cookie_header) = jar.cookies(&cookies_url)
+        && let Ok(val) = HeaderValue::from_bytes(cookie_header.as_bytes())
+    {
+        let headers: &mut HeaderMap = request.headers_mut();
+        headers.insert(COOKIE, val);
     }
 
     let (ws_stream, _) = connect_async(request).await?;

@@ -3,9 +3,9 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, force_action};
 use crate::cfr::abstraction::{
-    calculate_range_equity, nash_call_shove_max_bb, preflop_strength_tier, BUCKET_FLUSH_MIN,
-    BUCKET_OVERPAIR_MIN, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
-    BUCKET_TRIPS_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN,
+    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_WEAK_PAIR_MIN, calculate_range_equity,
+    nash_call_shove_max_bb, preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
@@ -119,13 +119,11 @@ impl OpponentTracker {
                     && ctx.to_call < ctx.bb * 15))
                 && ctx.to_call < ctx.eff_allin_threshold * 2
         };
-        if should_rescue {
-            if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
-                let f_w = probs[f_i];
-                probs[f_i] = 0.0;
-                if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
-                    probs[c_i] += f_w;
-                }
+        if should_rescue && let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
+            let f_w = probs[f_i];
+            probs[f_i] = 0.0;
+            if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
+                probs[c_i] += f_w;
             }
         }
     }
@@ -176,11 +174,7 @@ impl OpponentTracker {
 
     fn is_river_shove_trash(ctx: &GuardContext<'_>) -> bool {
         let min_river_shove_bucket = if ctx.is_overbet_bluffer {
-            if ctx.pot_odds <= 0.26 {
-                29
-            } else {
-                34
-            }
+            if ctx.pot_odds <= 0.26 { 29 } else { 34 }
         } else if ctx.is_known_maniac {
             BUCKET_TOP_PAIR_MIN
         } else if ctx.hole.is_some() && ctx.board.is_some() {

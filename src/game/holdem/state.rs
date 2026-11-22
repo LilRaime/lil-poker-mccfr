@@ -10,10 +10,10 @@ use crate::game::config::{
     RAISE_THIRD_POT_FLOOR, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND,
     STACK_SIZE,
 };
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 use super::eval::evaluate_7cards;
-use super::types::{Board, Card, DeckRemaining, RoundHistory, ALL_52_CARDS};
+use super::types::{ALL_52_CARDS, Board, Card, DeckRemaining, RoundHistory};
 
 const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
 
@@ -45,7 +45,7 @@ impl TexasHoldemGame {
         let mut deck = ALL_52_CARDS;
         /* Partial Fisher-Yates shuffle: only CARDS_PER_DEAL (9 cards) needed per episode */
         for i in 0..CARDS_PER_DEAL {
-            let j = rng.gen_range(i..NUM_CARDS_DECK);
+            let j = rng.random_range(i..NUM_CARDS_DECK);
             deck.swap(i, j);
         }
 

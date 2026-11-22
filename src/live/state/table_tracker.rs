@@ -9,7 +9,7 @@ use super::{
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::game::config::{BIG_BLIND, SMALL_BLIND};
 use crate::game::holdem::{
-    RoundHistory, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, RoundHistory,
 };
 use crate::live::protocol::parse_json_i32;
 
@@ -523,10 +523,11 @@ impl LiveTableTracker {
             }
             finalized.insert(name);
         }
-        if !fallback_opp_name.is_empty() && !finalized.contains(fallback_opp_name) {
-            if let Some(t) = trackers.get_mut(fallback_opp_name) {
-                t.end_hand();
-            }
+        if !fallback_opp_name.is_empty()
+            && !finalized.contains(fallback_opp_name)
+            && let Some(t) = trackers.get_mut(fallback_opp_name)
+        {
+            t.end_hand();
         }
         self.round_idx = 0;
         self.street_max_bet = 0;

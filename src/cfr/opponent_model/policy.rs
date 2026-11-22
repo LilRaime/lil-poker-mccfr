@@ -8,7 +8,7 @@ use crate::game::config::{
     ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_FLOP,
 };
 use crate::game::holdem::Card;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyRequest<'a> {
@@ -302,7 +302,7 @@ fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut 
     let sum: f64 = probs.iter().sum();
     if sum > 1e-12 {
         let norm: Vec<f64> = probs.iter().map(|p| p / sum).collect();
-        let r: f64 = rng.gen();
+        let r: f64 = rng.random();
         let mut cum = 0.0;
         let mut picked = legal_actions.last().copied().unwrap_or(CALL_CHECK);
         for (i, &p) in norm.iter().enumerate() {
@@ -343,10 +343,10 @@ fn decide_short_stack_premium(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
 
 fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
     if c.to_call == 0 {
-        if c.bucket <= 26 {
-            if let Some(sa) = c.shove_action {
-                return Some((sa, "SHORT_STACK_BB_ISO_PUSH"));
-            }
+        if c.bucket <= 26
+            && let Some(sa) = c.shove_action
+        {
+            return Some((sa, "SHORT_STACK_BB_ISO_PUSH"));
         }
         if c.has_call_check {
             return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
@@ -357,10 +357,10 @@ fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
             return Some((sa, "SHORT_STACK_NASH_PUSH"));
         }
     } else if c.to_call <= c.bb && c.pot <= c.bb * 4 {
-        if c.bucket <= 26 || (c.pf_tier == 4 && c.my_chips <= c.bb * 7) {
-            if let Some(sa) = c.shove_action {
-                return Some((sa, "SHORT_STACK_BB_3BET_SHOVE"));
-            }
+        if (c.bucket <= 26 || (c.pf_tier == 4 && c.my_chips <= c.bb * 7))
+            && let Some(sa) = c.shove_action
+        {
+            return Some((sa, "SHORT_STACK_BB_3BET_SHOVE"));
         }
         if c.can_call {
             return Some((c.call_action, "SHORT_STACK_BB_FLAT_CALL"));

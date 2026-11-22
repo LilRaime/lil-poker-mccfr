@@ -2,7 +2,7 @@
  * `StrategyLookupIndex`: Pre-indexed bucket -> averaged strategy lookup table.
  */
 
-use super::heuristic::{get_holdem_fallback_strategy, FallbackRequest};
+use super::heuristic::{FallbackRequest, get_holdem_fallback_strategy};
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::game::config::{
     HOLDEM_NUM_ACTIONS, NUM_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,

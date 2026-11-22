@@ -4,12 +4,12 @@ use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::Duration;
 
+use rand::RngExt;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use serde_json::Value;
 
 use crate::game::card::Card;
-use crate::game::leduc::{LeducGame, CALL, FOLD, RAISE};
+use crate::game::leduc::{CALL, FOLD, LeducGame, RAISE};
 use crate::sim::stats::SimStats;
 
 /** Leduc strategy: 3 actions [fold, call, raise] */
@@ -82,12 +82,12 @@ pub fn prompt_action(legal: &[u8]) -> u8 {
         let _ = io::stdout().flush();
 
         let mut input = String::new();
-        if io::stdin().read_line(&mut input).is_ok() {
-            if let Ok(choice) = input.trim().parse::<usize>() {
-                if choice >= 1 && choice <= legal.len() {
-                    return legal[choice - 1];
-                }
-            }
+        if io::stdin().read_line(&mut input).is_ok()
+            && let Ok(choice) = input.trim().parse::<usize>()
+            && choice >= 1
+            && choice <= legal.len()
+        {
+            return legal[choice - 1];
         }
         println!("Invalid choice. Please try again.");
     }
@@ -110,7 +110,7 @@ pub fn get_action_probs(strategy: &Strategy, game: &LeducGame, player: usize) ->
 }
 
 pub fn sample_action(probs: &[f64], rng: &mut SmallRng) -> usize {
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     let mut cum = 0.0;
     for (i, &p) in probs.iter().enumerate() {
         cum += p;
@@ -128,7 +128,7 @@ pub fn run_episodes_log_mode(
     delay_ms: u64,
     player_arg: &str,
 ) {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng: SmallRng = rand::make_rng();
 
     let mut total_stats = SimStats::default();
     let mut pos_stats = [SimStats::default(), SimStats::default()];
@@ -199,7 +199,7 @@ pub fn run_episodes_log_mode(
                 }
             } else {
                 let legal = game.legal_actions();
-                let act = legal[rng.gen_range(0..legal.len())];
+                let act = legal[rng.random_range(0..legal.len())];
                 game = game.apply_action(act);
             }
         }
@@ -286,7 +286,7 @@ pub fn run_episodes_log_mode(
 
 /** Mode 1: Spectator Watch Mode */
 pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng: SmallRng = rand::make_rng();
     let mut score = [0.0f64; 2];
 
     println!("\n>>> Starting Spectator Mode (Bot vs Random) — {total_hands} hands <<<\n");
@@ -352,7 +352,7 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
                 legal[chosen]
             } else {
                 let legal = game.legal_actions();
-                let act = legal[rng.gen_range(0..legal.len())];
+                let act = legal[rng.random_range(0..legal.len())];
                 println!(
                     "  {} chooses random action => Action: {}",
                     p_name,
@@ -421,7 +421,7 @@ pub fn run_watch_mode(strategy: &Strategy, total_hands: u64, delay_ms: u64) {
 
 /** Mode 2: Interactive Human vs Bot Play */
 pub fn run_human_mode(strategy: &Strategy, total_hands: u64) {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng: SmallRng = rand::make_rng();
     let mut human_score = 0.0f64;
     let mut bot_score = 0.0f64;
 

@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
-use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
+use crate::cfr::fallback::{FallbackRequest, get_holdem_fallback_strategy};
 use crate::game::config::{HOLDEM_NUM_ACTIONS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::Card as HCard;
 

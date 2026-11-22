@@ -2,7 +2,7 @@
  * Leduc Poker game implementation (2 players, 6-card deck).
  * Actions: 0 = Fold, 1 = Call/Check, 2 = Raise.
  */
-use crate::game::card::{Card, ALL_CARDS};
+use crate::game::card::{ALL_CARDS, Card};
 use crate::game::holdem::RoundHistory;
 use rand::seq::SliceRandom;
 

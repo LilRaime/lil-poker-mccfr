@@ -3,10 +3,10 @@ pub mod snapshot;
 pub mod table_tracker;
 
 pub use snapshot::{
-    derive_legal_actions, parse_live_state, parse_live_state_with_hint, LiveSnapshot,
+    LiveSnapshot, derive_legal_actions, parse_live_state, parse_live_state_with_hint,
 };
 pub use table_tracker::{
-    process_showdown, process_showdown_multiway, LiveTableTracker, OppHandState,
+    LiveTableTracker, OppHandState, process_showdown, process_showdown_multiway,
 };
 
 pub use super::round_tracker::LiveRoundTracker;
@@ -62,10 +62,10 @@ pub(super) fn parse_cards_array(val: Option<&Value>) -> Vec<Card> {
     let mut cards = Vec::new();
     if let Some(arr) = val.and_then(|v| v.as_array()) {
         for c in arr {
-            if let Some(cs) = c.as_str() {
-                if let Some(parsed) = parse_card_str(cs) {
-                    cards.push(parsed);
-                }
+            if let Some(cs) = c.as_str()
+                && let Some(parsed) = parse_card_str(cs)
+            {
+                cards.push(parsed);
             }
         }
     }

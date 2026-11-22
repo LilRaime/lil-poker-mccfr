@@ -29,12 +29,12 @@ impl VanillaCFRNode {
     pub fn get_strategy(&self, _reach_prob: f64) -> Vec<f64> {
         let positive: Vec<f64> = self.regret_sum.iter().map(|&r| r.max(0.0)).collect();
         let sum: f64 = positive.iter().sum();
-        let strat = if sum > 0.0 {
+
+        if sum > 0.0 {
             positive.iter().map(|&r| r / sum).collect()
         } else {
             vec![1.0 / NUM_ACTIONS as f64; NUM_ACTIONS]
-        };
-        strat
+        }
     }
 
     pub fn get_average_strategy(&self) -> Vec<f64> {

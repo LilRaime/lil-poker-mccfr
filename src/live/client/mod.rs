@@ -3,7 +3,7 @@ mod commit_guards;
 mod fallback;
 mod transport;
 
-pub use fallback::{build_emergency_fallback_candidates, EmergencyFallbackRequest};
+pub use fallback::{EmergencyFallbackRequest, build_emergency_fallback_candidates};
 pub use transport::load_live_strategy;
 
 use std::collections::HashMap;
@@ -17,11 +17,11 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::{SubgameContext, SubgameSolver};
-use crate::live::decision::{decide_action_traced, LiveDecisionRequest};
+use crate::live::decision::{LiveDecisionRequest, decide_action_traced};
 use crate::live::protocol::ActPayload;
 use crate::live::state::{
-    parse_live_state_with_hint, process_showdown_multiway, LiveRoundTracker, LiveSnapshot,
-    LiveTableTracker,
+    LiveRoundTracker, LiveSnapshot, LiveTableTracker, parse_live_state_with_hint,
+    process_showdown_multiway,
 };
 
 use commit_guards::apply_live_commit_guards;
@@ -120,41 +120,33 @@ impl LiveSession {
             self.last_seen_hand_id = 0;
         } else if phase.eq_ignore_ascii_case("Waiting") && self.last_seen_hand_id != 0 {
             /* Hand started and ended before Hero ever had an active turn (e.g. walk on BB when SB folds HU) */
-            if !self.current_opp_name.is_empty() {
-                if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-                    if players.len() == 2 {
-                        let opp_t = self
-                            .trackers
-                            .entry(self.current_opp_name.clone())
-                            .or_default();
-                        opp_t.record_action_street_detailed(
-                            crate::game::config::FOLD,
-                            1,
-                            false,
-                            0,
-                            0,
-                        );
-                        opp_t.record_preflop_positional(true, false, false);
-                        opp_t.end_hand();
-                        let _ = opp_t.save_profile(self.profiles_path, &self.current_opp_name);
-                    }
-                }
+            if !self.current_opp_name.is_empty()
+                && let Some(players) = state.get("players").and_then(|v| v.as_array())
+                && players.len() == 2
+            {
+                let opp_t = self
+                    .trackers
+                    .entry(self.current_opp_name.clone())
+                    .or_default();
+                opp_t.record_action_street_detailed(crate::game::config::FOLD, 1, false, 0, 0);
+                opp_t.record_preflop_positional(true, false, false);
+                opp_t.end_hand();
+                let _ = opp_t.save_profile(self.profiles_path, &self.current_opp_name);
             }
             self.table_tracker.reset_hand(0);
             self.last_seen_hand_id = 0;
         }
 
-        if phase.eq_ignore_ascii_case("Waiting") {
-            if let Some(players) = state.get("players").and_then(|v| v.as_array()) {
-                if players.len() >= 2 {
-                    let start_url = format!(
-                        "{}/api/game/start?room={}",
-                        self.url.trim_end_matches('/'),
-                        self.room
-                    );
-                    let _ = self.client.post(&start_url).send().await;
-                }
-            }
+        if phase.eq_ignore_ascii_case("Waiting")
+            && let Some(players) = state.get("players").and_then(|v| v.as_array())
+            && players.len() >= 2
+        {
+            let start_url = format!(
+                "{}/api/game/start?room={}",
+                self.url.trim_end_matches('/'),
+                self.room
+            );
+            let _ = self.client.post(&start_url).send().await;
         }
     }
 
@@ -469,11 +461,11 @@ impl LiveSession {
                 fb.to_uppercase(),
                 fb_amt
             );
-            if let Ok(r_retry) = self.send_act_request(&act_url, fb, fb_amt).await {
-                if r_retry.status().is_success() {
-                    self.record_accepted_bot_action(fb, fb_amt, snapshot);
-                    return;
-                }
+            if let Ok(r_retry) = self.send_act_request(&act_url, fb, fb_amt).await
+                && r_retry.status().is_success()
+            {
+                self.record_accepted_bot_action(fb, fb_amt, snapshot);
+                return;
             }
         }
 
@@ -493,11 +485,11 @@ impl LiveSession {
                 my_chips,
             });
             for (cand, cand_amt) in candidates {
-                if let Ok(r_em) = self.send_act_request(&act_url, cand, cand_amt).await {
-                    if r_em.status().is_success() {
-                        self.record_accepted_bot_action(cand, cand_amt, snapshot);
-                        return;
-                    }
+                if let Ok(r_em) = self.send_act_request(&act_url, cand, cand_amt).await
+                    && r_em.status().is_success()
+                {
+                    self.record_accepted_bot_action(cand, cand_amt, snapshot);
+                    return;
                 }
             }
         }

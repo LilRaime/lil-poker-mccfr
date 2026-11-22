@@ -1,71 +1,16 @@
+use super::{
+    LEGAL_FULL, LEGAL_OPEN, make_aggro_maniac, make_calling_station, make_passive_station,
+};
 use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
 use rand::SeedableRng;
 
 #[test]
-fn test_opponent_model_context_adjustment() {
-    let mut tracker = OpponentTracker::new();
-    /* Simulate calling station: 15 calls, 1 fold, 1 raise */
-    for _ in 0..15 {
-        tracker.record_action(CALL_CHECK, false);
-    }
-    tracker.record_action(FOLD, false);
-    tracker.record_action(RAISE_MIN, false);
-
-    let base_strat = [0.15, 0.35, 0.15, 0.15, 0.10, 0.10];
-    let legal = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
-
-    /* Strong hand (bucket 55) against calling station -> raise probability must increase */
-    let adj_strong = tracker.adjust_strategy(&ExploitRequest {
-        blueprint_probs: &base_strat,
-        legal_actions: &legal,
-        bucket: 55,
-        round: 2,
-        ..Default::default()
-    });
-    let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
-        .iter()
-        .sum();
-    let total_raise_adj_strong: f64 = adj_strong[RAISE_MIN as usize..=ALL_IN as usize]
-        .iter()
-        .sum();
-    assert!(
-        total_raise_adj_strong > total_raise_base,
-        "Against calling station, strong hand should raise more"
-    );
-
-    /* Weak hand (bucket 10) against calling station -> bluff raises must decrease */
-    let adj_weak = tracker.adjust_strategy(&ExploitRequest {
-        blueprint_probs: &base_strat,
-        legal_actions: &legal,
-        bucket: 10,
-        round: 2,
-        ..Default::default()
-    });
-    let total_raise_adj_weak: f64 = adj_weak[RAISE_MIN as usize..=ALL_IN as usize].iter().sum();
-    assert!(
-        total_raise_adj_weak < total_raise_base,
-        "Against calling station, weak hand bluffs should be reduced"
-    );
-}
-
-#[test]
 fn test_exploit_guardrails_and_toggles() {
-    let mut tracker = OpponentTracker::new();
-
-    /* Fill tracker with extreme calling station stats (30 calls, 0 folds) */
-    for _ in 0..30 {
-        tracker.record_action(CALL_CHECK, false);
-    }
+    /* Extreme calling station stats (30 calls, 0 folds) */
+    let mut tracker = make_passive_station();
     assert_eq!(tracker.fold_count, 0);
     assert_eq!(tracker.call_count, 30);
 
@@ -172,32 +117,27 @@ fn test_limper_exploitation_and_float_probe() {
 
 #[test]
 fn test_dynamic_bet_sizing_against_leaks() {
-    let mut station_tracker = OpponentTracker::new();
-    /* Simulate Calling Station: 15 calls, 1 fold, 1 raise */
-    for _ in 0..15 {
-        station_tracker.record_action(CALL_CHECK, false);
-    }
-    station_tracker.record_action(FOLD, false);
-    station_tracker.record_action(RAISE_MIN, false);
-
+    let station_tracker = make_calling_station();
     let base_strat = [0.10, 0.30, 0.15, 0.15, 0.15, 0.15];
-    let legal = [
-        FOLD,
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
 
-    /* 1. Strong hand (bucket 50) against calling station -> Overbets (RAISE_HALF_POT, ALL_IN) boosted more than RAISE_MIN */
+    /* 1. Strong hand (bucket 50) against calling station -> Total raises increase & overbets boosted more than RAISE_MIN */
     let adj_station_strong = station_tracker.adjust_strategy(&ExploitRequest {
         blueprint_probs: &base_strat,
-        legal_actions: &legal,
+        legal_actions: &LEGAL_FULL,
         bucket: 50,
         round: 2,
         ..Default::default()
     });
+    let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
+    let total_raise_adj_strong: f64 = adj_station_strong[RAISE_MIN as usize..=ALL_IN as usize]
+        .iter()
+        .sum();
+    assert!(
+        total_raise_adj_strong > total_raise_base,
+        "Against calling station, strong hand should raise more"
+    );
     let boost_half =
         adj_station_strong[RAISE_HALF_POT as usize] / base_strat[RAISE_HALF_POT as usize];
     let boost_min = adj_station_strong[RAISE_MIN as usize] / base_strat[RAISE_MIN as usize];
@@ -209,14 +149,11 @@ fn test_dynamic_bet_sizing_against_leaks() {
     /* 2. Weak hand (bucket 10) against calling station -> All raises suppressed */
     let adj_station_weak = station_tracker.adjust_strategy(&ExploitRequest {
         blueprint_probs: &base_strat,
-        legal_actions: &legal,
+        legal_actions: &LEGAL_FULL,
         bucket: 10,
         round: 2,
         ..Default::default()
     });
-    let total_raise_base: f64 = base_strat[RAISE_MIN as usize..=ALL_IN as usize]
-        .iter()
-        .sum();
     let total_raise_weak: f64 = adj_station_weak[RAISE_MIN as usize..=ALL_IN as usize]
         .iter()
         .sum();
@@ -235,7 +172,7 @@ fn test_dynamic_bet_sizing_against_leaks() {
 
     let adj_nit_weak = nit_tracker.adjust_strategy(&ExploitRequest {
         blueprint_probs: &base_strat,
-        legal_actions: &legal,
+        legal_actions: &LEGAL_FULL,
         bucket: 10,
         round: 2,
         ..Default::default()
@@ -247,23 +184,29 @@ fn test_dynamic_bet_sizing_against_leaks() {
         boost_third > boost_half_nit,
         "Against Nit, cheap bluffs (1/3 pot boost {boost_third}) must be favored over large bluffs (half pot boost {boost_half_nit})"
     );
+
+    /* 4. High-VPIP aggro maniac -> call-down bluff catchers boosted, folds reduced */
+    let maniac = make_aggro_maniac();
+    let bp = [0.20, 0.50, 0.15, 0.15, 0.0, 0.0];
+    let adj_maniac = maniac.adjust_strategy(&ExploitRequest {
+        blueprint_probs: &bp,
+        legal_actions: &LEGAL_FULL,
+        bucket: 45,
+        round: 3,
+        to_call: 400,
+        table_bb: 100,
+    });
+    assert!(
+        adj_maniac[CALL_CHECK as usize] > bp[CALL_CHECK as usize]
+            && adj_maniac[FOLD as usize] < bp[FOLD as usize],
+        "High-VPIP maniac must activate Maniac bluff-catching adjustment: {adj_maniac:?}"
+    );
 }
 
 #[test]
 fn test_passive_station_value_extraction_boost() {
-    let mut tracker = OpponentTracker::new();
-    for _ in 0..20 {
-        tracker.record_action(CALL_CHECK, false);
-    }
-
+    let tracker = make_passive_station();
     let mut rng = rand::rngs::SmallRng::seed_from_u64(777);
-    let legal = [
-        CALL_CHECK,
-        RAISE_MIN,
-        RAISE_THIRD_POT,
-        RAISE_HALF_POT,
-        ALL_IN,
-    ];
     /* SubgameSolver / blueprint passive vector where CALL_CHECK is 90% and RAISE_HALF_POT is 0% */
     let passive_solver_probs = [0.0, 0.90, 0.05, 0.05, 0.0, 0.0];
     let safe_board = [
@@ -281,7 +224,7 @@ fn test_passive_station_value_extraction_boost() {
             let act = tracker.select_action(
                 &PolicyRequest {
                     raw_probs: &passive_solver_probs,
-                    legal_actions: &legal,
+                    legal_actions: &LEGAL_OPEN,
                     bucket,
                     round,
                     pot: 1200,
@@ -302,7 +245,7 @@ fn test_passive_station_value_extraction_boost() {
     let pf_act = tracker.select_action(
         &PolicyRequest {
             raw_probs: &passive_solver_probs,
-            legal_actions: &legal,
+            legal_actions: &LEGAL_OPEN,
             bucket: 5,
             round: 1,
             pot: 300,

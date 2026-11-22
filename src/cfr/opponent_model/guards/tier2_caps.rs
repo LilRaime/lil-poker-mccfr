@@ -43,17 +43,16 @@ impl OpponentTracker {
         if ctx.bucket < 25
             && !(ctx.round == ROUND_FLOP && (22..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket))
             && self.is_guard_enabled("POST_ALLIN_BLUFF_CAP")
+            && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)
         {
-            if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                let removed = probs[ai_i];
-                if removed > 0.0 {
-                    probs[ai_i] = 0.0;
-                    if let Some(t_i) = first_action_idx(
-                        ctx.legal_actions,
-                        &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
-                    ) {
-                        probs[t_i] += removed;
-                    }
+            let removed = probs[ai_i];
+            if removed > 0.0 {
+                probs[ai_i] = 0.0;
+                if let Some(t_i) = first_action_idx(
+                    ctx.legal_actions,
+                    &[RAISE_HALF_POT, RAISE_THIRD_POT, CALL_CHECK],
+                ) {
+                    probs[t_i] += removed;
                 }
             }
         }
@@ -209,15 +208,14 @@ impl OpponentTracker {
             && (ctx.bucket == 33 || ctx.bucket == 38)
             && ctx.pot_odds <= 0.35
             && !ctx.is_three_flush
-        {
-            if let (Some(f_i), Some(c_i)) = (
+            && let (Some(f_i), Some(c_i)) = (
                 action_idx(ctx.legal_actions, FOLD),
                 action_idx(ctx.legal_actions, CALL_CHECK),
-            ) {
-                let shift = probs[f_i] * 0.85;
-                probs[f_i] -= shift;
-                probs[c_i] = (probs[c_i] + shift).max(0.80);
-            }
+            )
+        {
+            let shift = probs[f_i] * 0.85;
+            probs[f_i] -= shift;
+            probs[c_i] = (probs[c_i] + shift).max(0.80);
         }
 
         /* Flop facing a significant bet: call only with bare pair/draw instead of check-raising */
@@ -243,10 +241,10 @@ impl OpponentTracker {
             && self.is_guard_enabled("POST_POT_CONTROL_CAP")
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
-            if shifted > 0.0 {
-                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                    probs[c_i] += shifted;
-                }
+            if shifted > 0.0
+                && let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK)
+            {
+                probs[c_i] += shifted;
             }
         }
     }
@@ -354,10 +352,10 @@ impl OpponentTracker {
         }
         if ctx.to_call > 0 && (ctx.bucket < 61 || ctx.to_call >= ctx.bb * 4) {
             let shifted_raise = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
-            if shifted_raise > 0.0 {
-                if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                    probs[c_i] += shifted_raise;
-                }
+            if shifted_raise > 0.0
+                && let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK)
+            {
+                probs[c_i] += shifted_raise;
             }
         } else if ctx.to_call == 0 && ctx.bucket < 67 {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| {

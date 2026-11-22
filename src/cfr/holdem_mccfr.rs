@@ -2,13 +2,13 @@
 
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::cell::Cell;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use crate::cfr::node::InfosetNode;
 use crate::game::config::{
@@ -126,6 +126,7 @@ pub struct HoldemMCCFRSolver {
     pub dcfr: bool,
     pub stack_size: i32,
     pub multi_stack: bool,
+    pub short_stacks_only: bool,
     pub board_texture: bool,
     pub global_iterations: AtomicU64,
 }
@@ -164,6 +165,7 @@ impl HoldemMCCFRSolver {
             dcfr,
             stack_size: crate::game::config::STACK_SIZE,
             multi_stack: false,
+            short_stacks_only: false,
             board_texture: false,
             global_iterations: AtomicU64::new(0),
         }
@@ -176,6 +178,11 @@ impl HoldemMCCFRSolver {
 
     pub fn with_multi_stack(mut self, multi_stack: bool) -> Self {
         self.multi_stack = multi_stack;
+        self
+    }
+
+    pub fn with_short_stacks_only(mut self, short_stacks_only: bool) -> Self {
+        self.short_stacks_only = short_stacks_only;
         self
     }
 
@@ -230,7 +237,8 @@ impl HoldemMCCFRSolver {
             .unwrap_or(());
 
         let is_dcfr = self.dcfr;
-        let repair_short_only = std::env::var("LIL_REPAIR_SHORT_STACKS").is_ok();
+        let repair_short_only =
+            self.short_stacks_only || std::env::var("LIL_REPAIR_SHORT_STACKS").is_ok();
         let base_iters = self.global_iterations.load(AtomicOrdering::Relaxed);
         let total_target = base_iters + iterations;
         let dcfr_epoch = (iterations / 20).clamp(50_000, 10_000_000);
@@ -302,7 +310,8 @@ impl HoldemMCCFRSolver {
                     (global_idx - warmup + 1) as f64 / train_iters_after_warmup
                 };
 
-                let allow_prune = self.pruning && global_idx >= warmup && rng.gen::<f64>() < 0.95;
+                let allow_prune =
+                    self.pruning && global_idx >= warmup && rng.random::<f64>() < 0.95;
                 self.traverse_precomputed(
                     &game,
                     updating_player,
@@ -358,7 +367,9 @@ impl HoldemMCCFRSolver {
 
                 eprintln!(
                     "  [{:>width$}/{} | {:5.1}%]  infosets={:>7}  speed={:.0}k/s  elapsed={}  eta={}",
-                    done, iterations, pct,
+                    done,
+                    iterations,
+                    pct,
                     self.nodes.len(),
                     iter_per_s / 1000.0,
                     fmt_secs(elapsed),
@@ -590,14 +601,14 @@ impl HoldemMCCFRSolver {
                     match street {
                         ROUND_PREFLOP | ROUND_FLOP => {}
                         ROUND_TURN => {
-                            if max_turn_actions > 0 {
-                                if let Some(pos) = key.find("T:B") {
-                                    let after = &key[pos..];
-                                    if let Some(slash) = after.find('/') {
-                                        let turn_act_len = after[slash + 1..].len();
-                                        if turn_act_len > max_turn_actions {
-                                            return None;
-                                        }
+                            if max_turn_actions > 0
+                                && let Some(pos) = key.find("T:B")
+                            {
+                                let after = &key[pos..];
+                                if let Some(slash) = after.find('/') {
+                                    let turn_act_len = after[slash + 1..].len();
+                                    if turn_act_len > max_turn_actions {
+                                        return None;
                                     }
                                 }
                             }
@@ -623,10 +634,10 @@ impl HoldemMCCFRSolver {
         prune_river: bool,
         max_turn_actions: usize,
     ) -> Result<usize, Box<dyn std::error::Error>> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
@@ -653,10 +664,10 @@ impl HoldemMCCFRSolver {
     }
 
     pub fn save_strategy_to_file(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let file = std::fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
@@ -724,10 +735,10 @@ impl HoldemMCCFRSolver {
 
     /** Save full raw checkpoint (`hashes`, `keys`, `regret_sum`, `strategy_sum`, `global_iterations`) for lossless resume */
     pub fn save_raw_checkpoint(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
@@ -771,22 +782,21 @@ impl HoldemMCCFRSolver {
             None
         };
 
-        if let Some(rp) = try_raw_path {
-            if let Ok(file) = std::fs::File::open(rp) {
-                let mut reader = std::io::BufReader::new(file);
-                if let Ok((saved_iters, entries)) =
-                    bincode::deserialize_from::<_, RawCkpt>(&mut reader)
-                {
-                    let count = entries.len();
-                    self.global_iterations
-                        .store(saved_iters, AtomicOrdering::Relaxed);
-                    for (h, key, r, s) in entries {
-                        let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
-                        node.set_raw_state(&r, &s);
-                        self.nodes.insert(h, InfosetEntry { key, node });
-                    }
-                    return Ok(count);
+        if let Some(rp) = try_raw_path
+            && let Ok(file) = std::fs::File::open(rp)
+        {
+            let mut reader = std::io::BufReader::new(file);
+            if let Ok((saved_iters, entries)) = bincode::deserialize_from::<_, RawCkpt>(&mut reader)
+            {
+                let count = entries.len();
+                self.global_iterations
+                    .store(saved_iters, AtomicOrdering::Relaxed);
+                for (h, key, r, s) in entries {
+                    let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
+                    node.set_raw_state(&r, &s);
+                    self.nodes.insert(h, InfosetEntry { key, node });
                 }
+                return Ok(count);
             }
         }
 
@@ -806,7 +816,7 @@ impl HoldemMCCFRSolver {
 
 #[inline(always)]
 fn sample_action_buf(probs: &[f64], rng: &mut SmallRng) -> usize {
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     let mut cumulative = 0.0;
     for (i, &p) in probs.iter().enumerate() {
         cumulative += p;

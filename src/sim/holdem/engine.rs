@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use rand::rngs::SmallRng;
 
-use super::strategy::{find_strategy_or_fallback, HoldemStrategy};
+use super::strategy::{HoldemStrategy, find_strategy_or_fallback};
 use crate::cfr::abstraction::{
-    postflop_equity_bucket, preflop_bucket, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
-    BUCKET_TRIPS_MIN,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, postflop_equity_bucket,
+    preflop_bucket,
 };
-use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest, StrategyLookupIndex};
+use crate::cfr::fallback::{FallbackRequest, StrategyLookupIndex, get_holdem_fallback_strategy};
 use crate::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
 use crate::cfr::subgame::{SubgameRequest, SubgameSolver};
 use crate::game::config::{
@@ -17,7 +17,7 @@ use crate::game::config::{
     SUBGAME_FLOP_TRIGGER_POT,
 };
 use crate::game::holdem::{
-    TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, TexasHoldemGame,
 };
 use crate::sim::opponents::sample_opponent_action;
 
@@ -232,7 +232,14 @@ fn step_bot_turn(
     if cfg.show_logs {
         println!(
             "Step {} | Phase: {} | Cards: {} | Board: {} | Action: {} | Pot: {} | My Chips: {} | Reward: {:+.4}",
-            state.step_count, phase_str, state.hole_str, board_str, act_name, post_pot, my_chips, step_reward
+            state.step_count,
+            phase_str,
+            state.hole_str,
+            board_str,
+            act_name,
+            post_pot,
+            my_chips,
+            step_reward
         );
     }
     if cfg.delay_ms > 0 {

@@ -4,7 +4,7 @@ use super::state::LiveSnapshot;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::game::config::{BIG_BLIND, NUM_ROUNDS, ROUND_PREFLOP, SMALL_BLIND, STACK_SIZE};
 use crate::game::holdem::{
-    RoundHistory, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, RoundHistory,
 };
 
 #[derive(Debug, Clone)]
@@ -180,7 +180,7 @@ impl LiveRoundTracker {
         tracker: Option<&mut OpponentTracker>,
     ) {
         let hist = &mut self.live_history[0];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let eff_limp_thresh = bb.max(1);
 
         if snapshot.active_opponents >= 2 {
@@ -253,7 +253,7 @@ impl LiveRoundTracker {
         }
         let round_idx = self.current_round_idx;
         let hist = &mut self.live_history[round_idx];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         if snapshot.to_call == 0 {
             hist.push(CALL_CHECK);
@@ -297,7 +297,7 @@ impl LiveRoundTracker {
     ) {
         let round_idx = self.current_round_idx;
         let hist = &mut self.live_history[round_idx];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let bot_bet_this_round = hist.iter().any(|&a| a >= RAISE_MIN);
         let opp_diff = (snapshot.opp_bet - self.last_opp_bet).max(snapshot.to_call);
         let pre_bet_pot = (snapshot.pot - opp_diff).max(bb);

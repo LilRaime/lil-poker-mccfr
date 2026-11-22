@@ -1,9 +1,9 @@
 /*! Multi-Way Table Adaptation (3 to 6 Active Players: Range Tightening & Bluff Damping) */
-use super::guards::{action_idx, force_action, zero_and_sum, GuardContext};
+use super::guards::{GuardContext, action_idx, force_action, zero_and_sum};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
-    preflop_strength_tier, BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN,
-    BUCKET_STRONG_FLUSH_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN,
+    BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, preflop_strength_tier,
 };
 use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_RIVER};
 
@@ -85,18 +85,19 @@ impl OpponentTracker {
         } else if (pf_tier == 3 || pf_tier == 4) && ctx.to_call >= ctx.bb * 4 {
             /* Tier 3-4 facing heavy multi-way action: suppress 4-bet shoves, fold offsuit hands */
             let shifted_raise = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_HALF_POT);
-            if shifted_raise > 0.0 {
-                if let Some(c_i) = call_idx {
-                    probs[c_i] += shifted_raise;
-                }
+            if shifted_raise > 0.0
+                && let Some(c_i) = call_idx
+            {
+                probs[c_i] += shifted_raise;
             }
-            if is_offsuit && ctx.active_opponents >= 3 && ctx.pot_odds > 0.26 {
-                if let Some(f_i) = fold_idx {
-                    if let Some(c_i) = call_idx {
-                        probs[f_i] += probs[c_i] * 0.70;
-                        probs[c_i] *= 0.30;
-                    }
-                }
+            if is_offsuit
+                && ctx.active_opponents >= 3
+                && ctx.pot_odds > 0.26
+                && let Some(f_i) = fold_idx
+                && let Some(c_i) = call_idx
+            {
+                probs[f_i] += probs[c_i] * 0.70;
+                probs[c_i] *= 0.30;
             }
         }
     }

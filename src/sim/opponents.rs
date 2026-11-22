@@ -1,16 +1,16 @@
 /*! Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
-    detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
-    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, detect_draws,
+    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
-use crate::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
+use crate::cfr::fallback::{FallbackRequest, get_holdem_fallback_strategy};
 use crate::game::config::{BIG_BLIND, ROUND_PREFLOP, ROUND_TURN};
 use crate::game::holdem::{
-    TexasHoldemGame, ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, TexasHoldemGame,
 };
+use rand::RngExt;
 use rand::rngs::SmallRng;
-use rand::Rng;
 
 pub fn pick_preferred_action(legal: &[u8], preferred: &[u8], rng: &mut SmallRng) -> u8 {
     let mut available = Vec::new();
@@ -20,9 +20,9 @@ pub fn pick_preferred_action(legal: &[u8], preferred: &[u8], rng: &mut SmallRng)
         }
     }
     if !available.is_empty() {
-        available[rng.gen_range(0..available.len())]
+        available[rng.random_range(0..available.len())]
     } else {
-        legal[rng.gen_range(0..legal.len())]
+        legal[rng.random_range(0..legal.len())]
     }
 }
 
@@ -30,7 +30,7 @@ pub fn sample_from_probs(probs: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 
     let raw: Vec<f64> = legal.iter().map(|&a| probs[a as usize].max(0.0)).collect();
     let sum: f64 = raw.iter().sum();
     if sum > 1e-12 {
-        let r: f64 = rng.gen();
+        let r: f64 = rng.random();
         let mut cum = 0.0;
         for (i, &p) in raw.iter().enumerate() {
             cum += p / sum;
@@ -40,7 +40,7 @@ pub fn sample_from_probs(probs: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 
         }
         legal.last().copied().unwrap_or(CALL_CHECK)
     } else {
-        legal[rng.gen_range(0..legal.len())]
+        legal[rng.random_range(0..legal.len())]
     }
 }
 
@@ -75,7 +75,7 @@ pub fn sample_opponent_action(
         "shove_bot" | "push_bot" | "allin_bot" => sample_shove_bot_action(&ctx, rng),
         "trapper" | "check_raiser" => sample_trapper_action(&ctx, rng),
         "self" | "model" => sample_model_action(&ctx, opp_strategy, rng),
-        _ => ctx.legal[rng.gen_range(0..ctx.legal.len())],
+        _ => ctx.legal[rng.random_range(0..ctx.legal.len())],
     }
 }
 
@@ -123,7 +123,7 @@ fn sample_tag_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         let bucket = postflop_equity_bucket(c.hole, c.board);
         let (has_fd, has_sd) = detect_draws(c.hole, c.board);
         if bucket >= 38 {
-            if rng.gen_bool(0.75) {
+            if rng.random_bool(0.75) {
                 pick_preferred_action(
                     c.legal,
                     &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
@@ -134,21 +134,21 @@ fn sample_tag_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
             }
         } else if bucket >= 30 || has_fd || has_sd {
             if c.opp_to_call == 0 {
-                if (has_fd || has_sd) && rng.gen_bool(0.25) {
+                if (has_fd || has_sd) && rng.random_bool(0.25) {
                     pick_preferred_action(c.legal, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK], rng)
                 } else {
                     CALL_CHECK
                 }
             } else if c.opp_to_call <= BIG_BLIND * 3 {
                 CALL_CHECK
-            } else if rng.gen_bool(0.60) {
+            } else if rng.random_bool(0.60) {
                 H_FOLD
             } else {
                 CALL_CHECK
             }
         } else if c.opp_to_call == 0 {
             CALL_CHECK
-        } else if rng.gen_bool(0.10) && c.legal.contains(&RAISE_HALF_POT) {
+        } else if rng.random_bool(0.10) && c.legal.contains(&RAISE_HALF_POT) {
             RAISE_HALF_POT
         } else {
             H_FOLD
@@ -158,7 +158,7 @@ fn sample_tag_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 
 fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     if c.opp_to_call == 0 {
-        if rng.gen_bool(0.08) && c.legal.contains(&RAISE_MIN) {
+        if rng.random_bool(0.08) && c.legal.contains(&RAISE_MIN) {
             RAISE_MIN
         } else {
             CALL_CHECK
@@ -166,8 +166,8 @@ fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     } else if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
-        if (c.opp_to_call > BIG_BLIND * 8 && tier >= 7 && rng.gen_bool(0.85))
-            || (c.opp_to_call > BIG_BLIND * 3 && tier == 8 && rng.gen_bool(0.75))
+        if (c.opp_to_call > BIG_BLIND * 8 && tier >= 7 && rng.random_bool(0.85))
+            || (c.opp_to_call > BIG_BLIND * 3 && tier == 8 && rng.random_bool(0.75))
         {
             H_FOLD
         } else {
@@ -175,8 +175,8 @@ fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         }
     } else {
         let bucket = postflop_equity_bucket(c.hole, c.board);
-        if (c.opp_to_call > BIG_BLIND && bucket < BUCKET_STRONG_DRAW_MIN && rng.gen_bool(0.35))
-            || (c.opp_to_call > BIG_BLIND * 3 && bucket < 30 && rng.gen_bool(0.60))
+        if (c.opp_to_call > BIG_BLIND && bucket < BUCKET_STRONG_DRAW_MIN && rng.random_bool(0.35))
+            || (c.opp_to_call > BIG_BLIND * 3 && bucket < 30 && rng.random_bool(0.60))
         {
             H_FOLD
         } else {
@@ -186,7 +186,7 @@ fn sample_station_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
 }
 
 fn sample_maniac_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     if c.opp_to_call == 0 {
         if r < 0.40 && c.legal.contains(&RAISE_HALF_POT) {
             RAISE_HALF_POT
@@ -235,7 +235,7 @@ fn sample_shove_bot_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     if c.game.round == ROUND_PREFLOP {
         let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
         let tier = preflop_strength_tier(idx);
-        if tier <= 5 || rng.gen_bool(0.35) {
+        if tier <= 5 || rng.random_bool(0.35) {
             pick_preferred_action(c.legal, &[ALL_IN, RAISE_HALF_POT, RAISE_MIN], rng)
         } else if c.opp_to_call == 0 {
             CALL_CHECK
@@ -245,7 +245,7 @@ fn sample_shove_bot_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     } else {
         let bucket = postflop_equity_bucket(c.hole, c.board);
         let (has_fd, has_sd) = detect_draws(c.hole, c.board);
-        if bucket >= BUCKET_WEAK_PAIR_MIN || has_fd || has_sd || rng.gen_bool(0.25) {
+        if bucket >= BUCKET_WEAK_PAIR_MIN || has_fd || has_sd || rng.random_bool(0.25) {
             pick_preferred_action(c.legal, &[ALL_IN, RAISE_HALF_POT, RAISE_MIN], rng)
         } else if c.opp_to_call == 0 {
             CALL_CHECK
@@ -275,13 +275,13 @@ fn sample_trapper_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
         let (has_fd, has_sd) = detect_draws(c.hole, c.board);
         if c.opp_to_call == 0 {
             if c.game.round >= ROUND_TURN
-                && (bucket >= BUCKET_TOP_PAIR_MIN || (bucket < 20 && rng.gen_bool(0.30)))
+                && (bucket >= BUCKET_TOP_PAIR_MIN || (bucket < 20 && rng.random_bool(0.30)))
             {
                 pick_preferred_action(c.legal, &[RAISE_HALF_POT, ALL_IN, RAISE_THIRD_POT], rng)
             } else {
                 CALL_CHECK
             }
-        } else if bucket >= 36 || has_fd || has_sd || rng.gen_bool(0.20) {
+        } else if bucket >= 36 || has_fd || has_sd || rng.random_bool(0.20) {
             pick_preferred_action(c.legal, &[RAISE_HALF_POT, ALL_IN, CALL_CHECK], rng)
         } else if bucket >= BUCKET_WEAK_PAIR_MIN && c.opp_to_call <= BIG_BLIND * 3 {
             CALL_CHECK

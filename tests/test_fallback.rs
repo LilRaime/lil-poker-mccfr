@@ -1,6 +1,6 @@
-use lil_poker_mccfr::cfr::fallback::{get_holdem_fallback_strategy, FallbackRequest};
+use lil_poker_mccfr::cfr::fallback::{FallbackRequest, get_holdem_fallback_strategy};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
 
 #[test]
@@ -285,7 +285,7 @@ fn test_preflop_strength_tiers_and_88_shove_defense() {
 fn test_fallback_high_blinds_and_turn_owned_lookup() {
     use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
     use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical_owned;
-    use lil_poker_mccfr::game::holdem::{RoundHistory, NUM_ROUNDS};
+    use lil_poker_mccfr::game::holdem::{NUM_ROUNDS, RoundHistory};
     use std::collections::HashMap;
 
     /* 1. Fallback BB scale: calling 400 into 1000 with Tier 5 (44) at table_bb=400 (1 BB) vs table_bb=100 (4 BB) */

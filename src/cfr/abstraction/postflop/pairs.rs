@@ -2,7 +2,7 @@
 use crate::game::config::NUM_HOLE_CARDS;
 use crate::game::holdem::Card;
 
-use super::super::draws::{detect_draws_detailed, DrawInfo};
+use super::super::draws::{DrawInfo, detect_draws_detailed};
 use super::super::texture::{
     detect_board_texture, is_dangerous_board, is_four_flush_board, is_four_straight_board,
     is_three_flush_board,
@@ -322,11 +322,7 @@ fn bucket_board_pair_high_card(
     } else if board.len() < 5 && draws.is_straight_draw {
         16 /* OESD on paired board */
     } else if board.len() < 5 && draws.is_gutshot {
-        if high_kicker >= 11 {
-            13
-        } else {
-            12
-        }
+        if high_kicker >= 11 { 13 } else { 12 }
     } else if high_kicker == 12 && low_kicker >= 9 {
         10 /* Board pair with strong Ace-Broadway kicker */
     } else if high_kicker == 12 {

@@ -4,16 +4,16 @@
  */
 
 use crate::cfr::abstraction::{
-    postflop_equity_bucket, preflop_bucket, preflop_strength_tier, BUCKET_SECOND_NUT_FLUSH,
-    BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN, BUCKET_TOP_PAIR_MIN,
-    BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN,
+    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
 use crate::game::config::{
     BIG_BLIND, HOLDEM_NUM_ACTIONS, NUM_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER,
     ROUND_TURN, SMALL_BLIND,
 };
 use crate::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -666,8 +666,8 @@ pub fn lookup_strategy_hierarchical_with_stack<'a, V>(
     eff_stack_bb: i32,
 ) -> Option<&'a V> {
     let prefix = crate::cfr::abstraction::stack_depth_prefix(eff_stack_bb);
-    if !prefix.is_empty() {
-        if let Some(v) = lookup_strategy_hierarchical(
+    if !prefix.is_empty()
+        && let Some(v) = lookup_strategy_hierarchical(
             |k| {
                 let prefixed = format!("{prefix}{k}");
                 get_fn(&prefixed)
@@ -676,9 +676,9 @@ pub fn lookup_strategy_hierarchical_with_stack<'a, V>(
             board,
             round,
             history,
-        ) {
-            return Some(v);
-        }
+        )
+    {
+        return Some(v);
     }
     lookup_strategy_hierarchical(get_fn, hole, board, round, history)
 }
@@ -692,8 +692,8 @@ pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
     eff_stack_bb: i32,
 ) -> Option<V> {
     let prefix = crate::cfr::abstraction::stack_depth_prefix(eff_stack_bb);
-    if !prefix.is_empty() {
-        if let Some(v) = lookup_strategy_hierarchical_owned(
+    if !prefix.is_empty()
+        && let Some(v) = lookup_strategy_hierarchical_owned(
             |k| {
                 let prefixed = format!("{prefix}{k}");
                 get_fn(&prefixed)
@@ -702,9 +702,9 @@ pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
             board,
             round,
             history,
-        ) {
-            return Some(v);
-        }
+        )
+    {
+        return Some(v);
     }
     lookup_strategy_hierarchical_owned(get_fn, hole, board, round, history)
 }

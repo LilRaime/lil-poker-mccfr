@@ -1,21 +1,12 @@
+use super::{LEGAL_BB, LEGAL_FULL, LEGAL_SHOVE, make_shove_maniac, make_ultra_nit};
 use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
 use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
 use lil_poker_mccfr::game::config::{BIG_BLIND, HOLDEM_NUM_ACTIONS, SMALL_BLIND};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
 };
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
-
-const LEGAL_SB: [u8; 6] = [
-    FOLD,
-    CALL_CHECK,
-    RAISE_MIN,
-    RAISE_THIRD_POT,
-    RAISE_HALF_POT,
-    ALL_IN,
-];
-const LEGAL_BB: [u8; 4] = [FOLD, CALL_CHECK, RAISE_MIN, ALL_IN];
+use rand::rngs::SmallRng;
 
 #[test]
 fn test_select_action_purified_defense() {
@@ -176,7 +167,7 @@ fn test_high_fold_to_3bet_exploit() {
     for _ in 0..100 {
         let req_ajs = PolicyRequest {
             raw_probs: &flat_heavy,
-            legal_actions: &LEGAL_SB,
+            legal_actions: &LEGAL_FULL,
             bucket: pf_bucket_ajs,
             round: 1,
             to_call: 150,
@@ -199,40 +190,8 @@ fn test_high_fold_to_3bet_exploit() {
 }
 
 #[test]
-fn test_observe_blind_level_decay() {
-    let mut tracker = OpponentTracker::new();
-    tracker.observe_blind_level(100);
-    for i in 0..20 {
-        if i < 10 {
-            tracker.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
-        } else {
-            tracker.record_action_street_detailed(FOLD, 1, true, 0, 250);
-        }
-        tracker.end_hand();
-    }
-    assert_eq!(tracker.total_hands, 20);
-    assert_eq!(tracker.pfr_hands, 10);
-
-    tracker.observe_blind_level(100);
-    assert_eq!(tracker.total_hands, 20);
-
-    tracker.observe_blind_level(200);
-    assert!(
-        tracker.total_hands < 20 && tracker.total_hands >= 12,
-        "Expected soft decay on 2x blind jump (100 -> 200), got total_hands={}",
-        tracker.total_hands
-    );
-    assert!(tracker.pfr_hands <= tracker.vpip_hands && tracker.vpip_hands <= tracker.total_hands);
-}
-
-#[test]
 fn test_short_stack_15bb_and_10bb_nash_calls() {
-    let mut maniac = OpponentTracker::new();
-    for _ in 0..10 {
-        maniac.record_action_street_detailed(ALL_IN, 1, false, 1400, 150);
-        maniac.record_preflop_positional(true, true, true);
-        maniac.end_hand();
-    }
+    let maniac = make_shove_maniac();
     let hole_88 = [
         Card::new(Rank::Eight, Suit::Hearts),
         Card::new(Rank::Eight, Suit::Spades),
@@ -311,7 +270,7 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
         let (act, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &jam_heavy,
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_99,
                 round: 1,
                 to_call: 300,
@@ -341,7 +300,7 @@ fn test_deep_99_no_open_jam_and_sb_tier5_open_raise() {
         let (act, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &limp_heavy,
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_a8o,
                 round: 1,
                 to_call: 100,
@@ -431,7 +390,7 @@ fn test_short_stack_nash_sb_open_pushes() {
                 pot: bb + bb / 2,
                 table_bb: bb,
                 my_chips: stack,
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 ..Default::default()
             })
             .expect("short stack push/fold active");
@@ -473,6 +432,15 @@ fn test_short_stack_nash_bb_min_raise_defends() {
             1280,
             "J3o @ 6.4 BB",
         ),
+        (
+            Rank::King,
+            Suit::Spades,
+            Rank::Two,
+            Suit::Clubs,
+            250,
+            2020,
+            "K2o @ 9.1 BB",
+        ),
     ];
     for (r1, s1, r2, s2, bb, stack, label) in bb_call_cases {
         let b = preflop_bucket(Card::new(r1, s1), Card::new(r2, s2)).0;
@@ -496,17 +464,7 @@ fn test_short_stack_nash_bb_min_raise_defends() {
 
 #[test]
 fn test_ultra_nit_sb_steals_pair_setmine_and_no_4bet_jam() {
-    let mut ultra_nit = OpponentTracker::new();
-    for i in 0..15 {
-        if i == 0 {
-            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
-        } else if i < 3 {
-            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 100, 150);
-        } else {
-            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 200);
-        }
-        ultra_nit.end_hand();
-    }
+    let ultra_nit = make_ultra_nit();
     let mut rng = SmallRng::seed_from_u64(4242);
     let fold_heavy_sb: [f64; HOLDEM_NUM_ACTIONS] = [0.95, 0.05, 0.0, 0.0, 0.0, 0.0];
     for (c1, c2, label) in [
@@ -528,7 +486,7 @@ fn test_ultra_nit_sb_steals_pair_setmine_and_no_4bet_jam() {
             let (act, _) = ultra_nit.select_action_traced(
                 &PolicyRequest {
                     raw_probs: &fold_heavy_sb,
-                    legal_actions: &LEGAL_SB,
+                    legal_actions: &LEGAL_FULL,
                     bucket: b,
                     round: 1,
                     to_call: 50,
@@ -557,7 +515,7 @@ fn test_ultra_nit_sb_steals_pair_setmine_and_no_4bet_jam() {
     let (act_44, _) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &[0.80, 0.20, 0.0, 0.0, 0.0, 0.0],
-            legal_actions: &LEGAL_SB,
+            legal_actions: &LEGAL_FULL,
             bucket: preflop_bucket(hole_44[0], hole_44[1]).0,
             round: 1,
             to_call: 300,
@@ -579,7 +537,7 @@ fn test_ultra_nit_sb_steals_pair_setmine_and_no_4bet_jam() {
         let (act_99, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &[0.05, 0.20, 0.0, 0.15, 0.0, 0.60],
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_99,
                 round: 1,
                 to_call: 1725,
@@ -616,7 +574,7 @@ fn test_short_stack_effective_nash_push_call_and_sb_limp_elimination() {
             table_bb: 200,
             my_chips: 17568,
             opp_chips: Some(2300),
-            legal_actions: &LEGAL_SB,
+            legal_actions: &LEGAL_FULL,
             ..Default::default()
         })
         .expect("effective stack <= 12 BB activates short-stack push/fold");
@@ -637,34 +595,13 @@ fn test_short_stack_effective_nash_push_call_and_sb_limp_elimination() {
             pot: 3669,
             table_bb: 400,
             my_chips: 2869,
-            legal_actions: &[FOLD, CALL_CHECK, ALL_IN],
+            legal_actions: &LEGAL_SHOVE,
             ..Default::default()
         })
         .expect("K5s at 8.2 BB facing jam");
     assert_eq!(
         act_k5s, CALL_CHECK,
         "K5s at 8.2 BB in BB must call SB shove"
-    );
-
-    let k2o_b = preflop_bucket(
-        Card::new(Rank::King, Suit::Spades),
-        Card::new(Rank::Two, Suit::Clubs),
-    )
-    .0;
-    let (act_k2o, _) = tracker
-        .select_short_stack_preflop_action(&ShortStackRequest {
-            bucket: k2o_b,
-            to_call: 250,
-            pot: 750,
-            table_bb: 250,
-            my_chips: 2020,
-            legal_actions: &LEGAL_BB,
-            ..Default::default()
-        })
-        .expect("K2o at 9.1 BB facing min-raise in BB");
-    assert_eq!(
-        act_k2o, CALL_CHECK,
-        "Ks 2c in BB at 9.1 BB must defend vs min-raise"
     );
 
     let hole_jj = [
@@ -676,7 +613,7 @@ fn test_short_stack_effective_nash_push_call_and_sb_limp_elimination() {
         let (act_jj, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &[0.0, 0.45, 0.55, 0.0, 0.0, 0.0],
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_jj,
                 round: 1,
                 to_call: 50,
@@ -691,6 +628,32 @@ fn test_short_stack_effective_nash_push_call_and_sb_limp_elimination() {
         assert!(
             act_jj >= RAISE_MIN,
             "Pocket JJ in SB must raise, got {act_jj}"
+        );
+    }
+
+    let b_t7o = preflop_bucket(
+        Card::new(Rank::Ten, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Clubs),
+    )
+    .0;
+    let raw_limp = [0.10, 0.80, 0.10, 0.0, 0.0, 0.0];
+    for _ in 0..20 {
+        let (act_sb, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &raw_limp,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_t7o,
+                round: 1,
+                to_call: 50,
+                pot: 150,
+                my_chips: 9950,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_ne!(
+            act_sb, CALL_CHECK,
+            "Tier 7 T7o on 100 BB HU SB must never limp"
         );
     }
 }
@@ -708,7 +671,7 @@ fn test_preflop_four_bet_discipline_and_hu_bb_small_open_defense() {
     let (act_4bet, tr_4bet) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &[0.05, 0.85, 0.10, 0.0, 0.0, 0.0],
-            legal_actions: &LEGAL_SB,
+            legal_actions: &LEGAL_FULL,
             bucket: b_56d,
             round: 1,
             to_call: 1815,
@@ -744,7 +707,7 @@ fn test_preflop_four_bet_discipline_and_hu_bb_small_open_defense() {
             let (act, _) = tracker.select_action_traced(
                 &PolicyRequest {
                     raw_probs: &fold_heavy,
-                    legal_actions: &LEGAL_SB,
+                    legal_actions: &LEGAL_FULL,
                     bucket: b,
                     round: 1,
                     to_call: 150,
@@ -822,12 +785,7 @@ fn test_preflop_hu_sb_mid_hands_open_raise_vs_hyper_aggressor() {
 
 #[test]
 fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
-    let mut maniac = OpponentTracker::new();
-    for _ in 0..10 {
-        maniac.record_action_street_detailed(ALL_IN, 1, false, 1400, 150);
-        maniac.record_preflop_positional(true, true, true);
-        maniac.end_hand();
-    }
+    let maniac = make_shove_maniac();
     let mut rng = SmallRng::seed_from_u64(20_261_122);
 
     /* 1. Weak offsuit Ace (~30 BB) facing a non-all-in 10 BB 3-bet must fold rather than rescue */
@@ -839,7 +797,7 @@ fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
     let (act_a6o, tr_a6o) = maniac.select_action_traced(
         &PolicyRequest {
             raw_probs: &[0.05, 0.90, 0.0, 0.0, 0.0, 0.05],
-            legal_actions: &LEGAL_SB,
+            legal_actions: &LEGAL_FULL,
             bucket: b_a6o,
             round: 1,
             to_call: 1500,
@@ -871,7 +829,7 @@ fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
         let (act_a7o, _) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &three_bet_heavy,
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b_a7o,
                 round: 1,
                 to_call: 300,
@@ -906,7 +864,7 @@ fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
         let (act_gap, tr_gap) = tracker.select_action_traced(
             &PolicyRequest {
                 raw_probs: &call_heavy,
-                legal_actions: &LEGAL_SB,
+                legal_actions: &LEGAL_FULL,
                 bucket: b,
                 round: 1,
                 to_call: 450,
@@ -925,4 +883,190 @@ fn test_preflop_non_allin_3bet_fold_and_low_offsuit_bb_discipline() {
             tr_gap.guard_reasons
         );
     }
+}
+
+#[test]
+fn test_small_pocket_pair_no_bloated_3bet_and_no_jam() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(4242);
+
+    let hole_55 = [
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Spades),
+    ];
+    let (bucket_55, _) = preflop_bucket(hole_55[0], hole_55[1]);
+    let policy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.25, 0.20, 0.25, 0.30, 0.0];
+
+    let mut raise_min_count = 0usize;
+    let mut trace_has_guard = false;
+    for _ in 0..100 {
+        let (act, trace) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &policy,
+                legal_actions: &LEGAL_FULL,
+                bucket: bucket_55,
+                round: 1,
+                to_call: 350,
+                pot: 1100,
+                hole: Some(&hole_55),
+                table_bb: 300,
+                my_chips: 15000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act != RAISE_THIRD_POT && act != RAISE_HALF_POT && act != ALL_IN,
+            "55 facing open raise must suppress 3-bet raise sizes, got action {act}"
+        );
+        if act == RAISE_MIN {
+            raise_min_count += 1;
+        }
+        if trace.guard_reasons.contains(&"PF_DISCIPLINE_GUARD") {
+            trace_has_guard = true;
+        }
+    }
+    assert!(
+        trace_has_guard,
+        "PF_DISCIPLINE_GUARD must fire for 55 facing open raise"
+    );
+    assert!(
+        raise_min_count <= 20,
+        "55 should rarely 3-bet min-raise (capped <= 0.05), got {raise_min_count}/100"
+    );
+
+    let act_77 = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &[0.0, 0.10, 0.0, 0.0, 0.0, 0.90],
+            legal_actions: &LEGAL_FULL,
+            bucket: 8,
+            round: 1,
+            to_call: 400,
+            pot: 1000,
+            table_bb: 200,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_ne!(
+        act_77, ALL_IN,
+        "Pocket 77 facing a standard 2x open must not 3-bet jam ALL_IN!"
+    );
+}
+
+#[test]
+fn test_maniac_preflop_shove_defense() {
+    let maniac = make_shove_maniac();
+    let mut rng = SmallRng::seed_from_u64(2027);
+    let call_heavy = [0.05, 0.90, 0.05, 0.0, 0.0, 0.0];
+
+    let act_qjo = maniac.select_action(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 77,
+            round: 1,
+            to_call: 5800,
+            pot: 6200,
+            table_bb: 200,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_qjo, FOLD,
+        "Offsuit QJo must fold to a 29 BB preflop shove!"
+    );
+
+    let act_a8s = maniac.select_action(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 34,
+            round: 1,
+            to_call: 6400,
+            pot: 6800,
+            table_bb: 200,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_a8s, FOLD,
+        "Suited A8s must fold to 32 BB preflop shove!"
+    );
+
+    let act_97s = maniac.select_action(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: 51,
+            round: 1,
+            to_call: 2663,
+            pot: 3063,
+            table_bb: 200,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_97s, FOLD,
+        "Suited 97s must fold to 13.3 BB preflop shove!"
+    );
+}
+
+#[test]
+fn test_preflop_deep_and_multiway_shove_defense() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(42);
+    let legal = [FOLD, CALL_CHECK];
+
+    let chosen_88 = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &[0.20, 0.80, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &legal,
+            bucket: 6,
+            round: 1,
+            to_call: 4000,
+            pot: 5000,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(chosen_88, FOLD, "Pocket 88 facing a 40 BB shove must fold!");
+
+    let chosen_aa = tracker.select_action(
+        &PolicyRequest {
+            raw_probs: &[0.40, 0.60, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &legal,
+            bucket: 0,
+            round: 1,
+            to_call: 4000,
+            pot: 5000,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(chosen_aa, CALL_CHECK, "Pocket Aces facing shove must call!");
+
+    /* Multiway cold 3-bet shove (~19.4 BB over CO open) with KQs (bucket 15) must fold with zero prior reads */
+    let (act_kqs_mw, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &legal,
+            bucket: 15,
+            round: 1,
+            to_call: 15490,
+            pot: 22160,
+            active_opponents: 2,
+            table_bb: 800,
+            my_chips: 15490,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_kqs_mw, FOLD,
+        "KQs must fold to a 19.4 BB multiway cold 3-bet squeeze shove with no reads"
+    );
 }

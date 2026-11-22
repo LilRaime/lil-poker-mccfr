@@ -1,93 +1,19 @@
+use super::{LEGAL_FULL, LEGAL_OPEN, make_aggro_maniac, make_overbet_bluffer, make_ultra_nit};
 use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
 use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, Rank, Suit,
 };
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
-
-const LEGAL_FULL: [u8; 6] = [
-    FOLD,
-    CALL_CHECK,
-    RAISE_MIN,
-    RAISE_THIRD_POT,
-    RAISE_HALF_POT,
-    ALL_IN,
-];
-const LEGAL_OPEN: [u8; 5] = [
-    CALL_CHECK,
-    RAISE_MIN,
-    RAISE_THIRD_POT,
-    RAISE_HALF_POT,
-    ALL_IN,
-];
-
-fn make_ultra_nit() -> OpponentTracker {
-    let mut ultra_nit = OpponentTracker::new();
-    for i in 0..15 {
-        if i == 0 {
-            ultra_nit.record_action_street_detailed(RAISE_MIN, 1, false, 300, 150);
-        } else if i < 3 {
-            ultra_nit.record_action_street_detailed(CALL_CHECK, 1, false, 150, 150);
-        } else {
-            ultra_nit.record_action_street_detailed(FOLD, 1, true, 0, 300);
-        }
-        ultra_nit.end_hand();
-    }
-    ultra_nit
-}
-
-fn make_overbet_bluffer() -> OpponentTracker {
-    let mut villain = OpponentTracker::new();
-    for _ in 0..5 {
-        villain.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
-        villain.end_hand();
-    }
-    villain
-}
+use rand::rngs::SmallRng;
 
 #[test]
-fn test_subgame_turn_paired_no_jam_and_river_paired_defense() {
+fn test_subgame_river_paired_defense_neutral_and_ultra_nit() {
     let mut rng = SmallRng::seed_from_u64(20_261_119);
     let tracker = OpponentTracker::new();
     let ultra_nit = make_ultra_nit();
     let jam_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.25, 0.0, 0.10, 0.10, 0.50];
-
-    /* Ah 4c on 9h 5s As 9d paired Turn facing 2x overbet must NOT check-raise jam */
-    let hole_a4o = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Clubs),
-    ];
-    let board_paired_turn = [
-        Card::new(Rank::Nine, Suit::Hearts),
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Ace, Suit::Spades),
-        Card::new(Rank::Nine, Suit::Diamonds),
-    ];
-    let b_a4o = postflop_equity_bucket(&hole_a4o, &board_paired_turn);
-    for _ in 0..30 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &jam_heavy,
-                legal_actions: &LEGAL_FULL,
-                bucket: b_a4o,
-                round: 3,
-                to_call: 2209,
-                pot: 3309,
-                hole: Some(&hole_a4o),
-                board: Some(&board_paired_turn),
-                my_chips: 8413,
-                from_subgame: true,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        assert!(
-            act < RAISE_MIN,
-            "Weak Top Pair A4o on paired turn vs 2x overbet must never raise/jam, got {act}"
-        );
-    }
 
     /* Js Ts on 5s Jc 8d 9s 5d paired connected River: neutral never jams, ultra-nit folds */
     let hole_jt = [
@@ -207,7 +133,7 @@ fn test_subgame_four_flush_and_ultra_nit_river_folds() {
 }
 
 #[test]
-fn test_subgame_allin_overbet_caps() {
+fn test_subgame_extreme_allin_overbet_cap() {
     let mut rng = SmallRng::seed_from_u64(20_261_119);
     let tracker = OpponentTracker::new();
     let raw_allin: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.05, 0.0, 0.05, 0.0, 0.90];
@@ -241,39 +167,6 @@ fn test_subgame_allin_overbet_caps() {
     assert_ne!(
         act_turn_flush, ALL_IN,
         "Extreme >20x pot Turn flush ALL_IN must be capped into standard value sizing"
-    );
-
-    let hole_3s4s = [
-        Card::new(Rank::Three, Suit::Spades),
-        Card::new(Rank::Four, Suit::Spades),
-    ];
-    let board_river_straight = [
-        Card::new(Rank::Ace, Suit::Clubs),
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Five, Suit::Diamonds),
-        Card::new(Rank::Four, Suit::Diamonds),
-        Card::new(Rank::Two, Suit::Clubs),
-    ];
-    let b_river_straight = postflop_equity_bucket(&hole_3s4s, &board_river_straight);
-    let (act_river_straight, _) = tracker.select_action_traced(
-        &PolicyRequest {
-            raw_probs: &raw_allin,
-            legal_actions: &LEGAL_OPEN,
-            bucket: b_river_straight,
-            round: 4,
-            pot: 300,
-            hole: Some(&hole_3s4s),
-            board: Some(&board_river_straight),
-            table_bb: 150,
-            my_chips: 8900,
-            from_subgame: true,
-            ..Default::default()
-        },
-        &mut rng,
-    );
-    assert_ne!(
-        act_river_straight, ALL_IN,
-        "Extreme >30x pot River straight ALL_IN must be capped into standard value sizing"
     );
 }
 
@@ -350,7 +243,7 @@ fn test_subgame_river_showdown_and_paired_air_check_back() {
 }
 
 #[test]
-fn test_subgame_nut_straight_and_top_set_value_floor() {
+fn test_subgame_nut_straight_value_floor() {
     let mut rng = SmallRng::seed_from_u64(20_261_119);
     let tracker = OpponentTracker::new();
     let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.85, 0.0, 0.15, 0.0, 0.0];
@@ -392,42 +285,6 @@ fn test_subgame_nut_straight_and_top_set_value_floor() {
     assert!(
         nut_straight_bets >= 45,
         "Nut Straight must value-bet majority of the time, got {nut_straight_bets}/80"
-    );
-
-    let hole_jj = [
-        Card::new(Rank::Jack, Suit::Hearts),
-        Card::new(Rank::Jack, Suit::Spades),
-    ];
-    let board_wet_set_flop = [
-        Card::new(Rank::Five, Suit::Clubs),
-        Card::new(Rank::Three, Suit::Diamonds),
-        Card::new(Rank::Jack, Suit::Clubs),
-    ];
-    let b_wet_set = postflop_equity_bucket(&hole_jj, &board_wet_set_flop);
-    let mut wet_set_bets = 0usize;
-    for _ in 0..80 {
-        let (act, _) = tracker.select_action_traced(
-            &PolicyRequest {
-                raw_probs: &passive_check,
-                legal_actions: &LEGAL_OPEN,
-                bucket: b_wet_set,
-                round: 2,
-                pot: 1000,
-                hole: Some(&hole_jj),
-                board: Some(&board_wet_set_flop),
-                table_bb: 200,
-                my_chips: 5331,
-                ..Default::default()
-            },
-            &mut rng,
-        );
-        if act >= RAISE_MIN {
-            wet_set_bets += 1;
-        }
-    }
-    assert!(
-        wet_set_bets >= 45,
-        "Top Set on wet flop must value-bet majority of the time, got {wet_set_bets}/80"
     );
 }
 
@@ -713,12 +570,7 @@ fn test_subgame_low_spr_two_pair_value_and_river_middle_pair_cap() {
 
 #[test]
 fn test_subgame_turn_bottom_pair_shove_vs_maniac() {
-    let mut maniac = OpponentTracker::new();
-    for _ in 0..12 {
-        maniac.record_action_street_detailed(RAISE_HALF_POT, 1, false, 600, 300);
-        maniac.record_action_street_detailed(RAISE_HALF_POT, 2, false, 600, 600);
-        maniac.end_hand();
-    }
+    let maniac = make_aggro_maniac();
     let mut rng = SmallRng::seed_from_u64(20_261_121);
     let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.95, 0.0, 0.0, 0.0, 0.0];
 

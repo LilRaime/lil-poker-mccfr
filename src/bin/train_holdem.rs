@@ -148,7 +148,6 @@ fn main() {
     let shards = if args.threads >= 8 { 16384 } else { 2048 };
     let stack_chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
     if args.short_stacks_only {
-        std::env::set_var("LIL_REPAIR_SHORT_STACKS", "1");
         println!(
             "Stack mode:       Short-Stacks Only [15 BB (S15|) + 30 BB (S30|)] (100 BB frozen)"
         );
@@ -172,6 +171,7 @@ fn main() {
     )
     .with_stack_size(stack_chips)
     .with_multi_stack(args.multi_stack)
+    .with_short_stacks_only(args.short_stacks_only)
     .with_board_texture(args.board_texture);
     if let Some(ref resume_path) = args.resume {
         match solver.warm_start_from_file(resume_path) {

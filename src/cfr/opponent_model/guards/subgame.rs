@@ -369,13 +369,12 @@ impl OpponentTracker {
         if let (Some(f_i), Some(c_i)) = (
             action_idx(ctx.legal_actions, FOLD),
             action_idx(ctx.legal_actions, CALL_CHECK),
-        ) {
-            if probs[f_i] > 0.35 {
-                reasons.push("OVERBET_BLUFF_CATCH");
-                let s = probs[f_i] * 0.65;
-                probs[f_i] -= s;
-                probs[c_i] += s;
-            }
+        ) && probs[f_i] > 0.35
+        {
+            reasons.push("OVERBET_BLUFF_CATCH");
+            let s = probs[f_i] * 0.65;
+            probs[f_i] -= s;
+            probs[c_i] += s;
         }
     }
 }

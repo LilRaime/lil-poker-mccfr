@@ -3,13 +3,15 @@ use lil_poker_mccfr::game::config::{
     RAISE_MIN_AMT, RAISE_THIRD_POT_FLOOR, SMALL_BLIND, STACK_SIZE,
 };
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, Suit, TexasHoldemGame, ALL_IN, CALL_CHECK, RAISE_HALF_POT, RAISE_MIN,
-    RAISE_THIRD_POT,
+    ALL_IN, CALL_CHECK, Card, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
+    TexasHoldemGame,
 };
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 #[test]
 fn test_holdem_game_actions_and_transitions() {
-    let mut rng = rand::thread_rng();
+    let mut rng = SmallRng::seed_from_u64(42);
     let mut game = TexasHoldemGame::new_random(&mut rng);
     assert_eq!(game.round, 1);
     assert_eq!(game.board.len(), 0);
@@ -46,7 +48,7 @@ fn test_holdem_game_actions_and_transitions() {
 
 #[test]
 fn test_holdem_raise_third_pot_and_all_in() {
-    let mut rng = rand::thread_rng();
+    let mut rng = SmallRng::seed_from_u64(42);
     let game = TexasHoldemGame::new_random(&mut rng);
     let legal = game.legal_actions();
     assert!(legal.contains(&RAISE_THIRD_POT));
@@ -128,7 +130,7 @@ fn test_holdem_new_dealt_duplicate() {
 
 #[test]
 fn test_geometric_street_aware_bet_sizing() {
-    let mut rng = rand::thread_rng();
+    let mut rng = SmallRng::seed_from_u64(42);
     let mut game = TexasHoldemGame::new_random(&mut rng);
 
     /* Preflop: P0 calls, P1 checks -> Flop (round 2). Pot = 2 * BIG_BLIND */
@@ -180,7 +182,7 @@ fn test_geometric_street_aware_bet_sizing() {
 
 #[test]
 fn test_preflop_2_5bb_open_raise() {
-    let mut rng = rand::thread_rng();
+    let mut rng = SmallRng::seed_from_u64(42);
     let game = TexasHoldemGame::new_random(&mut rng);
 
     /* Initially P0 = Small Blind (50), P1 = Big Blind (100) */

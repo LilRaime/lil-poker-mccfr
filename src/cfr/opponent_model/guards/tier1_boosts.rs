@@ -3,8 +3,8 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
-    detect_board_texture, nash_open_push_max_bb, preflop_strength_tier, BoardFlushTexture,
-    BUCKET_STRONG_DRAW_MIN,
+    BUCKET_STRONG_DRAW_MIN, BoardFlushTexture, detect_board_texture, nash_open_push_max_bb,
+    preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
@@ -57,11 +57,7 @@ impl OpponentTracker {
             return;
         }
         let max_steal_tier = if ctx.is_hyper_aggressor {
-            if ctx.active_opponents == 1 {
-                5
-            } else {
-                3
-            }
+            if ctx.active_opponents == 1 { 5 } else { 3 }
         } else if ctx.active_opponents == 1 {
             6
         } else if ctx.active_opponents == 2 {
@@ -172,11 +168,11 @@ impl OpponentTracker {
             return;
         }
         reasons.push("PF_BUTTON_STEAL");
-        if let Some(f_i) = fold_idx {
-            if probs[f_i] > 0.05 {
-                probs[r_i] += probs[f_i] * 0.85;
-                probs[f_i] *= 0.15;
-            }
+        if let Some(f_i) = fold_idx
+            && probs[f_i] > 0.05
+        {
+            probs[r_i] += probs[f_i] * 0.85;
+            probs[f_i] *= 0.15;
         }
         if ctx.to_call > 0 {
             if let Some(c_i) = call_idx {
@@ -196,22 +192,20 @@ impl OpponentTracker {
             if (10..=19).contains(&ctx.eff_stack_bb)
                 && ctx.bucket >= 4
                 && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) >= ctx.eff_stack_bb
+                && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)
             {
-                if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                    let s = probs[r_i] * 0.55;
-                    probs[r_i] -= s;
-                    probs[ai_i] += s;
-                }
+                let s = probs[r_i] * 0.55;
+                probs[r_i] -= s;
+                probs[ai_i] += s;
             }
-        } else if pf_tier_now <= 3
-            || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5)
+        } else if (pf_tier_now <= 3
+            || (self.sb_total_hands >= 4 && self.sb_limp_ratio() > 0.25 && pf_tier_now <= 5))
+            && let Some(c_i) = call_idx
         {
-            if let Some(c_i) = call_idx {
-                let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
-                let shifted = probs[c_i] * limp_shift;
-                probs[r_i] += shifted;
-                probs[c_i] -= shifted;
-            }
+            let limp_shift = if pf_tier_now <= 3 { 0.55 } else { 0.40 };
+            let shifted = probs[c_i] * limp_shift;
+            probs[r_i] += shifted;
+            probs[c_i] -= shifted;
         }
     }
 

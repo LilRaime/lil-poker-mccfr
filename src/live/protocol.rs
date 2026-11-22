@@ -1,4 +1,5 @@
 /*! Live Client Network Protocols, Payloads, and Action Mappings */
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -407,14 +408,14 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
 
     if bet_amt < s_third {
         let p_min = pseudo_harmonic_prob(bet_amt, s_min, s_third, pot);
-        if rng.gen::<f64>() <= p_min {
+        if rng.random::<f64>() <= p_min {
             RAISE_MIN
         } else {
             RAISE_THIRD_POT
         }
     } else if bet_amt < s_half {
         let p_third = pseudo_harmonic_prob(bet_amt, s_third, s_half, pot);
-        if rng.gen::<f64>() <= p_third {
+        if rng.random::<f64>() <= p_third {
             RAISE_THIRD_POT
         } else {
             RAISE_HALF_POT
@@ -426,7 +427,7 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
         } else {
             let s_cap = allin_threshold.max(s_overbet + eff_bb);
             let p_half = pseudo_harmonic_prob(bet_amt, s_overbet, s_cap, pot);
-            if rng.gen::<f64>() <= p_half {
+            if rng.random::<f64>() <= p_half {
                 RAISE_HALF_POT
             } else {
                 ALL_IN

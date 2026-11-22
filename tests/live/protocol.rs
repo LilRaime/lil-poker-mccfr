@@ -1,9 +1,9 @@
 use lil_poker_mccfr::game::holdem::{
-    calculate_geometric_bet_size, Rank, Suit, ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, Rank, Suit, calculate_geometric_bet_size,
 };
 use lil_poker_mccfr::live::protocol::{
-    map_action_index, parse_card_str, parse_json_i32, pseudo_harmonic_action_mapping,
-    pseudo_harmonic_prob, ActionMapRequest,
+    ActionMapRequest, map_action_index, parse_card_str, parse_json_i32,
+    pseudo_harmonic_action_mapping, pseudo_harmonic_prob,
 };
 use rand::SeedableRng;
 use serde_json::json;
@@ -81,7 +81,7 @@ fn test_live_map_action_index() {
     .expect("map index 0 facing bet");
     assert_eq!(act_facing_bet, "fold");
 
-    /* Index 1 (Call / Check): When to_call > 0 -> call */
+    /* Index 1 (Call / Check): When to_call > 0 -> call, when to_call == 0 -> check */
     let (act_call, amt_call) = map_action_index(&ActionMapRequest {
         action_idx: CALL_CHECK as usize,
         legal: &legal,
@@ -90,8 +90,23 @@ fn test_live_map_action_index() {
         ..Default::default()
     })
     .expect("map index 1 facing bet");
-    assert_eq!(act_call, "call");
+    assert_eq!(act_call, "call", "Facing bet must map to call, not check!");
     assert_eq!(amt_call, 0);
+
+    let (act_check, amt_check) = map_action_index(&ActionMapRequest {
+        action_idx: CALL_CHECK as usize,
+        legal: &legal,
+        to_call: 0,
+        pot: 150,
+        round: 2,
+        ..Default::default()
+    })
+    .expect("map index 1 when free");
+    assert_eq!(
+        act_check, "check",
+        "Free action must map to check, not call!"
+    );
+    assert_eq!(amt_check, 0);
 
     /* Index 4 (Raise Half Pot): dry vs wet board */
     let (_, amt_dry) = map_action_index(&ActionMapRequest {
@@ -187,45 +202,6 @@ fn test_pseudo_harmonic_and_geometric_sizing() {
 
     let act_shove = pseudo_harmonic_action_mapping(8500, 1000, 8000, &mut rng);
     assert_eq!(act_shove, ALL_IN, "Huge bet must map to all-in");
-}
-
-#[test]
-fn test_call_check_facing_bet_never_checks() {
-    let legal = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "check".to_string(),
-        "raise".to_string(),
-    ];
-
-    /* When facing a bet (to_call > 0), CALL_CHECK action index MUST map to "call" */
-    let (act, amt) = map_action_index(&ActionMapRequest {
-        action_idx: CALL_CHECK as usize,
-        legal: &legal,
-        to_call: 50,
-        pot: 150,
-        round: 1,
-        ..Default::default()
-    })
-    .expect("map call_check");
-    assert_eq!(act, "call", "Facing bet must map to call, not check!");
-    assert_eq!(amt, 0);
-
-    /* When free (to_call == 0), CALL_CHECK action index MUST map to "check" */
-    let (act_free, amt_free) = map_action_index(&ActionMapRequest {
-        action_idx: CALL_CHECK as usize,
-        legal: &legal,
-        to_call: 0,
-        pot: 150,
-        round: 2,
-        ..Default::default()
-    })
-    .expect("map call_check when free");
-    assert_eq!(
-        act_free, "check",
-        "Free action must map to check, not call!"
-    );
-    assert_eq!(amt_free, 0);
 }
 
 #[test]

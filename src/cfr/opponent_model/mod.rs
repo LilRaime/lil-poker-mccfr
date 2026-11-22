@@ -9,5 +9,5 @@ pub mod tracker;
 
 pub use classifier::*;
 pub use exploit::ExploitRequest;
-pub use policy::{effective_remaining_chips, DecisionTrace, PolicyRequest, ShortStackRequest};
+pub use policy::{DecisionTrace, PolicyRequest, ShortStackRequest, effective_remaining_chips};
 pub use tracker::*;

@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
-use super::super::engine::{simulate_holdem_hand_traced, SimHandConfig};
-use super::super::strategy::{load_holdem_strategy, HoldemStrategy};
+use super::super::engine::{SimHandConfig, simulate_holdem_hand_traced};
+use super::super::strategy::{HoldemStrategy, load_holdem_strategy};
 use super::telemetry::{
     print_guard_telemetry, print_opponent_tracker_summary, print_positional_breakdown,
     record_guard_reasons,
 };
-use super::{deal_cards_prefix, HoldemBenchmarkResult};
+use super::{HoldemBenchmarkResult, deal_cards_prefix};
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::cfr::subgame::SubgameSolver;
@@ -106,7 +106,9 @@ fn load_strategies_and_log(
             );
         }
         if cfg.duplicate_mode {
-            println!("[duplicate] DUPLICATE POKER ACTIVE: Each deal played in reverse seats to eliminate card luck!");
+            println!(
+                "[duplicate] DUPLICATE POKER ACTIVE: Each deal played in reverse seats to eliminate card luck!"
+            );
         }
         if stack_size != STACK_SIZE {
             println!(
@@ -175,7 +177,9 @@ fn summarize_duplicate_result(
         } else if ci_high < 0.0 {
             println!("Statistical Verdict   : ❌ STATISTICALLY SIGNIFICANT -EV (p < 0.05)");
         } else {
-            println!("Statistical Verdict   : ⚪ INCONCLUSIVE (overlaps zero — increase hands for higher statistical power)");
+            println!(
+                "Statistical Verdict   : ⚪ INCONCLUSIVE (overlaps zero — increase hands for higher statistical power)"
+            );
         }
     }
 
@@ -367,7 +371,7 @@ pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkR
 
     let mut rng = match cfg.seed {
         Some(s) => SmallRng::seed_from_u64(s),
-        None => SmallRng::from_entropy(),
+        None => rand::make_rng(),
     };
     let mut opp_tracker = OpponentTracker::new();
     opp_tracker.set_exploit_factor(cfg.exploit_factor);

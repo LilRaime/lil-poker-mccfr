@@ -103,12 +103,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ROUND_FLOP => {
                 /* 2. Flop: require preflop length <= max_pf_len */
                 let base_k = strip_stack_prefix(&k);
-                if base_k.starts_with("P:") {
-                    if let Some(end) = base_k.find('|') {
-                        let pf_len = base_k[2..end].len();
-                        if pf_len > args.max_pf_len {
-                            continue;
-                        }
+                if base_k.starts_with("P:")
+                    && let Some(end) = base_k.find('|')
+                {
+                    let pf_len = base_k[2..end].len();
+                    if pf_len > args.max_pf_len {
+                        continue;
                     }
                 }
                 distilled.insert(k, v);
@@ -116,12 +116,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             ROUND_TURN => {
                 /* 3. Turn: preflop length <= max_pf_len, turn actions <= max_turn_actions */
-                if k.starts_with("P:") {
-                    if let Some(end) = k.find('|') {
-                        let pf_len = k[2..end].len();
-                        if pf_len > args.max_pf_len {
-                            continue;
-                        }
+                if k.starts_with("P:")
+                    && let Some(end) = k.find('|')
+                {
+                    let pf_len = k[2..end].len();
+                    if pf_len > args.max_pf_len {
+                        continue;
                     }
                 }
                 if let Some(pos) = k.find("T:B") {
@@ -141,12 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if args.prune_river {
                     continue;
                 }
-                if k.starts_with("P:") {
-                    if let Some(end) = k.find('|') {
-                        let pf_len = k[2..end].len();
-                        if pf_len > args.max_pf_len {
-                            continue;
-                        }
+                if k.starts_with("P:")
+                    && let Some(end) = k.find('|')
+                {
+                    let pf_len = k[2..end].len();
+                    if pf_len > args.max_pf_len {
+                        continue;
                     }
                 }
                 if let Some(pos) = k.find("R:B") {

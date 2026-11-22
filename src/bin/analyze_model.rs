@@ -212,12 +212,11 @@ fn collect_model_stats<'a>(
         let s_idx = get_stack_idx(key);
         if (ROUND_PREFLOP..=ROUND_RIVER).contains(&street) {
             let bucket_tok = extract_bucket_token(key, street);
-            if street >= ROUND_FLOP {
-                if let Some(ref b) = bucket_tok {
-                    if let Ok(num) = b.parse::<usize>() {
-                        summary.postflop_buckets.insert(num);
-                    }
-                }
+            if street >= ROUND_FLOP
+                && let Some(ref b) = bucket_tok
+                && let Ok(num) = b.parse::<usize>()
+            {
+                summary.postflop_buckets.insert(num);
             }
             if street == ROUND_FLOP {
                 match extract_flop_texture(key) {
@@ -237,10 +236,10 @@ fn collect_model_stats<'a>(
             }
         }
 
-        if let Some(pat) = pattern {
-            if key.contains(pat) {
-                matches.push((key, probs));
-            }
+        if let Some(pat) = pattern
+            && key.contains(pat)
+        {
+            matches.push((key, probs));
         }
     }
 
@@ -283,9 +282,15 @@ fn print_street_distribution(summary: &ModelSummary, total_infosets: usize) {
 
 fn print_stack_and_texture_distribution(summary: &ModelSummary, total_infosets: usize) {
     println!("Stack Depth Distribution:");
-    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
-    println!("| Stack Depth   | Preflop |     Flop |     Turn |    River |     Total |  Share % | Pure % |");
-    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
+    println!(
+        "+---------------+---------+----------+----------+----------+-----------+----------+--------+"
+    );
+    println!(
+        "| Stack Depth   | Preflop |     Flop |     Turn |    River |     Total |  Share % | Pure % |"
+    );
+    println!(
+        "+---------------+---------+----------+----------+----------+-----------+----------+--------+"
+    );
     for (idx, ss) in summary.stack_stats.iter().enumerate() {
         if ss.total == 0 {
             continue;
@@ -308,7 +313,9 @@ fn print_stack_and_texture_distribution(summary: &ModelSummary, total_infosets: 
             pure_pct
         );
     }
-    println!("+---------------+---------+----------+----------+----------+-----------+----------+--------+");
+    println!(
+        "+---------------+---------+----------+----------+----------+-----------+----------+--------+"
+    );
 
     let textured_flop_total: usize = summary.flop_tex_counts[..4].iter().sum();
     if textured_flop_total > 0 {

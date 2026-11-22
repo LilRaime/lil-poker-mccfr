@@ -1,6 +1,7 @@
 use lil_poker_mccfr::cfr::abstraction::{
-    calculate_range_equity, detect_board_texture, detect_draws, nash_call_shove_max_bb,
-    nash_open_push_max_bb, postflop_equity_bucket, preflop_bucket, BoardFlushTexture,
+    BoardFlushTexture, calculate_range_equity, detect_board_texture, detect_draws,
+    get_holdem_infoset_key, nash_call_shove_max_bb, nash_open_push_max_bb, postflop_equity_bucket,
+    preflop_bucket,
 };
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
 
@@ -494,4 +495,30 @@ fn test_full_house_pair_rank_and_counterfeited_pocket_pair_buckets() {
         b_22 <= 10,
         "Counterfeited pocket pair 22 on KKQQ7 must be bucket <= 10, got {b_22}"
     );
+}
+
+#[test]
+fn test_two_pair_bottom_pair_on_board_abstraction() {
+    let card = |rank, suit| Card { rank, suit };
+    let hole = [
+        card(Rank::Ace, Suit::Spades),
+        card(Rank::King, Suit::Hearts),
+    ];
+    /* Board has pair of Twos; player hits top pair Ace with King kicker */
+    let board = [
+        card(Rank::Ace, Suit::Diamonds),
+        card(Rank::Seven, Suit::Clubs),
+        card(Rank::Two, Suit::Hearts),
+        card(Rank::Ten, Suit::Spades),
+        card(Rank::Two, Suit::Clubs),
+    ];
+    assert_eq!(
+        postflop_equity_bucket(&hole, &board),
+        43,
+        "Top Pair Top Kicker on paired board must map to bucket 43, not Two Pair (63)"
+    );
+    let river_history = [vec![2u8, 1u8], vec![4u8, 1u8], vec![1u8, 1u8], vec![3u8]];
+    let river_key = get_holdem_infoset_key(&hole, &board, 4, &river_history);
+    /* Should be bucket 43 (Vulnerable Top Pair Top Kicker on paired board), NOT Genuine Two Pair (63) */
+    assert_eq!(river_key, "R:B43/t");
 }

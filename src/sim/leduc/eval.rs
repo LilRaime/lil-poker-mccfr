@@ -1,6 +1,6 @@
 /*! Leduc Poker Exploitability (Best Response / NashConv) and Model Evaluation */
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use super::runner::{LeducStrategy, Strategy};
 use crate::game::card::ALL_CARDS;
@@ -95,7 +95,7 @@ pub fn simulate_vs_random(
                 sample_model_action(strategy, &game, cp, &mut rng)
             } else {
                 let legal = game.legal_actions();
-                legal[rng.gen_range(0..legal.len())]
+                legal[rng.random_range(0..legal.len())]
             };
             game = game.apply_action(act);
         }
@@ -147,7 +147,7 @@ pub fn sample_model_action(
         vec![1.0 / n as f64; n]
     };
 
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     let mut cum = 0.0;
     for (i, &p) in probs.iter().enumerate() {
         cum += p;

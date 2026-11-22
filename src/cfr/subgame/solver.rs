@@ -6,7 +6,7 @@
 use super::reach::{OpponentReachDistribution, ReachRequest};
 use super::traversal::TraversalCtx;
 use crate::cfr::abstraction::{
-    hash_holdem_infoset_key, postflop_equity_bucket, BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, hash_holdem_infoset_key, postflop_equity_bucket,
 };
 use crate::cfr::node::InfosetNode;
 use crate::game::config::{
@@ -15,10 +15,10 @@ use crate::game::config::{
     RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN, STACK_SIZE, SUBGAME_BET_PRESSURE,
     SUBGAME_POT_LG, SUBGAME_POT_MD, SUBGAME_POT_SM, SUBGAME_POT_XS,
 };
-use crate::game::holdem::{Card, TexasHoldemGame, ALL_52_CARDS};
+use crate::game::holdem::{ALL_52_CARDS, Card, TexasHoldemGame};
 use dashmap::DashMap;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -81,7 +81,7 @@ fn build_iteration_state(
     }
     let num_board_missing = NUM_COMMUNITY_CARDS.saturating_sub(ctx.board.len());
     for i in 0..num_board_missing.min(rem_count) {
-        let j = rng.gen_range(i..rem_count);
+        let j = rng.random_range(i..rem_count);
         deck_rem_cards.swap(i, j);
     }
 

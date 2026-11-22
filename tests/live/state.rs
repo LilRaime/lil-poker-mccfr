@@ -1,16 +1,16 @@
 use lil_poker_mccfr::cfr::abstraction::get_holdem_infoset_key_rich;
 use lil_poker_mccfr::cfr::fallback::lookup_strategy_hierarchical;
-use lil_poker_mccfr::cfr::opponent_model::{effective_remaining_chips, OpponentTracker};
+use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, effective_remaining_chips};
 use lil_poker_mccfr::game::holdem::{
-    Card, Rank, RoundHistory, Suit, CALL_CHECK, NUM_ROUNDS, RAISE_HALF_POT,
+    CALL_CHECK, Card, NUM_ROUNDS, RAISE_HALF_POT, Rank, RoundHistory, Suit,
 };
 use lil_poker_mccfr::live::client::{
-    build_emergency_fallback_candidates, EmergencyFallbackRequest,
+    EmergencyFallbackRequest, build_emergency_fallback_candidates,
 };
-use lil_poker_mccfr::live::decision::{decide_action, LiveDecisionRequest};
+use lil_poker_mccfr::live::decision::{LiveDecisionRequest, decide_action};
 use lil_poker_mccfr::live::state::{
-    derive_legal_actions, parse_live_state, parse_live_state_with_hint, process_showdown,
-    LiveRoundTracker, LiveTableTracker,
+    LiveRoundTracker, LiveTableTracker, derive_legal_actions, parse_live_state,
+    parse_live_state_with_hint, process_showdown,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -288,11 +288,10 @@ fn test_multiway_6max_state_and_decisions() {
         sd_tracker.showdown_hands, 2,
         "Multi-way showdown must record each opponent's hand individually"
     );
-    let _ = Card::new(Rank::Ace, Suit::Spades);
 }
 
 #[test]
-fn test_uncallable_overbet_pot_preservation_and_bb_defense() {
+fn test_uncallable_overbet_pot_preservation_and_one_chip_call() {
     /* 1. When server pot does not yet include an opponent's massive overbet jam (e.g. pot = 9112, opp bet = 10887, hero chips = 1),
      * parse_live_state must NOT wipe snapshot.pot to 0 via saturating_sub! */
     let overbet_json = json!({
@@ -350,41 +349,6 @@ fn test_uncallable_overbet_pot_preservation_and_bb_defense() {
     assert_ne!(
         act_one_chip, "fold",
         "Must never fold for 1 chip into a 9,112 pot!"
-    );
-
-    /* 2. In BB at ~10 BB (my_chips = 1950, bb = 200) facing a 2x min-raise (to_call = 200, pot = 600)
-     * with offsuit Ace-rag (A4o, Tier 4), bot should flat call to see the flop rather than open-jamming all-in! */
-    let hole_a4o = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Clubs),
-    ];
-    let legal_pf = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
-    let (act_bb_defend, _) = decide_action(
-        &LiveDecisionRequest {
-            hole: hole_a4o,
-            legal: &legal_pf,
-            to_call: 200,
-            pot: 600,
-            subgame_search: true,
-            history,
-            my_player: 1,
-            contributions: [200, 400],
-            big_blind: 200,
-            my_chips: 1950,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
-    );
-    assert_eq!(
-        act_bb_defend, "call",
-        "In BB at ~10 BB facing a 2x min-raise with A4o, bot should flat-call rather than jam all-in"
     );
 }
 

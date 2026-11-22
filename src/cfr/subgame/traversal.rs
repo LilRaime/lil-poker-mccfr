@@ -5,11 +5,11 @@
 
 use super::solver::SubgameSolver;
 use crate::cfr::abstraction::{
-    hash_holdem_infoset_key, hash_holdem_infoset_key_with_bucket, BUCKET_TRIPS_MIN,
-    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, hash_holdem_infoset_key,
+    hash_holdem_infoset_key_with_bucket,
 };
 use crate::cfr::fallback::{
-    get_holdem_fallback_strategy, get_postflop_fallback_by_bucket, FallbackRequest,
+    FallbackRequest, get_holdem_fallback_strategy, get_postflop_fallback_by_bucket,
 };
 use crate::cfr::node::InfosetNode;
 use crate::game::config::{
@@ -18,9 +18,9 @@ use crate::game::config::{
 };
 use crate::game::holdem::TexasHoldemGame;
 use dashmap::DashMap;
+use rand::RngExt;
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 
 /** Light regret-matching prior weight for newly expanded subgame child nodes.
@@ -126,47 +126,49 @@ pub(super) fn create_prior_infoset_node(
     };
     /* Dampen call/raise prior weights when facing >2x pot jams with non-trips hands
      * so SubgameSolver does not hallucinate call-EV for massive overbet shoves. */
-    if let Some(bucket) = postflop_bucket {
-        if to_call > 0 && legal.contains(&FOLD) && bucket < BUCKET_TRIPS_MIN {
-            let pre_bet_pot = (pot - to_call).max(1);
-            if to_call > pre_bet_pot * 2 {
-                let mut added_fold = 0.0f64;
-                if legal.contains(&CALL_CHECK) {
-                    let old_c = prior[CALL_CHECK as usize];
-                    let new_c = old_c * 0.35;
-                    added_fold += old_c - new_c;
-                    prior[CALL_CHECK as usize] = new_c;
-                }
-                for r in RAISE_MIN..=ALL_IN {
-                    if legal.contains(&r) {
-                        let old_r = prior[r as usize];
-                        let new_r = old_r * 0.25;
-                        added_fold += old_r - new_r;
-                        prior[r as usize] = new_r;
-                    }
-                }
-                prior[FOLD as usize] += added_fold;
-                let s: f64 = legal.iter().map(|&a| prior[a as usize]).sum();
-                if s > 1e-9 {
-                    for &a in legal {
-                        prior[a as usize] /= s;
-                    }
-                }
+    if let Some(bucket) = postflop_bucket
+        && to_call > 0
+        && legal.contains(&FOLD)
+        && bucket < BUCKET_TRIPS_MIN
+    {
+        let pre_bet_pot = (pot - to_call).max(1);
+        if to_call > pre_bet_pot * 2 {
+            let mut added_fold = 0.0f64;
+            if legal.contains(&CALL_CHECK) {
+                let old_c = prior[CALL_CHECK as usize];
+                let new_c = old_c * 0.35;
+                added_fold += old_c - new_c;
+                prior[CALL_CHECK as usize] = new_c;
             }
-        }
-    }
-    /* Stat-informed opponent node-locking prior bias */
-    if cur_p != my_player {
-        if let Some((fold_m, raise_m)) = opp_prior_bias {
-            prior[FOLD as usize] *= fold_m;
             for r in RAISE_MIN..=ALL_IN {
-                prior[r as usize] *= raise_m;
+                if legal.contains(&r) {
+                    let old_r = prior[r as usize];
+                    let new_r = old_r * 0.25;
+                    added_fold += old_r - new_r;
+                    prior[r as usize] = new_r;
+                }
             }
+            prior[FOLD as usize] += added_fold;
             let s: f64 = legal.iter().map(|&a| prior[a as usize]).sum();
             if s > 1e-9 {
                 for &a in legal {
                     prior[a as usize] /= s;
                 }
+            }
+        }
+    }
+    /* Stat-informed opponent node-locking prior bias */
+    if cur_p != my_player
+        && let Some((fold_m, raise_m)) = opp_prior_bias
+    {
+        prior[FOLD as usize] *= fold_m;
+        for r in RAISE_MIN..=ALL_IN {
+            prior[r as usize] *= raise_m;
+        }
+        let s: f64 = legal.iter().map(|&a| prior[a as usize]).sum();
+        if s > 1e-9 {
+            for &a in legal {
+                prior[a as usize] /= s;
             }
         }
     }
@@ -260,10 +262,10 @@ impl SubgameSolver {
 
             node_util
         } else {
-            if key_hash != ctx.root_hash {
-                if let Some(node) = nodes.get(&key_hash) {
-                    node.accumulate_strategy(&strategy, ctx.weight);
-                }
+            if key_hash != ctx.root_hash
+                && let Some(node) = nodes.get(&key_hash)
+            {
+                node.accumulate_strategy(&strategy, ctx.weight);
             }
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
@@ -339,10 +341,10 @@ impl SubgameSolver {
 
             node_util
         } else {
-            if key_hash != ctx.root_hash {
-                if let Some(node) = nodes.get_mut(&key_hash) {
-                    node.accumulate_strategy(&strategy, ctx.weight);
-                }
+            if key_hash != ctx.root_hash
+                && let Some(node) = nodes.get_mut(&key_hash)
+            {
+                node.accumulate_strategy(&strategy, ctx.weight);
             }
             let sampled_a = sample_action(&strategy, &legal, rng);
             let next_game = game.apply_action(sampled_a);
@@ -420,11 +422,7 @@ pub(super) fn evaluate_leaf_rollout(game: &TexasHoldemGame, updating_player: usi
     } else {
         0.0
     };
-    if updating_player == 0 {
-        ret0
-    } else {
-        -ret0
-    }
+    if updating_player == 0 { ret0 } else { -ret0 }
 }
 
 pub(super) fn sample_action(strategy: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 {
@@ -436,7 +434,7 @@ pub(super) fn sample_action(strategy: &[f64], legal: &[u8], rng: &mut SmallRng) 
         return legal.choose(rng).copied().unwrap_or(CALL_CHECK);
     }
 
-    let r: f64 = rng.gen();
+    let r: f64 = rng.random();
     for (&a, &p) in legal.iter().zip(legal_probs.iter()) {
         sum += p / total;
         if r <= sum {
