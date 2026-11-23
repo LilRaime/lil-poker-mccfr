@@ -73,9 +73,8 @@ impl OpponentTracker {
                     && ctx.active_opponents == 1
                     && !ctx.is_three_flush
                     && ((ctx.to_call <= ctx.bb * 4
-                        && ((ctx.pot_odds <= 0.28
-                            && (9..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket))
-                            || (ctx.pot_odds <= 0.26 && (7..=8).contains(&ctx.bucket))))
+                        && ctx.pot_odds <= 0.31
+                        && (7..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket))
                         || (ctx.to_call <= ctx.bb * 9
                             && ctx.pot_odds <= 0.28
                             && (12..BUCKET_STRONG_DRAW_MIN).contains(&ctx.bucket)

@@ -1438,4 +1438,38 @@ fn test_preflop_hu_minraise_defense_zero_limps_and_linear_3bet() {
         three_bets >= 18,
         "HU BB AJs vs >=42% PFR opener must 3-bet frequently (got {three_bets}/80)"
     );
+
+    /* Deep 46 BB 99 facing 7.5 BB 3-bet (to_call = 5 BB) must cap ALL_IN */
+    let neutral_opp = OpponentTracker::new();
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let (b_99, _) = preflop_bucket(hole_99[0], hole_99[1]);
+    let mut jams_99 = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral_opp.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.05, 0.35, 0.0, 0.15, 0.15, 0.30],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_99,
+                round: 1,
+                to_call: 500,
+                pot: 1000,
+                hole: Some(&hole_99),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 4600,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == ALL_IN {
+            jams_99 += 1;
+        }
+    }
+    assert_eq!(
+        jams_99, 0,
+        "46 BB 99 facing 7.5 BB 3-bet must cap ALL_IN (got {jams_99}/80)"
+    );
 }

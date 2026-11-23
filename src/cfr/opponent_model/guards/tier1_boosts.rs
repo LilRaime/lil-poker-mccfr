@@ -463,7 +463,7 @@ impl OpponentTracker {
         let is_aggro_opp = ctx.is_known_maniac || ctx.is_overbet_bluffer || ctx.is_hyper_aggressor;
         let eligible_hand = ctx.bucket >= 48
             || (ctx.bucket >= 47 && !ctx.is_paired_board)
-            || (25..=27).contains(&ctx.bucket)
+            || (24..=27).contains(&ctx.bucket)
             || (is_aggro_opp && ctx.bucket >= 44);
         if ctx.round != ROUND_FLOP
             || ctx.to_call <= 0
@@ -481,8 +481,8 @@ impl OpponentTracker {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
             return;
         };
-        if probs[c_i] > 0.65 {
-            let shift = probs[c_i] * 0.35;
+        if probs[c_i] > 0.50 {
+            let shift = probs[c_i] * 0.40;
             probs[c_i] -= shift;
             probs[r_i] += shift;
             reasons.push("FLOP_VALUE_CHECK_RAISE");

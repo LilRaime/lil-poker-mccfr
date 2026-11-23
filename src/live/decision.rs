@@ -537,7 +537,10 @@ fn apply_live_commit_and_spr_guards(
                 && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
                 || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
         let is_sticky_or_station = tracker.is_passive_station()
-            || (tracker.total_actions() >= 10 && tracker.smoothed_fold_ratio() < 0.26);
+            || (tracker.flop_cbet_faced >= 4 && tracker.smoothed_flop_fold_to_cbet() < 0.28)
+            || (tracker.total_actions() >= 15
+                && tracker.smoothed_fold_ratio() < 0.14
+                && tracker.smoothed_raise_ratio() <= 0.22);
         let allow_hu_3bet_overcard_cbet = s.round == ROUND_FLOP
             && s.active_opponents == 1
             && !is_sticky_or_station

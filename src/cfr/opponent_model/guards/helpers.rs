@@ -2,10 +2,11 @@
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use crate::cfr::abstraction::{
-    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN,
+    BUCKET_WEAK_PAIR_MIN,
 };
 use crate::game::config::{
-    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER,
+    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
 };
 use crate::game::holdem::Card;
 
@@ -102,7 +103,13 @@ pub(super) fn apply_overbet_allin_cap(
     }
     let rem_after_call = (ctx.my_chips - ctx.to_call).max(0);
     let pot_after_call = (ctx.pot + ctx.to_call).max(1);
-    if rem_after_call <= pot_after_call * 3 {
+    let is_extreme_overbet = rem_after_call > pot_after_call * 3;
+    let is_deep_one_pair_jam_vs_bet = ctx.round <= ROUND_TURN
+        && ctx.to_call > 0
+        && ctx.bucket < BUCKET_TWO_PAIR_MIN
+        && rem_after_call >= ctx.bb * 25
+        && rem_after_call > (pot_after_call * 3) / 2;
+    if !is_extreme_overbet && !is_deep_one_pair_jam_vs_bet {
         return;
     }
     let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) else {

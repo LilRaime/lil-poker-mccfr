@@ -406,9 +406,9 @@ impl OpponentTracker {
         pf_tier: u8,
         reasons: &mut Vec<&'static str>,
     ) {
-        if ctx.eff_stack_bb > 40
+        if ctx.eff_stack_bb > 35
             && !ctx.is_allin_call
-            && ctx.to_call >= ctx.bb * 6
+            && ctx.to_call > ctx.bb * 4
             && pf_tier == 2
             && ctx.bucket >= 4
             && let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN)

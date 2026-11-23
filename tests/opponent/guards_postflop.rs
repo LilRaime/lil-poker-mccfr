@@ -1138,4 +1138,121 @@ fn test_flop_floats_overbet_bluff_catch_and_polarized_sizing() {
         polarized_bets >= 20,
         "Set on dry Turn must shift weight into polarized RAISE_HALF_POT sizing (got {polarized_bets}/80)"
     );
+
+    /* 4. Normal HU opponent (Fold ~20%, Flop FTC 50%) must not suppress IP Flop c-bets */
+    let mut normal_hu = OpponentTracker::new();
+    for _ in 0..10 {
+        normal_hu.record_action_street(CALL_CHECK, 2, false);
+    }
+    for _ in 0..6 {
+        normal_hu.record_action_street(RAISE_MIN, 2, false);
+    }
+    for _ in 0..3 {
+        normal_hu.record_action_street(FOLD, 2, true);
+    }
+    for _ in 0..3 {
+        normal_hu.record_action_street(CALL_CHECK, 2, true);
+    }
+    let mut cbets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = normal_hu.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.35, 0.65, 0.0, 0.0, 0.0],
+                legal_actions: &LEGAL_OPEN,
+                bucket: 3,
+                round: 2,
+                pot: 500,
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 9700,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            cbets += 1;
+        }
+    }
+    assert!(
+        cbets >= 25,
+        "Normal HU opponent with 50% flop FTC must not trigger sticky-caller c-bet suppression (got {cbets}/80)"
+    );
+
+    /* 5. Deep Flop TPTK facing a 3-bet must cap ALL_IN */
+    let hole_khah = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Hearts),
+    ];
+    let board_k8t = [
+        Card::new(Rank::King, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Clubs),
+    ];
+    let b_tptk = postflop_equity_bucket(&hole_khah, &board_k8t);
+    let mut tptk_jams = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.50, 0.10, 0.05, 0.05, 0.30],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_tptk,
+                round: 2,
+                to_call: 595,
+                pot: 2575,
+                hole: Some(&hole_khah),
+                board: Some(&board_k8t),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 9010,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == ALL_IN {
+            tptk_jams += 1;
+        }
+    }
+    assert_eq!(
+        tptk_jams, 0,
+        "Deep Flop TPTK facing 3-bet must cap ALL_IN (got {tptk_jams}/80)"
+    );
+
+    /* 6. Clean two-overcard Flop float facing a 43% pot c-bet (pot_odds = 0.30 <= 0.31) */
+    let hole_k9 = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let board_852 = [
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Spades),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let b_k9 = postflop_equity_bucket(&hole_k9, &board_852);
+    let mut k9_calls = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.85, 0.15, 0.0, 0.0, 0.0, 0.0],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_k9,
+                round: 2,
+                to_call: 300,
+                pot: 700,
+                hole: Some(&hole_k9),
+                board: Some(&board_852),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 9700,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == CALL_CHECK {
+            k9_calls += 1;
+        }
+    }
+    assert!(
+        k9_calls >= 8,
+        "Clean two-overcard Flop float vs 43% pot c-bet must rescue calls (got {k9_calls}/80)"
+    );
 }

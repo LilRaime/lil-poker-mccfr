@@ -88,10 +88,11 @@ impl<'a> GuardContext<'a> {
         let sm_fold = tracker.smoothed_fold_ratio();
 
         let is_passive_station = tracker.is_passive_station();
-        let is_sticky_caller = tracker.total_actions() >= 10
-            && (sm_fold < 0.26
-                || (tracker.turn_cbet_faced + tracker.river_bet_faced >= 4
-                    && tracker.turn_fold_to_cbet_ratio() < 0.30));
+        let is_sticky_caller = is_passive_station
+            || (tracker.flop_cbet_faced >= 4 && tracker.smoothed_flop_fold_to_cbet() < 0.28)
+            || (tracker.turn_cbet_faced + tracker.river_bet_faced >= 4
+                && tracker.turn_fold_to_cbet_ratio() < 0.30)
+            || (tracker.total_actions() >= 15 && sm_fold < 0.14 && sm_raise <= 0.22);
         let is_overbet_bluffer = tracker.is_overbet_bluffer();
         let is_known_maniac = tracker.total_actions() >= 10
             && (sm_raise > 0.36
