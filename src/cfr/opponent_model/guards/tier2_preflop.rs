@@ -216,6 +216,8 @@ impl OpponentTracker {
                 && ctx.pot <= ctx.bb * 3
                 && ctx.pot_odds <= 0.26
                 && matches!(ctx.bucket, 121..=123 | 128..=130 | 136 | 144);
+            let is_offsuit_trash_vs_3bet =
+                ctx.pot >= ctx.bb * 6 && ctx.to_call >= ctx.bb * 2 && ctx.bucket >= 91;
             if is_hu_small_open {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
@@ -228,14 +230,17 @@ impl OpponentTracker {
                         probs[c_i] += defend;
                     }
                 }
-            } else if ctx.pot_odds <= 0.22
-                || (ctx.pot_odds <= 0.26 && pf_tier <= 7)
-                || is_hu_min_open_playable_t8
+            } else if !is_offsuit_trash_vs_3bet
+                && (ctx.pot_odds <= 0.22
+                    || (ctx.pot_odds <= 0.26 && pf_tier <= 7)
+                    || is_hu_min_open_playable_t8)
             {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
                 }
-            } else if ctx.to_call > ctx.bb / 2 && (pf_tier == 8 || ctx.pot_odds > 0.28) {
+            } else if ctx.to_call > ctx.bb / 2
+                && (pf_tier == 8 || ctx.pot_odds > 0.28 || is_offsuit_trash_vs_3bet)
+            {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.98);
             } else if let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
                 probs[f_i] += shifted;
@@ -247,13 +252,20 @@ impl OpponentTracker {
             reasons.push("PF_DISCIPLINE_GUARD");
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             let is_hu_connected_tier6_defend = ctx.active_opponents == 1
+                && ctx.pot < ctx.bb * 6
                 && ctx.to_call <= ctx.bb * 2
                 && ctx.pot_odds <= 0.31
                 && matches!(ctx.bucket, 141 | 148 | 154 | 159 | 163);
-            if pf_tier == 6
+            let is_low_offsuit_tier6_vs_3bet = pf_tier == 6
                 && ctx.bucket >= 141
-                && ctx.pot_odds > 0.28
-                && !is_hu_connected_tier6_defend
+                && ctx.pot >= ctx.bb * 6
+                && ctx.to_call >= ctx.bb * 2
+                && !ctx.is_extreme_shove_bot;
+            if is_low_offsuit_tier6_vs_3bet
+                || (pf_tier == 6
+                    && ctx.bucket >= 141
+                    && ctx.pot_odds > 0.28
+                    && !is_hu_connected_tier6_defend)
             {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
             } else if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {

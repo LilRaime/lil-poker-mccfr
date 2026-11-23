@@ -1472,4 +1472,38 @@ fn test_preflop_hu_minraise_defense_zero_limps_and_linear_3bet() {
         jams_99, 0,
         "46 BB 99 facing 7.5 BB 3-bet must cap ALL_IN (got {jams_99}/80)"
     );
+
+    /* Weak offsuit hands (tier 6 connected 65o & tier 7+ 64o) facing a 3-bet must fold */
+    for hole_trash in [
+        [
+            Card::new(Rank::Six, Suit::Clubs),
+            Card::new(Rank::Five, Suit::Hearts),
+        ],
+        [
+            Card::new(Rank::Six, Suit::Clubs),
+            Card::new(Rank::Four, Suit::Hearts),
+        ],
+    ] {
+        let (b_trash, _) = preflop_bucket(hole_trash[0], hole_trash[1]);
+        let act_trash = neutral_opp.select_action(
+            &PolicyRequest {
+                raw_probs: &[0.10, 0.85, 0.05, 0.0, 0.0, 0.0],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_trash,
+                round: 1,
+                to_call: 390,
+                pot: 1140,
+                hole: Some(&hole_trash),
+                active_opponents: 1,
+                table_bb: 150,
+                my_chips: 8300,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_eq!(
+            act_trash, FOLD,
+            "Offsuit trash {hole_trash:?} (bucket {b_trash}) facing a 3-bet must fold (got {act_trash})"
+        );
+    }
 }

@@ -6,9 +6,9 @@ use super::helpers::{
     first_action_idx, force_action, shift_action_to, zero_and_sum,
 };
 use crate::cfr::abstraction::{
-    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN,
-    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN,
-    BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MAX,
+    BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN,
+    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
@@ -237,11 +237,17 @@ impl OpponentTracker {
             && ctx.to_call >= ctx.bb * 5
             && !ctx.is_known_maniac
             && !ctx.is_overbet_bluffer;
+        let cap_four_flush_non_nut = ctx.round >= ROUND_TURN
+            && ctx.is_four_flush_board
+            && (ctx.bucket < BUCKET_SECOND_NUT_FLUSH
+                || (ctx.bucket == BUCKET_SECOND_NUT_FLUSH
+                    && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.25)));
         if !cap_one_pair
             && !cap_four_board_river
             && !cap_three_flush_non_flush
             && !cap_dangerous_river_non_nut
             && !cap_deep_bottom_two_pair
+            && !cap_four_flush_non_nut
         {
             return;
         }
@@ -267,9 +273,12 @@ impl OpponentTracker {
         reasons: &mut Vec<&'static str>,
     ) {
         let is_river_nut = ctx.round == ROUND_RIVER
-            && ctx.bucket >= 75
-            && !(ctx.is_paired_board && ctx.bucket <= BUCKET_STRAIGHT_MAX)
-            && !(ctx.is_four_flush_board && ctx.bucket <= BUCKET_STRAIGHT_MAX);
+            && ((ctx.bucket >= 75
+                && !(ctx.is_paired_board && ctx.bucket <= BUCKET_STRAIGHT_MAX)
+                && !(ctx.is_four_flush_board && ctx.bucket <= BUCKET_STRAIGHT_MAX))
+                || ((BUCKET_TRIPS_MIN..=72).contains(&ctx.bucket)
+                    && !ctx.is_four_board_danger
+                    && !ctx.is_dangerous_board));
         let is_low_spr_two_pair_plus = ctx.round >= ROUND_TURN
             && ctx.bucket >= 60
             && !(ctx.is_paired_board && ctx.bucket < BUCKET_TRIPS_MIN)

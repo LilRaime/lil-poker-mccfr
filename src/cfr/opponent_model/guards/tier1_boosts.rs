@@ -135,11 +135,16 @@ impl OpponentTracker {
                 && ctx.to_call <= ctx.bb * 3
                 && ctx.eff_stack_bb > 20
                 && self.total_hands >= 8
-                && self.smoothed_pfr() >= 0.42
-                && pf_tier_now <= 3
+                && (self.smoothed_pfr() >= 0.42
+                    || (self.sb_total_hands >= 6 && self.sb_pfr_ratio() >= 0.68))
+                && (pf_tier_now <= 3
+                    || (self.sb_total_hands >= 6
+                        && self.sb_pfr_ratio() >= 0.68
+                        && pf_tier_now == 4
+                        && ctx.bucket <= 55))
                 && self.is_guard_enabled("PF_BUTTON_STEAL")
             {
-                Self::apply_hu_linear_bb_3bet(probs, ctx, reasons);
+                self.apply_hu_linear_bb_3bet(probs, ctx, reasons);
             }
         }
     }
@@ -284,15 +289,20 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
+        let is_low_spr_strong = ctx.my_chips > 0
+            && ctx.pot > 0
+            && ctx.my_chips * 20 <= ctx.pot * 13
+            && ctx.bucket >= 46
+            && !(ctx.is_three_flush && ctx.bucket < BUCKET_FLUSH_MIN)
+            && !(ctx.is_paired_board && ctx.bucket < BUCKET_OVERPAIR_MIN);
+        let is_3bet_pot_flop_overpair_plus = ctx.round == ROUND_FLOP
+            && ctx.pot >= ctx.bb * 12
+            && !ctx.is_three_flush
+            && ctx.bucket >= BUCKET_OVERPAIR_MIN;
         if ctx.is_preflop
             || ctx.to_call != 0
-            || ctx.my_chips <= 0
-            || ctx.pot <= 0
-            || ctx.my_chips * 20 > ctx.pot * 13
-            || ctx.bucket < 46
             || ctx.is_four_board_danger
-            || (ctx.is_three_flush && ctx.bucket < BUCKET_FLUSH_MIN)
-            || (ctx.is_paired_board && ctx.bucket < BUCKET_OVERPAIR_MIN)
+            || (!is_low_spr_strong && !is_3bet_pot_flop_overpair_plus)
             || !self.is_guard_enabled("POST_NUT_VALUE_FLOOR")
         {
             return;
@@ -300,14 +310,25 @@ impl OpponentTracker {
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
-        if probs[c_i] <= 0.25 {
-            return;
-        }
-        if let Some(t_i) = first_action_idx(
-            ctx.legal_actions,
-            &[ALL_IN, RAISE_HALF_POT, RAISE_THIRD_POT],
-        ) {
-            let shift = (probs[c_i] - 0.10).max(0.0) * 0.85;
+        if is_low_spr_strong {
+            if probs[c_i] <= 0.25 {
+                return;
+            }
+            if let Some(t_i) = first_action_idx(
+                ctx.legal_actions,
+                &[ALL_IN, RAISE_HALF_POT, RAISE_THIRD_POT],
+            ) {
+                let shift = (probs[c_i] - 0.10).max(0.0) * 0.85;
+                if shift > 0.0 {
+                    reasons.push("POST_NUT_VALUE_FLOOR");
+                    probs[c_i] -= shift;
+                    probs[t_i] += shift;
+                }
+            }
+        } else if probs[c_i] > 0.35
+            && let Some(t_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN])
+        {
+            let shift = (probs[c_i] - 0.15).max(0.0) * 0.75;
             if shift > 0.0 {
                 reasons.push("POST_NUT_VALUE_FLOOR");
                 probs[c_i] -= shift;
@@ -436,6 +457,7 @@ impl OpponentTracker {
     }
 
     fn apply_hu_linear_bb_3bet(
+        &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
@@ -446,7 +468,12 @@ impl OpponentTracker {
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
-        let shift = probs[c_i] * 0.35;
+        let shift_frac = if self.sb_total_hands >= 6 && self.sb_pfr_ratio() >= 0.68 {
+            0.50
+        } else {
+            0.35
+        };
+        let shift = probs[c_i] * shift_frac;
         if shift > 0.01 {
             reasons.push("PF_BUTTON_STEAL");
             probs[c_i] -= shift;

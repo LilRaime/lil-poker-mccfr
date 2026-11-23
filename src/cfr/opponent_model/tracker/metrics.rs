@@ -171,8 +171,14 @@ impl OpponentTracker {
             return false;
         }
         let pf_ob_ratio = self.postflop_overbet_ratio();
-        let high_postflop_overbet =
-            self.postflop_bets_total >= 4 && self.postflop_overbets >= 3 && pf_ob_ratio >= 0.45;
+        let min_ob_ratio = if self.raise_ratio() >= 0.45 {
+            0.30
+        } else {
+            0.45
+        };
+        let high_postflop_overbet = self.postflop_bets_total >= 4
+            && self.postflop_overbets >= 3
+            && pf_ob_ratio >= min_ob_ratio;
         let high_river_overbet = self.postflop_bets_total >= 4
             && self.river_overbets >= 2
             && self.river_overbet_ratio() >= 0.45

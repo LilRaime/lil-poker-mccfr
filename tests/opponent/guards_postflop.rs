@@ -1255,4 +1255,81 @@ fn test_flop_floats_overbet_bluff_catch_and_polarized_sizing() {
         k9_calls >= 8,
         "Clean two-overcard Flop float vs 43% pot c-bet must rescue calls (got {k9_calls}/80)"
     );
+
+    /* 7. Bottom pair facing 1.5x flop overbet from an overbet bluffer rescues bluff-catch calls */
+    let hole_48 = [
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Spades),
+    ];
+    let board_4j5 = [
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Jack, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Clubs),
+    ];
+    let b_48 = postflop_equity_bucket(&hole_48, &board_4j5);
+    let mut ob_flop_calls = 0usize;
+    for _ in 0..80 {
+        let (act, _) = overbet_villain.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.85, 0.15, 0.0, 0.0, 0.0, 0.0],
+                legal_actions: &LEGAL_FULL,
+                bucket: b_48,
+                round: 2,
+                to_call: 600,
+                pot: 1000,
+                hole: Some(&hole_48),
+                board: Some(&board_4j5),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 9000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == CALL_CHECK {
+            ob_flop_calls += 1;
+        }
+    }
+    assert!(
+        ob_flop_calls >= 30,
+        "Bottom pair vs 1.5x flop overbet from overbet bluffer must rescue calls (got {ob_flop_calls}/80)"
+    );
+
+    /* 8. 3-bet pot Flop Overpair must value-bet instead of checking back */
+    let hole_qq = [
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Spades),
+    ];
+    let board_363 = [
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let b_qq = postflop_equity_bucket(&hole_qq, &board_363);
+    let mut qq_cbets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = overbet_villain.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &[0.0, 0.85, 0.05, 0.10, 0.0, 0.0],
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_qq,
+                round: 2,
+                pot: 2600,
+                hole: Some(&hole_qq),
+                board: Some(&board_363),
+                active_opponents: 1,
+                table_bb: 100,
+                my_chips: 8700,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            qq_cbets += 1;
+        }
+    }
+    assert!(
+        qq_cbets >= 45,
+        "3-bet pot Flop Overpair must bet frequently instead of checking back (got {qq_cbets}/80)"
+    );
 }

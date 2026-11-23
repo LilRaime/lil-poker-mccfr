@@ -286,6 +286,46 @@ fn test_subgame_nut_straight_value_floor() {
         nut_straight_bets >= 45,
         "Nut Straight must value-bet majority of the time, got {nut_straight_bets}/80"
     );
+
+    /* River Trips on non-dangerous paired board must also trigger POST_NUT_VALUE_FLOOR instead of checking behind */
+    let hole_trips = [
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let board_trips = [
+        Card::new(Rank::King, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Ace, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_trips = postflop_equity_bucket(&hole_trips, &board_trips);
+    let mut trips_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &passive_check,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_trips,
+                round: 4,
+                pot: 1800,
+                hole: Some(&hole_trips),
+                board: Some(&board_trips),
+                table_bb: 100,
+                my_chips: 8000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            trips_bets += 1;
+        }
+    }
+    assert!(
+        trips_bets >= 45,
+        "River Trips on safe paired board must value-bet frequently, got {trips_bets}/80"
+    );
 }
 
 #[test]
@@ -905,6 +945,48 @@ fn test_subgame_baby_vs_qhigh_four_flush_river() {
         "Q-high flush must not trigger SHOVE_DEFENSE_FOLD"
     );
     assert_ne!(act_qh, FOLD, "Q-high flush on 4-flush river must not fold");
+
+    /* Non-nut Q-high flush on 4-flush river facing a large raise must never 3-bet or jam */
+    let board_4h_low = [
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Hearts),
+        Card::new(Rank::Five, Suit::Hearts),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let hole_qh4h = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_qh4h = postflop_equity_bucket(&hole_qh4h, &board_4h_low);
+    let raise_heavy_flush: [f64; HOLDEM_NUM_ACTIONS] = [0.05, 0.30, 0.0, 0.0, 0.15, 0.50];
+    let mut non_nut_reraises = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &raise_heavy_flush,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_qh4h,
+                round: 4,
+                to_call: 4572,
+                pot: 9500,
+                hole: Some(&hole_qh4h),
+                board: Some(&board_4h_low),
+                table_bb: 200,
+                my_chips: 6882,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            non_nut_reraises += 1;
+        }
+    }
+    assert_eq!(
+        non_nut_reraises, 0,
+        "Non-nut Q-high flush on 4-flush river facing raise must never reraise/jam (got {non_nut_reraises}/80)"
+    );
 }
 
 #[test]
@@ -1266,5 +1348,24 @@ fn test_subgame_early_overbet_river_thin_value_and_turn_two_pair_cap() {
     assert!(
         !value_trapper.is_overbet_bluffer(),
         "Showdown-confirmed value monster overbettor must be vetoed from is_overbet_bluffer()"
+    );
+
+    /* 6. Hyper-aggressive opponent (raise_ratio >= 0.45) mixing 37.5% overbets flags is_overbet_bluffer() */
+    let mut mixed_hyper = OpponentTracker::new();
+    for _ in 0..3 {
+        mixed_hyper.record_action_street_detailed(RAISE_HALF_POT, 2, false, 1500, 1000);
+        mixed_hyper.record_action_street_detailed(RAISE_MIN, 2, false, 300, 1000);
+        mixed_hyper.end_hand();
+    }
+    for _ in 0..2 {
+        mixed_hyper.record_action_street_detailed(RAISE_MIN, 2, false, 300, 1000);
+        mixed_hyper.record_action_street_detailed(CALL_CHECK, 2, false, 0, 1000);
+        mixed_hyper.end_hand();
+    }
+    mixed_hyper.record_action_street_detailed(CALL_CHECK, 2, false, 0, 1000);
+    mixed_hyper.record_action_street_detailed(FOLD, 2, true, 0, 1000);
+    assert!(
+        mixed_hyper.raise_ratio() >= 0.45 && mixed_hyper.is_overbet_bluffer(),
+        "Hyper-aggressive opponent with 37.5% postflop overbets must trigger is_overbet_bluffer()"
     );
 }

@@ -6,8 +6,8 @@ use super::helpers::{
     zero_and_sum,
 };
 use crate::cfr::abstraction::{
-    BUCKET_FLUSH_MIN, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN,
-    BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    BUCKET_FLUSH_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MAX, BUCKET_STRAIGHT_MIN,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
@@ -370,7 +370,11 @@ impl OpponentTracker {
         {
             Self::cap_dangerous_river_overbets(probs, ctx);
         } else if ctx.round >= ROUND_TURN
-            && (BUCKET_FLUSH_MIN..=81).contains(&ctx.bucket)
+            && ((BUCKET_FLUSH_MIN..=81).contains(&ctx.bucket)
+                || (ctx.is_four_flush_board
+                    && ctx.to_call > 0
+                    && ctx.bucket == BUCKET_SECOND_NUT_FLUSH
+                    && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.25)))
             && (ctx.is_four_flush_board || (ctx.is_three_flush && ctx.is_paired_board))
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
@@ -379,7 +383,11 @@ impl OpponentTracker {
                 a == RAISE_HALF_POT || a == ALL_IN || (a >= RAISE_MIN && ctx.to_call > 0)
             });
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
-                probs[c_i] += shifted * 0.70;
+                probs[c_i] += if ctx.is_four_flush_board && ctx.to_call > 0 {
+                    shifted
+                } else {
+                    shifted * 0.70
+                };
             }
         }
     }

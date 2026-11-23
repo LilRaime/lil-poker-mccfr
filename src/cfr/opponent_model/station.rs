@@ -295,14 +295,17 @@ impl OpponentTracker {
             }
         }
 
+        let flop_opp_pot = (ctx.pot - ctx.to_call).max(1);
+        let is_flop_overbet_or_large = (ctx.to_call * 10 > flop_opp_pot * 12
+            && ((BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
+                || ctx.bucket >= 29))
+            || (ctx.to_call * 10 >= flop_opp_pot * 7 && ctx.bucket >= 31);
         if ctx.round == ROUND_FLOP
             && ctx.is_overbet_bluffer
             && ctx.to_call > 0
             && !ctx.is_three_flush
             && !ctx.is_four_board_danger
-            && ctx.to_call * 10 > (ctx.pot - ctx.to_call).max(1) * 12
-            && ((BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
-                || ctx.bucket >= 30)
+            && is_flop_overbet_or_large
             && self.is_guard_enabled("OVERBET_BLUFF_CATCH")
             && let (Some(f_i), Some(c_i)) = (
                 action_idx(ctx.legal_actions, FOLD),
