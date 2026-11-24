@@ -1,22 +1,25 @@
 /*! Parallel External Sampling MCCFR Solver for 52-Card Texas Hold'em with Card Abstraction. */
 
-use dashmap::DashMap;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
-use std::cell::Cell;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+use crate::cfr::abstraction::hash_from_infoset_key_str;
+use crate::cfr::flat_table::FlatInfosetTable;
 use crate::cfr::node::InfosetNode;
+use crate::cfr::train_state::{EpisodeCtx, deal_9_cards};
 use crate::game::config::{
     BIG_BLIND, CALL_CHECK, FOLD, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, STACK_SIZE,
 };
-use crate::game::holdem::{Card, TexasHoldemGame};
 
+pub use crate::cfr::train_state::{StepResult, TrainState};
 pub use crate::game::config::HOLDEM_NUM_ACTIONS;
+
+const PARALLEL_CHUNK_ITERS: u64 = 2048;
 
 fn has_ext_ignore_case(path: &str, ext: &str) -> bool {
     std::path::Path::new(path)
@@ -58,60 +61,11 @@ impl Hasher for FastU64Hasher {
 
 pub type FastU64BuildHasher = BuildHasherDefault<FastU64Hasher>;
 
-struct EpisodeBucketCache<'a> {
-    runout: &'a [Card; 5],
-    pf: [u8; 2],
-    postflop: [[Cell<u8>; 2]; 3],
-    flop_tex: Cell<char>,
-}
-
-impl<'a> EpisodeBucketCache<'a> {
-    #[inline(always)]
-    fn new(hole: [[Card; 2]; 2], runout: &'a [Card; 5]) -> Self {
-        Self {
-            runout,
-            pf: [
-                crate::cfr::abstraction::preflop_bucket(hole[0][0], hole[0][1]).0 as u8,
-                crate::cfr::abstraction::preflop_bucket(hole[1][0], hole[1][1]).0 as u8,
-            ],
-            postflop: [
-                [Cell::new(u8::MAX), Cell::new(u8::MAX)],
-                [Cell::new(u8::MAX), Cell::new(u8::MAX)],
-                [Cell::new(u8::MAX), Cell::new(u8::MAX)],
-            ],
-            flop_tex: Cell::new('\0'),
-        }
-    }
-
-    #[inline(always)]
-    fn get_bucket(&self, hole: [[Card; 2]; 2], round: u8, player: usize) -> u8 {
-        if round <= ROUND_PREFLOP {
-            return self.pf[player];
-        }
-        let s_idx = (round - 2) as usize;
-        let cached = self.postflop[s_idx][player].get();
-        if cached != u8::MAX {
-            return cached;
-        }
-        let board_len = (round as usize) + 1;
-        let b = crate::cfr::abstraction::postflop_equity_bucket(
-            &hole[player],
-            &self.runout[..board_len],
-        ) as u8;
-        self.postflop[s_idx][player].set(b);
-        b
-    }
-
-    #[inline(always)]
-    fn get_flop_texture(&self) -> char {
-        let c = self.flop_tex.get();
-        if c != '\0' {
-            return c;
-        }
-        let tc = crate::cfr::abstraction::compact_board_texture_char(&self.runout[..3]);
-        self.flop_tex.set(tc);
-        tc
-    }
+#[derive(Clone, Copy)]
+struct TraversalParams {
+    updating_player: usize,
+    weight: f64,
+    allow_prune: bool,
 }
 
 pub struct InfosetEntry {
@@ -120,7 +74,7 @@ pub struct InfosetEntry {
 }
 
 pub struct HoldemMCCFRSolver {
-    pub nodes: Arc<DashMap<u64, InfosetEntry, FastU64BuildHasher>>,
+    table: Arc<FlatInfosetTable>,
     pub rich_history: bool,
     pub pruning: bool,
     pub dcfr: bool,
@@ -143,7 +97,6 @@ impl HoldemMCCFRSolver {
     }
 
     pub fn with_config(rich_history: bool, pruning: bool, dcfr: bool) -> Self {
-        /* Pre-allocate 4M capacity across 4096 shards (~100 MB RAM) to eliminate runtime shard rehashing. */
         Self::with_options(rich_history, pruning, dcfr, 4_194_304, 4096)
     }
 
@@ -155,15 +108,11 @@ impl HoldemMCCFRSolver {
         shard_amount: usize,
     ) -> Self {
         HoldemMCCFRSolver {
-            nodes: Arc::new(DashMap::with_capacity_and_hasher_and_shard_amount(
-                capacity,
-                FastU64BuildHasher::default(),
-                shard_amount,
-            )),
+            table: Arc::new(FlatInfosetTable::new(capacity, shard_amount)),
             rich_history,
             pruning,
             dcfr,
-            stack_size: crate::game::config::STACK_SIZE,
+            stack_size: STACK_SIZE,
             multi_stack: false,
             short_stacks_only: false,
             board_texture: false,
@@ -172,7 +121,7 @@ impl HoldemMCCFRSolver {
     }
 
     pub fn with_stack_size(mut self, stack_size: i32) -> Self {
-        self.stack_size = stack_size.max(crate::game::config::BIG_BLIND * 2);
+        self.stack_size = stack_size.max(BIG_BLIND * 2);
         self
     }
 
@@ -191,27 +140,8 @@ impl HoldemMCCFRSolver {
         self
     }
 
-    /** Fast get or create node by u64 hash; key string generated lazily only on insertion */
-    #[inline(always)]
-    fn get_node<F>(&self, hash: u64, make_key: F) -> &InfosetNode
-    where
-        F: FnOnce() -> String,
-    {
-        if let Some(entry) = self.nodes.get(&hash) {
-            let ptr: *const InfosetNode = &*entry.node;
-            /* SAFETY: `self.nodes` is append-only while `&self` is borrowed during training,
-             * `InfosetNode` is heap-allocated inside `Box` so its address stays pinned across
-             * `DashMap` bucket resizes, and all updates use `AtomicI64` interior mutability. */
-            return unsafe { &*ptr };
-        }
-        let entry = self.nodes.entry(hash).or_insert_with(|| InfosetEntry {
-            key: make_key(),
-            node: Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS)),
-        });
-        let ptr: *const InfosetNode = &*entry.node;
-        /* SAFETY: Same invariant as above — inserted `Box<InfosetNode>` remains live and pinned
-         * at this heap address for the lifetime of `&self`, with atomic-only mutation. */
-        unsafe { &*ptr }
+    pub fn num_infosets(&self) -> usize {
+        self.table.len()
     }
 
     /** Run iterations of parallel Bucketed External Sampling MCCFR */
@@ -257,75 +187,84 @@ impl HoldemMCCFRSolver {
         let train_start = std::time::Instant::now();
         let warmup = (total_target / 20).clamp(1_000, 500_000);
         let train_iters_after_warmup = (total_target.saturating_sub(warmup).max(1)) as f64;
-
-        let entropy_base = Arc::new(AtomicU64::new(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0xcafe_babe_dead_beef, |d| d.as_nanos() as u64),
-        ));
+        let run_seed_base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0xcafe_babe_dead_beef, |d| d.as_nanos() as u64);
 
         while done < iterations {
             let batch_end = (done + chunk_size).min(iterations);
-            let batch = done..batch_end;
             let batch_count = batch_end - done;
-            let entropy_ref = Arc::clone(&entropy_base);
-
+            let num_subchunks = batch_count.div_ceil(PARALLEL_CHUNK_ITERS);
             let batch_start = std::time::Instant::now();
 
-            batch.into_par_iter().for_each(|iter_idx| {
-                let global_idx = base_iters + iter_idx;
-                let thread_entropy = entropy_ref.fetch_add(1, AtomicOrdering::Relaxed);
-                let seed = global_idx.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread_entropy;
-                let mut rng = SmallRng::seed_from_u64(seed);
-                let updating_player = (global_idx % 2) as usize;
-                /* Divide by 2 before `% 4` so each stack depth (15 BB, 30 BB, 100 BB)
-                 * is paired across both `updating_player == 0` and `updating_player == 1`! */
-                let ep_stack = if repair_short_only {
-                    match (global_idx / 2) % 2 {
-                        0 => BIG_BLIND * 15,
-                        _ => BIG_BLIND * 30,
-                    }
-                } else if self.multi_stack {
-                    match (global_idx / 2) % 4 {
-                        0 => BIG_BLIND * 15,
-                        1 => BIG_BLIND * 30,
-                        _ => STACK_SIZE,
-                    }
-                } else {
-                    self.stack_size
-                };
-                let game = TexasHoldemGame::new_random_with_stack(&mut rng, ep_stack);
-                let runout = game.deck_remaining.peek5();
-                let cache = EpisodeBucketCache::new(game.hole, runout);
+            (0..num_subchunks).into_par_iter().for_each(|sub_idx| {
+                let rel_start = sub_idx * PARALLEL_CHUNK_ITERS;
+                let rel_end = (rel_start + PARALLEL_CHUNK_ITERS).min(batch_count);
+                let start_global = base_iters + done + rel_start;
+                let end_global = base_iters + done + rel_end;
+                let rng_seed = run_seed_base
+                    ^ start_global.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    ^ sub_idx.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                let mut rng = SmallRng::seed_from_u64(rng_seed);
 
-                let weight = if is_dcfr {
-                    /* In epoch-discounted DCFR, each iteration accumulates at unit scale (1.0)
-                     * to preserve full fixed-point precision (STRAT_SCALE = 10,000), while
-                     * `node.discount(..., strat_disc)` scales prior epochs by (t / (t + 1))^2. */
-                    1.0
-                } else if global_idx < warmup {
-                    /* During warmup: accumulate with tiny linear ramp to start building strategy without bias */
-                    (global_idx + 1) as f64 / (warmup as f64 * 100.0)
-                } else {
-                    (global_idx - warmup + 1) as f64 / train_iters_after_warmup
-                };
+                let mut g_idx = start_global;
+                while g_idx < end_global {
+                    let deal_pair_idx = g_idx / 2;
+                    let ep_stack = if repair_short_only {
+                        match deal_pair_idx % 2 {
+                            0 => BIG_BLIND * 15,
+                            _ => BIG_BLIND * 30,
+                        }
+                    } else if self.multi_stack {
+                        match deal_pair_idx % 4 {
+                            0 => BIG_BLIND * 15,
+                            1 => BIG_BLIND * 30,
+                            _ => STACK_SIZE,
+                        }
+                    } else {
+                        self.stack_size
+                    };
 
-                let allow_prune = self.pruning && global_idx >= warmup && rng.random::<f64>() < 0.95;
-                self.traverse_precomputed(
-                    &game,
-                    updating_player,
-                    weight,
-                    allow_prune,
-                    &cache,
-                    &mut rng,
-                );
+                    let (hole, runout) = deal_9_cards(&mut rng);
+                    let ep = EpisodeCtx::new(hole, runout, ep_stack);
+                    let root = TrainState::new_hand(ep.stack_size);
+
+                    if (g_idx & 1) == 0 && g_idx + 1 < end_global {
+                        for p in 0..2usize {
+                            let cur_g = g_idx + p as u64;
+                            let weight =
+                                Self::iter_weight(is_dcfr, cur_g, warmup, train_iters_after_warmup);
+                            let allow_prune =
+                                self.pruning && cur_g >= warmup && rng.random::<f64>() < 0.95;
+                            let params = TraversalParams {
+                                updating_player: p,
+                                weight,
+                                allow_prune,
+                            };
+                            self.traverse_fast(&root, &ep, params, &mut rng);
+                        }
+                        g_idx += 2;
+                    } else {
+                        let p = (g_idx & 1) as usize;
+                        let weight =
+                            Self::iter_weight(is_dcfr, g_idx, warmup, train_iters_after_warmup);
+                        let allow_prune =
+                            self.pruning && g_idx >= warmup && rng.random::<f64>() < 0.95;
+                        let params = TraversalParams {
+                            updating_player: p,
+                            weight,
+                            allow_prune,
+                        };
+                        self.traverse_fast(&root, &ep, params, &mut rng);
+                        g_idx += 1;
+                    }
+                }
             });
 
             done = batch_end;
             self.global_iterations
                 .store(base_iters + done, AtomicOrdering::Relaxed);
 
-            /* Epoch-based DCFR discounting pass across all infoset nodes (Pluribus / Brown & Sandholm 2019) */
             if is_dcfr && (done - last_discount >= dcfr_epoch || done == iterations) {
                 last_discount = done;
                 let epoch = ((base_iters + done) / dcfr_epoch.max(1)).max(1) as f64;
@@ -333,15 +272,8 @@ impl HoldemMCCFRSolver {
                 let pos_disc = e_alpha / (e_alpha + 1.0);
                 let neg_disc = (epoch / (epoch + 1.0)).max(0.75);
                 let strat_disc = (epoch / (epoch + 1.0)).powi(2);
-                self.nodes.iter().par_bridge().for_each(|entry| {
-                    if repair_short_only {
-                        let k = &entry.value().key;
-                        if !k.starts_with("S15|") && !k.starts_with("S30|") {
-                            return;
-                        }
-                    }
-                    entry.value().node.discount(pos_disc, neg_disc, strat_disc);
-                });
+                self.table
+                    .discount_all(pos_disc, neg_disc, strat_disc, repair_short_only);
             }
 
             if log_every > 0 && (done - last_log >= log_every || done == iterations) {
@@ -369,7 +301,7 @@ impl HoldemMCCFRSolver {
                     done,
                     iterations,
                     pct,
-                    self.nodes.len(),
+                    self.table.len(),
                     iter_per_s / 1000.0,
                     fmt_secs(elapsed),
                     fmt_secs(eta_secs),
@@ -390,181 +322,178 @@ impl HoldemMCCFRSolver {
     }
 
     #[inline(always)]
-    fn traverse_precomputed(
+    fn iter_weight(is_dcfr: bool, global_idx: u64, warmup: u64, after_warmup: f64) -> f64 {
+        if is_dcfr {
+            1.0
+        } else if global_idx < warmup {
+            (global_idx + 1) as f64 / (warmup as f64 * 100.0)
+        } else {
+            (global_idx - warmup + 1) as f64 / after_warmup
+        }
+    }
+
+    #[inline(always)]
+    fn eval_step(
         &self,
-        game: &TexasHoldemGame,
-        updating_player: usize,
-        weight: f64,
-        allow_prune: bool,
-        cache: &EpisodeBucketCache<'_>,
+        step_res: StepResult,
+        ep: &EpisodeCtx,
+        params: TraversalParams,
         rng: &mut SmallRng,
     ) -> f64 {
-        if game.is_terminal() {
-            return game.get_returns()[updating_player];
+        match step_res {
+            StepResult::Continue(child) => self.traverse_fast(&child, ep, params, rng),
+            StepResult::FoldWin {
+                loser_contrib,
+                loser,
+            } => {
+                let c = loser_contrib as f64;
+                if params.updating_player == loser {
+                    -c
+                } else {
+                    c
+                }
+            }
+            StepResult::Showdown { contributions } => {
+                let outcome = ep.showdown_outcome();
+                let pot = contributions[0] + contributions[1];
+                if outcome > 0 {
+                    if params.updating_player == 0 {
+                        (pot - contributions[0]) as f64
+                    } else {
+                        -(contributions[1] as f64)
+                    }
+                } else if outcome < 0 {
+                    if params.updating_player == 0 {
+                        -(contributions[0] as f64)
+                    } else {
+                        (pot - contributions[1]) as f64
+                    }
+                } else {
+                    0.0
+                }
+            }
         }
+    }
 
-        let curr_player = game.current_player();
+    fn traverse_fast(
+        &self,
+        state: &TrainState,
+        ep: &EpisodeCtx,
+        params: TraversalParams,
+        rng: &mut SmallRng,
+    ) -> f64 {
         let mut actions = [0u8; HOLDEM_NUM_ACTIONS];
-        let n = game.legal_actions_buf(&mut actions);
+        let n = state.legal_actions_buf(ep.stack_size, &mut actions);
         if n == 0 {
             return 0.0;
         }
 
-        let bucket = cache.get_bucket(game.hole, game.round, curr_player);
-        /* Tag Flop (round == ROUND_FLOP) with compact board texture ('d'/'w'/'p'/'m').
-         * Skip Turn & River (rounds 3..=4) where 88 equity buckets + online SubgameSolver
-         * already capture board structure, preventing a 4x postflop infoset explosion. */
-        let tex_char = if self.board_texture && game.round == ROUND_FLOP {
-            Some(cache.get_flop_texture())
+        let curr_player = state.current_player as usize;
+        let bucket = ep.get_bucket(state.round, curr_player);
+        let tex_char = if self.board_texture && state.round == ROUND_FLOP {
+            Some(ep.get_flop_texture())
         } else {
             None
         };
 
-        let stack_prefix = crate::cfr::abstraction::stack_depth_prefix(
-            game.stack_size / crate::game::config::BIG_BLIND.max(1),
-        );
-        let node = if self.rich_history {
-            let mut hash = crate::cfr::abstraction::hash_holdem_infoset_key_rich_fast(
-                bucket,
-                game.round,
-                &game.history,
-            );
-            if let Some(tc) = tex_char {
-                hash = crate::cfr::abstraction::mix_texture_hash(hash, tc);
-            }
-            hash = crate::cfr::abstraction::mix_stack_prefix_hash(hash, stack_prefix);
-            self.get_node(hash, || {
-                let mut k = crate::cfr::abstraction::get_holdem_infoset_key_rich_with_bucket(
-                    &game.hole[curr_player],
-                    bucket,
-                    game.round,
-                    &game.history,
-                );
-                if let Some(tc) = tex_char {
-                    k = crate::cfr::abstraction::append_texture_to_key(&k, tc);
-                }
-                if stack_prefix.is_empty() {
-                    k
-                } else {
-                    format!("{stack_prefix}{k}")
-                }
-            })
+        let rich_hist = self.rich_history;
+        let node = if let Some(pf_cache_idx) = state.preflop_cache_idx(bucket, ep.stack_tag) {
+            self.table.get_or_insert_preflop(
+                pf_cache_idx,
+                || state.infoset_hash_tagged(bucket, None, ep.stack_tag),
+                || {
+                    state.format_infoset_key(
+                        ep.pf_name[curr_player],
+                        bucket,
+                        None,
+                        ep.stack_size,
+                        rich_hist,
+                    )
+                },
+            )
         } else {
-            let mut hash = crate::cfr::abstraction::hash_holdem_infoset_key_fast(
-                bucket,
-                game.round,
-                &game.history,
-            );
-            if let Some(tc) = tex_char {
-                hash = crate::cfr::abstraction::mix_texture_hash(hash, tc);
-            }
-            hash = crate::cfr::abstraction::mix_stack_prefix_hash(hash, stack_prefix);
-            self.get_node(hash, || {
-                let mut k = crate::cfr::abstraction::get_holdem_infoset_key_with_bucket(
-                    &game.hole[curr_player],
+            let hash = state.infoset_hash_tagged(bucket, tex_char, ep.stack_tag);
+            self.table.get_or_insert(hash, || {
+                state.format_infoset_key(
+                    ep.pf_name[curr_player],
                     bucket,
-                    game.round,
-                    &game.history,
-                );
-                if let Some(tc) = tex_char {
-                    k = crate::cfr::abstraction::append_texture_to_key(&k, tc);
-                }
-                if stack_prefix.is_empty() {
-                    k
-                } else {
-                    format!("{stack_prefix}{k}")
-                }
+                    tex_char,
+                    ep.stack_size,
+                    rich_hist,
+                )
             })
         };
 
         let mut legal_probs = [0.0f64; HOLDEM_NUM_ACTIONS];
-        node.get_legal_strategy_buf(&actions[..n], &mut legal_probs);
+        let mut raw_regrets = [0i64; HOLDEM_NUM_ACTIONS];
+        self.table.legal_strategy_and_regrets_buf(
+            &node,
+            &actions[..n],
+            &mut legal_probs,
+            &mut raw_regrets,
+        );
 
-        if curr_player == updating_player {
+        if curr_player == params.updating_player {
             let mut action_utils = [0.0f64; HOLDEM_NUM_ACTIONS];
             let mut node_util = 0.0f64;
             let mut explored = [true; HOLDEM_NUM_ACTIONS];
 
-            /* Pluribus-style Regret-Based Pruning:
-             * - Coin flip (95%) is rolled once per episode (`allow_prune`);
-             * - Dynamic stack- and pot-relative threshold (-3.5 * pot, floored at 6% of stack) when prob < 0.005;
-             * - Never prune FOLD or River actions (round 4) or actions that immediately terminate the hand. */
-            let pot = (game.contributions[0] + game.contributions[1]) as f64;
-            let stack_floor = (game.stack_size as f64 * 0.06).max(90.0);
-            let r_thresh = -(pot * 3.5).max(stack_floor);
-            let opp_all_in = game.contributions[1 - curr_player] >= game.stack_size;
+            let pot_scaled = i64::from(state.contributions[0] + state.contributions[1]) * 3_500_000;
+            let r_thresh_scaled = -pot_scaled.max(ep.stack_floor_scaled);
+            let opp_all_in = state.contributions[1 - curr_player] >= ep.stack_size;
+            let can_prune_node = params.allow_prune && self.dcfr && state.round < ROUND_RIVER;
 
             for i in 0..n {
                 let act = actions[i];
-                let act_idx = act as usize;
-
-                if allow_prune && game.round < ROUND_RIVER && act != FOLD {
-                    let r = node.get_regret(act_idx);
-                    let should_prune = self.dcfr && r < r_thresh && legal_probs[i] < 0.005;
-                    if should_prune {
-                        /* At round < 4 and act != FOLD, only calling an all-in can terminate the hand. */
-                        if !(act == CALL_CHECK && opp_all_in) {
-                            explored[i] = false;
-                            continue;
-                        }
-                    }
+                if can_prune_node
+                    && act != FOLD
+                    && legal_probs[i] < 0.005
+                    && raw_regrets[i] < r_thresh_scaled
+                    && !(act == CALL_CHECK && opp_all_in)
+                {
+                    explored[i] = false;
+                    continue;
                 }
 
-                let child = game.apply_action(act);
-                let u = self.traverse_precomputed(
-                    &child,
-                    updating_player,
-                    weight,
-                    allow_prune,
-                    cache,
-                    rng,
-                );
+                let step_res = state.step(act, ep.stack_size, ep.is_wet_flop, rich_hist);
+                let u = self.eval_step(step_res, ep, params, rng);
                 action_utils[i] = u;
                 node_util += legal_probs[i] * u;
             }
 
-            let mut regrets = [0.0f64; HOLDEM_NUM_ACTIONS];
-            for i in 0..n {
-                let act_idx = actions[i] as usize;
-                if explored[i] {
-                    regrets[act_idx] = action_utils[i] - node_util;
-                } else {
-                    regrets[act_idx] = 0.0;
-                }
-            }
-
-            if self.dcfr {
-                node.update_regrets_linear(&regrets);
-            } else {
-                node.update_regrets_cfr_plus(&regrets);
-            }
+            self.table.update_regrets_explored(
+                &node,
+                &actions[..n],
+                explored,
+                &action_utils,
+                node_util,
+                self.dcfr,
+            );
             node_util
         } else {
             let chosen_idx = sample_action_buf(&legal_probs[..n], rng);
             let chosen_act = actions[chosen_idx];
 
-            if weight > 0.0 {
-                let mut full_strategy = [0.0f64; HOLDEM_NUM_ACTIONS];
-                for i in 0..n {
-                    full_strategy[actions[i] as usize] = legal_probs[i];
-                }
-                node.accumulate_strategy(&full_strategy, weight);
+            if params.weight > 0.0 {
+                self.table.accumulate_legal_strategy(
+                    &node,
+                    &actions[..n],
+                    &legal_probs,
+                    params.weight,
+                );
             }
 
-            let child = game.apply_action(chosen_act);
-            self.traverse_precomputed(&child, updating_player, weight, allow_prune, cache, rng)
+            let step_res = state.step(chosen_act, ep.stack_size, ep.is_wet_flop, rich_hist);
+            self.eval_step(step_res, ep, params, rng)
         }
     }
 
     pub fn export_strategy(&self) -> std::collections::HashMap<String, Vec<f64>> {
-        self.nodes
-            .iter()
-            .map(|entry| {
-                let key = entry.value().key.clone();
-                let avg = entry.value().node.get_average_strategy();
-                (key, avg)
-            })
-            .collect()
+        let mut out = std::collections::HashMap::with_capacity(self.table.len());
+        self.table.for_each_average(|key, avg| {
+            out.insert(key.to_string(), avg.to_vec());
+        });
+        out
     }
 
     /** Fast f32-quantized fixed-array strategy export */
@@ -580,51 +509,48 @@ impl HoldemMCCFRSolver {
         prune_river: bool,
         max_turn_actions: usize,
     ) -> std::collections::HashMap<String, [f32; HOLDEM_NUM_ACTIONS]> {
-        self.nodes
-            .iter()
-            .filter_map(|entry| {
-                let key = &entry.value().key;
-                if prune_river || max_turn_actions > 0 {
-                    let street = if key.starts_with("P:") && !key.contains('|') {
-                        ROUND_PREFLOP
-                    } else if key.contains("F:B") {
-                        ROUND_FLOP
-                    } else if key.contains("T:B") {
-                        ROUND_TURN
-                    } else if key.contains("R:B") {
-                        ROUND_RIVER
-                    } else {
-                        0
-                    };
+        let mut out = std::collections::HashMap::with_capacity(self.table.len());
+        self.table.for_each_average(|key, avg| {
+            if prune_river || max_turn_actions > 0 {
+                let street = if key.starts_with("P:") && !key.contains('|') {
+                    ROUND_PREFLOP
+                } else if key.contains("F:B") {
+                    ROUND_FLOP
+                } else if key.contains("T:B") {
+                    ROUND_TURN
+                } else if key.contains("R:B") {
+                    ROUND_RIVER
+                } else {
+                    0
+                };
 
-                    match street {
-                        ROUND_PREFLOP | ROUND_FLOP => {}
-                        ROUND_TURN => {
-                            if max_turn_actions > 0
-                                && let Some(pos) = key.find("T:B")
-                            {
-                                let after = &key[pos..];
-                                if let Some(slash) = after.find('/') {
-                                    let turn_act_len = after[slash + 1..].len();
-                                    if turn_act_len > max_turn_actions {
-                                        return None;
-                                    }
+                match street {
+                    ROUND_PREFLOP | ROUND_FLOP => {}
+                    ROUND_TURN => {
+                        if max_turn_actions > 0
+                            && let Some(pos) = key.find("T:B")
+                        {
+                            let after = &key[pos..];
+                            if let Some(slash) = after.find('/') {
+                                let turn_act_len = after[slash + 1..].len();
+                                if turn_act_len > max_turn_actions {
+                                    return;
                                 }
                             }
                         }
-                        ROUND_RIVER if prune_river => return None,
-                        _ => {}
                     }
+                    ROUND_RIVER if prune_river => return,
+                    _ => {}
                 }
+            }
 
-                let avg = entry.value().node.get_average_strategy();
-                let mut f32_arr = [0.0f32; HOLDEM_NUM_ACTIONS];
-                for i in 0..HOLDEM_NUM_ACTIONS {
-                    f32_arr[i] = avg[i] as f32;
-                }
-                Some((key.clone(), f32_arr))
-            })
-            .collect()
+            let mut f32_arr = [0.0f32; HOLDEM_NUM_ACTIONS];
+            for i in 0..HOLDEM_NUM_ACTIONS {
+                f32_arr[i] = avg[i] as f32;
+            }
+            out.insert(key.to_string(), f32_arr);
+        });
+        out
     }
 
     pub fn save_strategy_to_file_filtered(
@@ -695,9 +621,6 @@ impl HoldemMCCFRSolver {
     pub fn load_strategy_from_file(
         path: &str,
     ) -> Result<std::collections::HashMap<String, Vec<f64>>, Box<dyn std::error::Error>> {
-        /* Try bincode first for non-.json paths: the first byte of a bincode HashMap is
-         * `(len % 256)` in little-endian, which can legitimately equal '{' (123), '[' (91),
-         * ' ' (32), or '\n' (10) and falsely trigger a 1-byte JSON sniff! */
         let prefer_json = prefers_json_path(path);
 
         if !prefer_json {
@@ -742,19 +665,7 @@ impl HoldemMCCFRSolver {
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
         let global_iters = self.global_iterations.load(AtomicOrdering::Relaxed);
-        let entries: Vec<(
-            u64,
-            String,
-            [i64; HOLDEM_NUM_ACTIONS],
-            [i64; HOLDEM_NUM_ACTIONS],
-        )> = self
-            .nodes
-            .iter()
-            .map(|e| {
-                let (r, s) = e.value().node.get_raw_state();
-                (*e.key(), e.value().key.clone(), r, s)
-            })
-            .collect();
+        let entries = self.table.collect_raw_entries();
         let count = entries.len();
         bincode::serialize_into(&mut writer, &(global_iters, entries))?;
         writer.flush()?;
@@ -791,9 +702,7 @@ impl HoldemMCCFRSolver {
                 self.global_iterations
                     .store(saved_iters, AtomicOrdering::Relaxed);
                 for (h, key, r, s) in entries {
-                    let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
-                    node.set_raw_state(&r, &s);
-                    self.nodes.insert(h, InfosetEntry { key, node });
+                    self.table.insert_raw_state(h, key, &r, &s);
                 }
                 return Ok(count);
             }
@@ -802,12 +711,8 @@ impl HoldemMCCFRSolver {
         let strat_map = Self::load_strategy_from_file(path)?;
         let count = strat_map.len();
         for (key, probs) in strat_map {
-            let h = crate::cfr::abstraction::hash_from_infoset_key_str(&key);
-            let node = Box::new(InfosetNode::new(HOLDEM_NUM_ACTIONS));
-            node.accumulate_strategy(&probs, 100.0);
-            let scaled_regrets: Vec<f64> = probs.iter().map(|&p| p * 200.0).collect();
-            node.update_regrets_cfr_plus(&scaled_regrets);
-            self.nodes.insert(h, InfosetEntry { key, node });
+            let h = hash_from_infoset_key_str(&key);
+            self.table.insert_warm_probs(h, key, &probs);
         }
         Ok(count)
     }

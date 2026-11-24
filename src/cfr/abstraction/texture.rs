@@ -1,8 +1,51 @@
 /*!
- * Fast board texture analysis (`Monotone`, `TwoTone`, `Rainbow`, Paired, Connected).
+ * Fast O(1) board texture analysis (`Monotone`, `TwoTone`, `Rainbow`, Paired, Connected)
+ * using SWAR suit counters and an 8 KB L1 straight-span lookup table.
  */
 
 use crate::game::holdem::Card;
+
+const FLAG_CONNECTED: u8 = 0x01;
+const FLAG_FOUR_STRAIGHT: u8 = 0x02;
+const FLAG_THREE_IN_FOUR: u8 = 0x04;
+
+const fn build_board_span_lut() -> [u8; 8192] {
+    let mut lut = [0u8; 8192];
+    let mut m = 0usize;
+    while m < 8192 {
+        let mut flags = 0u8;
+        if (m & (m >> 1)) != 0 || (m & 0x1001) == 0x1001 {
+            flags |= FLAG_CONNECTED;
+        }
+        let mut s5 = 0usize;
+        while s5 <= 8 {
+            if ((m >> s5) & 0x1F).count_ones() >= 4 {
+                flags |= FLAG_FOUR_STRAIGHT;
+                break;
+            }
+            s5 += 1;
+        }
+        if (m & 0x100F).count_ones() >= 4 {
+            flags |= FLAG_FOUR_STRAIGHT;
+        }
+        let mut s4 = 0usize;
+        while s4 <= 9 {
+            if ((m >> s4) & 0x0F).count_ones() >= 3 {
+                flags |= FLAG_THREE_IN_FOUR;
+                break;
+            }
+            s4 += 1;
+        }
+        if (m & 0x1007).count_ones() >= 3 {
+            flags |= FLAG_THREE_IN_FOUR;
+        }
+        lut[m] = flags;
+        m += 1;
+    }
+    lut
+}
+
+static BOARD_SPAN_LUT: [u8; 8192] = build_board_span_lut();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardFlushTexture {
@@ -18,6 +61,69 @@ pub struct BoardTextureInfo {
     pub is_connected: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct FastBoardSummary {
+    pub(crate) board_len: usize,
+    pub(crate) is_four_fl: bool,
+    pub(crate) is_four_st: bool,
+    pub(crate) is_three_fl: bool,
+    pub(crate) is_dangerous: bool,
+    pub(crate) is_paired: bool,
+    pub(crate) max_rank: usize,
+    pub(crate) min_rank: usize,
+}
+
+#[inline(always)]
+pub(crate) fn compute_board_summary(board: &[Card]) -> FastBoardSummary {
+    let n = board.len();
+    if n == 0 {
+        return FastBoardSummary {
+            board_len: 0,
+            is_four_fl: false,
+            is_four_st: false,
+            is_three_fl: false,
+            is_dangerous: false,
+            is_paired: false,
+            max_rank: 0,
+            min_rank: 0,
+        };
+    }
+
+    let mut m1 = 0u16;
+    let mut m2 = 0u16;
+    let mut suit_packed = 0u32;
+    for &c in board {
+        let bit = 1u16 << (c.rank as usize);
+        m2 |= m1 & bit;
+        m1 |= bit;
+        suit_packed += 1u32 << ((c.suit as usize) * 8);
+    }
+
+    let is_paired = m2 != 0;
+    let is_three_fl = n >= 3 && ((suit_packed + 0x0505_0505) & 0x0808_0808) != 0;
+    let is_four_fl = n >= 4 && ((suit_packed + 0x0404_0404) & 0x0808_0808) != 0;
+    let span_flags = BOARD_SPAN_LUT[m1 as usize];
+    let is_four_st = n >= 4 && (span_flags & FLAG_FOUR_STRAIGHT) != 0;
+    let is_dangerous = n >= 3
+        && (is_three_fl
+            || (span_flags & FLAG_FOUR_STRAIGHT) != 0
+            || (n >= 4 && is_paired && (span_flags & FLAG_THREE_IN_FOUR) != 0));
+    let max_rank = (15 - m1.leading_zeros()) as usize;
+    let min_rank = m1.trailing_zeros() as usize;
+
+    FastBoardSummary {
+        board_len: n,
+        is_four_fl,
+        is_four_st,
+        is_three_fl,
+        is_dangerous,
+        is_paired,
+        max_rank,
+        min_rank,
+    }
+}
+
+#[inline]
 pub fn detect_board_texture(board: &[Card]) -> BoardTextureInfo {
     if board.is_empty() {
         return BoardTextureInfo {
@@ -26,39 +132,26 @@ pub fn detect_board_texture(board: &[Card]) -> BoardTextureInfo {
             is_connected: false,
         };
     }
-    let mut suit_counts = [0u8; 4];
-    let mut rank_counts = [0u8; 13];
+
+    let mut m1 = 0u16;
+    let mut m2 = 0u16;
+    let mut suit_packed = 0u32;
     for &c in board {
-        suit_counts[c.suit as usize] += 1;
-        rank_counts[c.rank as usize] += 1;
+        let bit = 1u16 << (c.rank as usize);
+        m2 |= m1 & bit;
+        m1 |= bit;
+        suit_packed += 1u32 << ((c.suit as usize) * 8);
     }
-    let max_suit = *suit_counts.iter().max().unwrap_or(&0);
-    let flush_texture = if max_suit >= 3 {
+
+    let flush_texture = if ((suit_packed + 0x0505_0505) & 0x0808_0808) != 0 {
         BoardFlushTexture::Monotone
-    } else if max_suit == 2 {
+    } else if ((suit_packed + 0x0606_0606) & 0x0808_0808) != 0 {
         BoardFlushTexture::TwoTone
     } else {
         BoardFlushTexture::Rainbow
     };
-
-    let is_paired = rank_counts.iter().any(|&cnt| cnt >= 2);
-
-    let mut is_connected = false;
-    let mut consecutive = 0;
-    for &cnt in &rank_counts {
-        if cnt > 0 {
-            consecutive += 1;
-            if consecutive >= 2 {
-                is_connected = true;
-                break;
-            }
-        } else {
-            consecutive = 0;
-        }
-    }
-    if !is_connected && rank_counts[12] > 0 && (rank_counts[0] > 0 || rank_counts[11] > 0) {
-        is_connected = true;
-    }
+    let is_paired = m2 != 0;
+    let is_connected = (BOARD_SPAN_LUT[m1 as usize] & FLAG_CONNECTED) != 0;
 
     BoardTextureInfo {
         flush_texture,
@@ -118,7 +211,7 @@ pub fn board_texture_byte(board: &[Card]) -> u8 {
         BoardFlushTexture::TwoTone => 1u8,
         BoardFlushTexture::Monotone => 2u8,
     };
-    let paired_idx = if tex.is_paired { 1u8 } else { 0u8 };
+    let paired_idx = u8::from(tex.is_paired);
     (flush_idx << 1) | paired_idx
 }
 
@@ -128,11 +221,11 @@ pub fn is_three_flush_board(board: &[Card]) -> bool {
     if board.len() < 3 {
         return false;
     }
-    let mut suit_counts = [0u8; 4];
+    let mut suit_packed = 0u32;
     for &c in board {
-        suit_counts[c.suit as usize] += 1;
+        suit_packed += 1u32 << ((c.suit as usize) * 8);
     }
-    suit_counts.iter().any(|&cnt| cnt >= 3)
+    ((suit_packed + 0x0505_0505) & 0x0808_0808) != 0
 }
 
 /** Detects if community cards form a 4-flush board (4+ cards of the same suit). */
@@ -141,11 +234,11 @@ pub fn is_four_flush_board(board: &[Card]) -> bool {
     if board.len() < 4 {
         return false;
     }
-    let mut suit_counts = [0u8; 4];
+    let mut suit_packed = 0u32;
     for &c in board {
-        suit_counts[c.suit as usize] += 1;
+        suit_packed += 1u32 << ((c.suit as usize) * 8);
     }
-    suit_counts.iter().any(|&cnt| cnt >= 4)
+    ((suit_packed + 0x0404_0404) & 0x0808_0808) != 0
 }
 
 /** Detects if community cards contain 4 or more cards to a straight (e.g. 9-T-J-Q or 5-6-7-8). */
@@ -154,68 +247,20 @@ pub fn is_four_straight_board(board: &[Card]) -> bool {
     if board.len() < 4 {
         return false;
     }
-    let mut rank_counts = [false; 13];
+    let mut m1 = 0u16;
     for &c in board {
-        rank_counts[c.rank as usize] = true;
+        m1 |= 1u16 << (c.rank as usize);
     }
-    for start in 0..=8 {
-        let count = (start..start + 5).filter(|&r| rank_counts[r]).count();
-        if count >= 4 {
-            return true;
-        }
-    }
-    let ace_low = [12, 0, 1, 2, 3];
-    ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4
+    (BOARD_SPAN_LUT[m1 as usize] & FLAG_FOUR_STRAIGHT) != 0
 }
 
 /** Detects if community cards form a dangerous, highly coordinated board
  * (e.g. 3+ cards to a flush, 4 cards to a straight, or coordinated 3-to-straight on turn/river).
  */
+#[inline]
 pub fn is_dangerous_board(board: &[Card]) -> bool {
     if board.len() < 3 {
         return false;
     }
-    let mut suit_counts = [0u8; 4];
-    let mut rank_counts = [false; 13];
-    for &c in board {
-        suit_counts[c.suit as usize] += 1;
-        rank_counts[c.rank as usize] = true;
-    }
-    /* 3 or more to a flush (any 2 suited cards or 1 card on 4-flush completes a flush) */
-    if suit_counts.iter().any(|&cnt| cnt >= 3) {
-        return true;
-    }
-    /* 4 or more to a straight (4 ranks in any 5-card span) */
-    for start in 0..=8 {
-        let count = (start..start + 5).filter(|&r| rank_counts[r]).count();
-        if count >= 4 {
-            return true;
-        }
-    }
-    /* Ace-low straight span (A, 2, 3, 4, 5) */
-    let ace_low = [12, 0, 1, 2, 3];
-    if ace_low.iter().filter(|&&r| rank_counts[r]).count() >= 4 {
-        return true;
-    }
-    /* Coordinated paired board: paired board that also has 3 ranks within a 4-card straight span
-     * (where connected ranks + board pair create high trips/straight/full-house danger) */
-    if board.len() >= 4 {
-        let mut r_freq = [0u8; 13];
-        for &c in board {
-            r_freq[c.rank as usize] += 1;
-        }
-        if r_freq.iter().any(|&cnt| cnt >= 2) {
-            for start in 0..=9 {
-                let count = (start..start + 4).filter(|&r| rank_counts[r]).count();
-                if count >= 3 {
-                    return true;
-                }
-            }
-            let ace_low_4 = [12, 0, 1, 2];
-            if ace_low_4.iter().filter(|&&r| rank_counts[r]).count() >= 3 {
-                return true;
-            }
-        }
-    }
-    false
+    compute_board_summary(board).is_dangerous
 }

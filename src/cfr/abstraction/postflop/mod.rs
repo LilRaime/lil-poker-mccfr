@@ -40,8 +40,17 @@ pub const BUCKET_MAX: usize = 87;
  * - Straights (73..=78, isolating board/idiot-end straights at 73)
  * - Flushes (79..=83) & Full House / Quads / Straight Flush (84..=87)
  */
+#[inline]
 pub fn postflop_equity_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> usize {
-    let score = evaluate_7cards(hole, board);
+    postflop_equity_bucket_with_score(hole, board, evaluate_7cards(hole, board))
+}
+
+#[inline]
+pub fn postflop_equity_bucket_with_score(
+    hole: &[Card; NUM_HOLE_CARDS],
+    board: &[Card],
+    score: u64,
+) -> usize {
     let category = score >> 32;
 
     let bucket = match category {

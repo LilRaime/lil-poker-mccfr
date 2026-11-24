@@ -3,10 +3,7 @@ use crate::game::config::NUM_HOLE_CARDS;
 use crate::game::holdem::Card;
 
 use super::super::draws::{DrawInfo, detect_draws_detailed};
-use super::super::texture::{
-    detect_board_texture, is_dangerous_board, is_four_flush_board, is_four_straight_board,
-    is_three_flush_board,
-};
+use super::super::texture::{FastBoardSummary, compute_board_summary};
 use super::high_card::bucket_high_card_or_draw;
 
 #[derive(Clone, Copy)]
@@ -19,18 +16,14 @@ struct PairBoardFlags {
 }
 
 impl PairBoardFlags {
-    fn from_board(board: &[Card]) -> Self {
-        let is_four_fl = is_four_flush_board(board);
-        let is_four_st = is_four_straight_board(board);
-        let is_three_fl = is_three_flush_board(board);
-        let is_vulnerable =
-            is_three_fl || is_dangerous_board(board) || detect_board_texture(board).is_paired;
+    #[inline(always)]
+    fn from_summary(s: FastBoardSummary) -> Self {
         Self {
-            board_len: board.len(),
-            is_four_fl,
-            is_four_st,
-            is_three_fl,
-            is_vulnerable,
+            board_len: s.board_len,
+            is_four_fl: s.is_four_fl,
+            is_four_st: s.is_four_st,
+            is_three_fl: s.is_three_fl,
+            is_vulnerable: s.is_three_fl || s.is_dangerous || s.is_paired,
         }
     }
 }
@@ -95,9 +88,10 @@ fn bucket_genuine_two_pair(hole: [Card; NUM_HOLE_CARDS], board: &[Card], top_pai
         .iter()
         .filter(|c| (c.rank as usize) > top_pair)
         .count();
-    let is_four_fl = is_four_flush_board(board);
-    let is_four_st = is_four_straight_board(board);
-    let is_vulnerable = is_three_flush_board(board) || is_dangerous_board(board);
+    let summary = compute_board_summary(board);
+    let is_four_fl = summary.is_four_fl;
+    let is_four_st = summary.is_four_st;
+    let is_vulnerable = summary.is_three_fl || summary.is_dangerous;
 
     if board.len() < 5 && draws.is_flush_draw {
         64 /* Genuine Two Pair + Flush Redraw */
@@ -164,8 +158,9 @@ fn bucket_paired_board_one_pair(
     hit_top: bool,
 ) -> usize {
     let draws = detect_draws_detailed(&hole, board);
-    let flags = PairBoardFlags::from_board(board);
-    let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
+    let summary = compute_board_summary(board);
+    let flags = PairBoardFlags::from_summary(summary);
+    let max_board_rank = summary.max_rank;
     let (my_pair_rank, kicker) =
         resolve_paired_board_rank_and_kicker(hole, top_pair, bottom_pair, is_pocket_pair, hit_top);
 
@@ -291,9 +286,10 @@ pub(super) fn bucket_one_pair(score: u64, hole: [Card; NUM_HOLE_CARDS], board: &
         return bucket_board_pair_high_card(hole, board, draws);
     }
 
-    let max_board_rank = board.iter().map(|c| c.rank as usize).max().unwrap_or(0);
-    let min_board_rank = board.iter().map(|c| c.rank as usize).min().unwrap_or(0);
-    let flags = PairBoardFlags::from_board(board);
+    let summary = compute_board_summary(board);
+    let max_board_rank = summary.max_rank;
+    let min_board_rank = summary.min_rank;
+    let flags = PairBoardFlags::from_summary(summary);
 
     if is_pocket_pair && pair_rank > max_board_rank {
         bucket_unpaired_overpair(pair_rank, draws, flags)

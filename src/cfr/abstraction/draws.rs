@@ -1,9 +1,53 @@
 /*!
- * Fast O(1) draw detection for Flop & Turn (Flush draws, Nut Flush draws, Straight draws, Gutshots).
+ * Fast O(1) draw detection for Flop & Turn (Flush draws, Nut Flush draws, Straight draws, Gutshots)
+ * backed by compile-time 16 KB rank-mask window lookup tables.
  */
 
-use crate::game::config::{NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_RANKS, NUM_SUITS};
+use crate::game::config::{NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_SUITS};
 use crate::game::holdem::{Card, Rank};
+
+const fn build_oesd_lut() -> [u16; 8192] {
+    let mut lut = [0u16; 8192];
+    let mut m = 0usize;
+    while m < 8192 {
+        let mut wins = 0u16;
+        let mut r = 0usize;
+        while r < 9 {
+            let w = 0x0Fusize << r;
+            if (m & w) == w {
+                wins |= 1u16 << r;
+            }
+            r += 1;
+        }
+        lut[m] = wins;
+        m += 1;
+    }
+    lut
+}
+
+const fn build_gutshot_lut() -> [u16; 8192] {
+    let mut lut = [0u16; 8192];
+    let mut m = 0usize;
+    while m < 8192 {
+        let mut wins = 0u16;
+        let mut r = 0usize;
+        while r < 9 {
+            if ((m >> r) & 0x1F).count_ones() == 4 {
+                wins |= 1u16 << r;
+            }
+            r += 1;
+        }
+        if (m & 0x100F).count_ones() == 4 {
+            wins |= 1u16 << 9;
+        }
+        lut[m] = wins;
+        m += 1;
+    }
+    lut
+}
+
+static OESD_WIN_LUT: [u16; 8192] = build_oesd_lut();
+static GUTSHOT_WIN_LUT: [u16; 8192] = build_gutshot_lut();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DrawInfo {
@@ -15,7 +59,8 @@ pub struct DrawInfo {
 
 #[inline(always)]
 pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> DrawInfo {
-    if board.len() >= NUM_COMMUNITY_CARDS {
+    let board_len = board.len();
+    if board_len >= NUM_COMMUNITY_CARDS {
         return DrawInfo {
             is_flush_draw: false,
             is_nut_flush_draw: false,
@@ -25,92 +70,76 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     }
 
     let mut board_suit_counts = [0u8; NUM_SUITS];
+    let mut board_mask = 0u16;
+    let mut ace_suit_mask = 0u8;
     for &b in board {
-        board_suit_counts[b.suit as usize] += 1;
+        let s = b.suit as usize;
+        board_suit_counts[s] += 1;
+        board_mask |= 1u16 << (b.rank as usize);
+        if b.rank == Rank::Ace {
+            ace_suit_mask |= 1u8 << s;
+        }
     }
+
+    let h0_r = hole[0].rank as usize;
+    let h1_r = hole[1].rank as usize;
+    let h0_s = hole[0].suit as usize;
+    let h1_s = hole[1].suit as usize;
 
     let mut is_flush_draw = false;
     let mut is_nut_flush_draw = false;
-    for (s, &b_count) in board_suit_counts.iter().enumerate() {
-        let hole_has = (hole[0].suit as usize == s) as u8 + (hole[1].suit as usize == s) as u8;
-        if hole_has >= 1 && (b_count + hole_has == 4) {
-            let max_hole_suit_rank = hole
-                .iter()
-                .filter(|c| c.suit as usize == s)
-                .map(|c| c.rank as usize)
-                .max()
-                .unwrap_or(0);
-            let ace_on_board = board
-                .iter()
-                .any(|c| c.suit as usize == s && c.rank == Rank::Ace);
-            let is_nut_card = max_hole_suit_rank == (Rank::Ace as usize)
-                || (ace_on_board && max_hole_suit_rank == (Rank::King as usize));
-
-            /* On a 3-flush board with 1 suited hole card: count Ace/King on any street,
-             * and Queen/Jack-high flush redraws on the Flop so high-equity draws don't auto-fold. */
-            if hole_has == 2
-                || max_hole_suit_rank >= (Rank::King as usize)
-                || (board.len() == 3 && max_hole_suit_rank >= (Rank::Jack as usize))
-            {
-                is_flush_draw = true;
-                if is_nut_card {
-                    is_nut_flush_draw = true;
-                }
+    if h0_s == h1_s {
+        if board_suit_counts[h0_s] == 2 {
+            is_flush_draw = true;
+            let max_r = h0_r.max(h1_r);
+            let ace_on_b = (ace_suit_mask & (1u8 << h0_s)) != 0;
+            if max_r == (Rank::Ace as usize) || (ace_on_b && max_r == (Rank::King as usize)) {
+                is_nut_flush_draw = true;
             }
-            break;
+        }
+    } else {
+        for &(s, hr) in &[(h0_s, h0_r), (h1_s, h1_r)] {
+            if board_suit_counts[s] == 3 {
+                let ace_on_b = (ace_suit_mask & (1u8 << s)) != 0;
+                let is_nut_card =
+                    hr == (Rank::Ace as usize) || (ace_on_b && hr == (Rank::King as usize));
+                if hr >= (Rank::King as usize) || (board_len == 3 && hr >= (Rank::Jack as usize)) {
+                    is_flush_draw = true;
+                    if is_nut_card {
+                        is_nut_flush_draw = true;
+                    }
+                }
+                break;
+            }
         }
     }
 
-    let mut board_ranks = [false; NUM_RANKS];
-    let mut ranks = [false; NUM_RANKS];
-    for &b in board {
-        board_ranks[b.rank as usize] = true;
-        ranks[b.rank as usize] = true;
-    }
-    ranks[hole[0].rank as usize] = true;
-    ranks[hole[1].rank as usize] = true;
+    let hole_mask = (1u16 << h0_r) | (1u16 << h1_r);
+    let hole_only = hole_mask & !board_mask;
+    let ranks_mask = board_mask | hole_mask;
 
-    let h0 = hole[0].rank as usize;
-    let h1 = hole[1].rank as usize;
     let mut is_straight_draw = false;
-    for r in 0..9 {
-        if ranks[r]
-            && ranks[r + 1]
-            && ranks[r + 2]
-            && ranks[r + 3]
-            && ((h0 >= r && h0 <= r + 3 && !board_ranks[h0])
-                || (h1 >= r && h1 <= r + 3 && !board_ranks[h1]))
-        {
+    let mut oesd_w = OESD_WIN_LUT[ranks_mask as usize];
+    while oesd_w != 0 {
+        let r = oesd_w.trailing_zeros() as usize;
+        if (hole_only & (0x0Fu16 << r)) != 0 {
             is_straight_draw = true;
             break;
         }
+        oesd_w &= oesd_w - 1;
     }
 
     let mut is_gutshot = false;
     if !is_straight_draw {
-        for r in 0..9 {
-            let count = (ranks[r] as u8)
-                + (ranks[r + 1] as u8)
-                + (ranks[r + 2] as u8)
-                + (ranks[r + 3] as u8)
-                + (ranks[r + 4] as u8);
-            if count == 4
-                && ((h0 >= r && h0 <= r + 4 && !board_ranks[h0])
-                    || (h1 >= r && h1 <= r + 4 && !board_ranks[h1]))
-            {
+        let mut gs_w = GUTSHOT_WIN_LUT[ranks_mask as usize];
+        while gs_w != 0 {
+            let r = gs_w.trailing_zeros() as usize;
+            let win_mask = if r < 9 { 0x1Fu16 << r } else { 0x100Fu16 };
+            if (hole_only & win_mask) != 0 {
                 is_gutshot = true;
                 break;
             }
-        }
-        if !is_gutshot && ranks[12] {
-            let count =
-                1 + (ranks[0] as u8) + (ranks[1] as u8) + (ranks[2] as u8) + (ranks[3] as u8);
-            if count == 4
-                && (((h0 == 12 || h0 <= 3) && !board_ranks[h0])
-                    || ((h1 == 12 || h1 <= 3) && !board_ranks[h1]))
-            {
-                is_gutshot = true;
-            }
+            gs_w &= gs_w - 1;
         }
     }
 

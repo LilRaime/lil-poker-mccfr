@@ -141,9 +141,9 @@ fn main() {
     }
 
     let capacity = if args.iterations >= 100_000_000 {
-        14_000_000
+        4_194_304
     } else {
-        1_000_000
+        2_097_152
     };
     let shards = if args.threads >= 8 { 16384 } else { 2048 };
     let stack_chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;

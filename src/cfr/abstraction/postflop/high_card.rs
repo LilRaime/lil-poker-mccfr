@@ -4,6 +4,26 @@ use crate::game::holdem::Card;
 
 use super::super::draws::{DrawInfo, detect_draws_detailed};
 
+const fn build_bdsd_lut() -> [u16; 8192] {
+    let mut lut = [0u16; 8192];
+    let mut m = 0usize;
+    while m < 8192 {
+        let mut wins = 0u16;
+        let mut r = 0usize;
+        while r <= 8 {
+            if ((m >> r) & 0x1F).count_ones() >= 3 {
+                wins |= 1u16 << r;
+            }
+            r += 1;
+        }
+        lut[m] = wins;
+        m += 1;
+    }
+    lut
+}
+
+static BDSD_WIN_LUT: [u16; 8192] = build_bdsd_lut();
+
 pub(super) fn bucket_high_card_or_draw(hole: [Card; NUM_HOLE_CARDS], board: &[Card]) -> usize {
     let hole_high = (hole[0].rank as usize).max(hole[1].rank as usize);
     let hole_low = (hole[0].rank as usize).min(hole[1].rank as usize);
@@ -57,11 +77,16 @@ fn detect_flop_backdoors(hole: [Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool,
         rank_mask |= 1 << r;
         hole_mask |= 1 << r;
     }
-    let bdsd = (0..=8).any(|start| {
-        let win = (rank_mask >> start) & 0x1F;
-        let h_win = (hole_mask >> start) & 0x1F;
-        win.count_ones() >= 3 && h_win != 0
-    });
+    let mut bdsd = false;
+    let mut bdsd_w = BDSD_WIN_LUT[rank_mask as usize];
+    while bdsd_w != 0 {
+        let start = bdsd_w.trailing_zeros() as usize;
+        if (hole_mask & (0x1Fu16 << start)) != 0 {
+            bdsd = true;
+            break;
+        }
+        bdsd_w &= bdsd_w - 1;
+    }
     (bdfd, nut_bdfd, bdsd)
 }
 

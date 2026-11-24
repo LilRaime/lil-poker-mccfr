@@ -324,11 +324,11 @@ pub fn get_holdem_infoset_key_rich_with_bucket<H: HistoryActions + ?Sized>(
 
 /* ── Fast 64-bit Hash Infoset Keys (Zero-allocation FNV-1a) ───────────────── */
 
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x100_0000_01b3;
 
 #[inline(always)]
-fn fnv1a_combine(mut hash: u64, byte: u8) -> u64 {
+pub fn fnv1a_combine(mut hash: u64, byte: u8) -> u64 {
     hash ^= byte as u64;
     hash.wrapping_mul(FNV_PRIME)
 }

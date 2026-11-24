@@ -1,10 +1,12 @@
 pub mod abstraction;
 pub mod fallback;
+mod flat_table;
 pub mod holdem_mccfr;
 pub mod mccfr;
 pub mod node;
 pub mod opponent_model;
 pub mod subgame;
+pub mod train_state;
 pub mod vanilla;
 
 pub use fallback::StrategyLookupIndex;

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 /** Fixed-point scale: 1.0 → `1_000_000` in integer storage. */
 const SCALE: f64 = 1_000_000.0;
+pub(crate) const SCALE_F64: f64 = SCALE;
 pub const MAX_ACTIONS: usize = crate::game::config::HOLDEM_NUM_ACTIONS;
 pub const REGRET_FLOOR_I64: i64 = -200_000_000_000;
 pub const REGRET_FLOOR_F64: f64 = REGRET_FLOOR_I64 as f64 / SCALE;
@@ -228,7 +229,9 @@ impl InfosetNode {
         let scale_weight = weight * SCALE;
         for (i, &s) in strategy.iter().take(self.num_actions).enumerate() {
             let delta = (s * scale_weight) as i64;
-            self.strategy_sum[i].fetch_add(delta, Ordering::Relaxed);
+            if delta != 0 {
+                self.strategy_sum[i].fetch_add(delta, Ordering::Relaxed);
+            }
         }
     }
 }
