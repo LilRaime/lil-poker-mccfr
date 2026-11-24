@@ -5,3 +5,5 @@ models/*
 !models/.gitkeep
 *.md
 !README.md
+!docs/algorithms.md
+!docs/architecture.md
