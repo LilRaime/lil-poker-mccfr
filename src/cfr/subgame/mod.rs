@@ -7,5 +7,7 @@ pub mod reach;
 pub mod solver;
 mod traversal;
 
-pub use reach::{OpponentReachDistribution, ReachRequest};
-pub use solver::{SubgameContext, SubgameRequest, SubgameSolver};
+pub use reach::{
+    CachedStreetReach, NUM_HOLE_COMBOS, OpponentReachDistribution, ReachRequest, combo_index,
+};
+pub use solver::{OppStreetProfile, SubgameContext, SubgameRequest, SubgameSolver};

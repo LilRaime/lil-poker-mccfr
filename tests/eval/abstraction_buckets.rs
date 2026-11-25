@@ -522,3 +522,303 @@ fn test_two_pair_bottom_pair_on_board_abstraction() {
     /* Should be bucket 43 (Vulnerable Top Pair Top Kicker on paired board), NOT Genuine Two Pair (63) */
     assert_eq!(river_key, "R:B43/t");
 }
+
+#[test]
+fn test_extended_blocker_and_potential_buckets() {
+    use lil_poker_mccfr::cfr::abstraction::{
+        BUCKET_DOUBLE_GUTSHOT, BUCKET_FD_TWO_OVERCARDS, BUCKET_FLOP_OVERPAIR_BDFD,
+        BUCKET_FLOP_TOP_PAIR_BDFD, BUCKET_FLOP_TWO_OVERCARDS_AIR, BUCKET_FLOP_WEAK_PAIR_BDFD,
+        BUCKET_LOW_BOARD_TOP_PAIR, BUCKET_NFD_TWO_OVERCARDS, BUCKET_PAIR_GUTSHOT,
+        BUCKET_PAIRED_BOARD_NON_NUT_FLUSH, BUCKET_PAIRED_BOARD_NUT_FLUSH,
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_AIR, BUCKET_RIVER_NUT_FLUSH_BLOCKER_TOP_PAIR,
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_TWO_PAIR_PLUS, BUCKET_RIVER_NUT_FLUSH_BLOCKER_WEAK_PAIR,
+        BUCKET_RIVER_NUT_STRAIGHT_BLOCKER_AIR, BUCKET_RIVER_NUT_STRAIGHT_BLOCKER_TOP_PAIR,
+        BUCKET_RIVER_SECOND_NUT_FLUSH_BLOCKER_AIR, BUCKET_RIVER_STRAIGHT_NUT_FLUSH_BLOCKER,
+        BUCKET_STRICT_TOP_TWO_PAIR, BUCKET_THREE_FLUSH_STRAIGHT, BUCKET_TOP_FULL_HOUSE,
+        BUCKET_TOP_PAIR_NUT_FD, BUCKET_TRUE_TOP_SET, postflop_extended_bucket,
+    };
+
+    let c = |rank, suit| Card { rank, suit };
+    let three_spade_river = [
+        c(Rank::King, Suit::Spades),
+        c(Rank::Nine, Suit::Spades),
+        c(Rank::Four, Suit::Spades),
+        c(Rank::Seven, Suit::Clubs),
+        c(Rank::Three, Suit::Hearts),
+    ];
+
+    /* River flush blockers (88, 89, 91, 92, 93, 95) */
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Two, Suit::Diamonds)],
+            &three_spade_river
+        ),
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_AIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::King, Suit::Spades), c(Rank::Two, Suit::Diamonds)],
+            &[
+                c(Rank::Queen, Suit::Spades),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Four, Suit::Spades),
+                c(Rank::Seven, Suit::Clubs),
+                c(Rank::Three, Suit::Hearts),
+            ]
+        ),
+        BUCKET_RIVER_SECOND_NUT_FLUSH_BLOCKER_AIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Nine, Suit::Diamonds)],
+            &three_spade_river
+        ),
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_WEAK_PAIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::King, Suit::Diamonds)],
+            &three_spade_river
+        ),
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_TOP_PAIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Nine, Suit::Diamonds)],
+            &[
+                c(Rank::King, Suit::Spades),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Four, Suit::Spades),
+                c(Rank::Nine, Suit::Clubs),
+                c(Rank::Three, Suit::Hearts),
+            ]
+        ),
+        BUCKET_RIVER_NUT_FLUSH_BLOCKER_TWO_PAIR_PLUS
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Ten, Suit::Hearts)],
+            &[
+                c(Rank::King, Suit::Spades),
+                c(Rank::Queen, Suit::Spades),
+                c(Rank::Jack, Suit::Spades),
+                c(Rank::Nine, Suit::Clubs),
+                c(Rank::Two, Suit::Diamonds),
+            ]
+        ),
+        BUCKET_RIVER_STRAIGHT_NUT_FLUSH_BLOCKER
+    );
+
+    /* River straight blockers (90, 94) */
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Jack, Suit::Clubs), c(Rank::Two, Suit::Diamonds)],
+            &[
+                c(Rank::Ace, Suit::Spades),
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Queen, Suit::Hearts),
+                c(Rank::Seven, Suit::Clubs),
+                c(Rank::Three, Suit::Spades),
+            ]
+        ),
+        BUCKET_RIVER_NUT_STRAIGHT_BLOCKER_AIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Diamonds), c(Rank::King, Suit::Hearts)],
+            &[
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Jack, Suit::Spades),
+                c(Rank::Ten, Suit::Clubs),
+                c(Rank::Seven, Suit::Spades),
+                c(Rank::Two, Suit::Hearts),
+            ]
+        ),
+        BUCKET_RIVER_NUT_STRAIGHT_BLOCKER_TOP_PAIR
+    );
+
+    /* Monster / dangerous board splits (96, 97, 106, 107, 110, 111) */
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Clubs), c(Rank::Ace, Suit::Diamonds)],
+            &[
+                c(Rank::Ace, Suit::Hearts),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Nine, Suit::Clubs),
+                c(Rank::Four, Suit::Diamonds),
+                c(Rank::Two, Suit::Spades),
+            ]
+        ),
+        BUCKET_TOP_FULL_HOUSE
+    );
+    let paired_flush_board = [
+        c(Rank::King, Suit::Spades),
+        c(Rank::Nine, Suit::Spades),
+        c(Rank::Nine, Suit::Clubs),
+        c(Rank::Four, Suit::Spades),
+        c(Rank::Two, Suit::Diamonds),
+    ];
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Queen, Suit::Spades)],
+            &paired_flush_board
+        ),
+        BUCKET_PAIRED_BOARD_NUT_FLUSH
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ten, Suit::Spades), c(Rank::Eight, Suit::Spades)],
+            &paired_flush_board
+        ),
+        BUCKET_PAIRED_BOARD_NON_NUT_FLUSH
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ten, Suit::Clubs), c(Rank::Nine, Suit::Diamonds)],
+            &[
+                c(Rank::Queen, Suit::Spades),
+                c(Rank::Jack, Suit::Spades),
+                c(Rank::Eight, Suit::Spades),
+                c(Rank::Four, Suit::Clubs),
+            ]
+        ),
+        BUCKET_THREE_FLUSH_STRAIGHT
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::King, Suit::Diamonds)],
+            &[
+                c(Rank::King, Suit::Hearts),
+                c(Rank::Ace, Suit::Clubs),
+                c(Rank::Seven, Suit::Diamonds),
+                c(Rank::Two, Suit::Spades),
+            ]
+        ),
+        BUCKET_STRICT_TOP_TWO_PAIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::King, Suit::Spades), c(Rank::King, Suit::Diamonds)],
+            &[
+                c(Rank::King, Suit::Hearts),
+                c(Rank::Nine, Suit::Clubs),
+                c(Rank::Four, Suit::Diamonds),
+            ]
+        ),
+        BUCKET_TRUE_TOP_SET
+    );
+
+    /* Flop & Turn potential splits (98..=105, 108, 109) */
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Clubs), c(Rank::King, Suit::Diamonds)],
+            &[
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Six, Suit::Hearts),
+                c(Rank::Two, Suit::Diamonds),
+            ]
+        ),
+        BUCKET_FLOP_TWO_OVERCARDS_AIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::Seven, Suit::Spades)],
+            &[
+                c(Rank::King, Suit::Spades),
+                c(Rank::Seven, Suit::Diamonds),
+                c(Rank::Two, Suit::Clubs),
+            ]
+        ),
+        BUCKET_FLOP_WEAK_PAIR_BDFD
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::King, Suit::Spades)],
+            &[
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Four, Suit::Clubs),
+            ]
+        ),
+        BUCKET_FLOP_TOP_PAIR_BDFD
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Clubs), c(Rank::Ace, Suit::Spades)],
+            &[
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Four, Suit::Spades),
+            ]
+        ),
+        BUCKET_FLOP_OVERPAIR_BDFD
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::King, Suit::Spades)],
+            &[
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Six, Suit::Spades),
+                c(Rank::Two, Suit::Diamonds),
+            ]
+        ),
+        BUCKET_NFD_TWO_OVERCARDS
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Queen, Suit::Spades), c(Rank::Jack, Suit::Spades)],
+            &[
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Six, Suit::Spades),
+                c(Rank::Two, Suit::Diamonds),
+            ]
+        ),
+        BUCKET_FD_TWO_OVERCARDS
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Jack, Suit::Clubs), c(Rank::Nine, Suit::Hearts)],
+            &[
+                c(Rank::King, Suit::Spades),
+                c(Rank::Queen, Suit::Diamonds),
+                c(Rank::Nine, Suit::Clubs),
+                c(Rank::Two, Suit::Hearts),
+            ]
+        ),
+        BUCKET_PAIR_GUTSHOT
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Clubs), c(Rank::Jack, Suit::Diamonds)],
+            &[
+                c(Rank::Jack, Suit::Spades),
+                c(Rank::Seven, Suit::Hearts),
+                c(Rank::Two, Suit::Clubs),
+            ]
+        ),
+        BUCKET_LOW_BOARD_TOP_PAIR
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Jack, Suit::Clubs), c(Rank::Seven, Suit::Hearts)],
+            &[
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Ten, Suit::Spades),
+                c(Rank::Nine, Suit::Diamonds),
+                c(Rank::Five, Suit::Clubs),
+            ]
+        ),
+        BUCKET_DOUBLE_GUTSHOT
+    );
+    assert_eq!(
+        postflop_extended_bucket(
+            &[c(Rank::Ace, Suit::Spades), c(Rank::King, Suit::Spades)],
+            &[
+                c(Rank::King, Suit::Diamonds),
+                c(Rank::Nine, Suit::Spades),
+                c(Rank::Four, Suit::Spades),
+            ]
+        ),
+        BUCKET_TOP_PAIR_NUT_FD
+    );
+}

@@ -1,11 +1,12 @@
 use super::{combo_weight, remaining_deck_excluding};
 use lil_poker_mccfr::cfr::fallback::get_postflop_fallback_by_bucket;
 use lil_poker_mccfr::cfr::subgame::{
-    OpponentReachDistribution, ReachRequest, SubgameContext, SubgameRequest, SubgameSolver,
+    OppStreetProfile, OpponentReachDistribution, ReachRequest, SubgameContext, SubgameRequest,
+    SubgameSolver,
 };
 use lil_poker_mccfr::game::config::{
-    ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, SMALL_BLIND,
-    SUBGAME_BET_PRESSURE, SUBGAME_POT_LG,
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, SMALL_BLIND,
+    SUBGAME_BET_PRESSURE, SUBGAME_FLOP_TRIGGER_POT, SUBGAME_POT_LG,
 };
 use lil_poker_mccfr::game::holdem::{Card, Rank, Suit};
 
@@ -317,4 +318,212 @@ fn test_subgame_filters_extreme_overbet_allin() {
         probs[RAISE_THIRD_POT as usize] + probs[RAISE_HALF_POT as usize] > 0.30,
         "Turn flush should value-bet with standard sizing instead of checking/shoving: {probs:?}"
     );
+}
+
+#[test]
+fn test_subgame_street_profile_node_locking_and_carryover() {
+    let hole = [
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+    let board_flop = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let board_turn = [
+        board_flop[0],
+        board_flop[1],
+        board_flop[2],
+        Card::new(Rank::Jack, Suit::Clubs),
+    ];
+    let board_river = [
+        board_turn[0],
+        board_turn[1],
+        board_turn[2],
+        board_turn[3],
+        Card::new(Rank::Four, Suit::Diamonds),
+    ];
+    let hist_flop = [vec![RAISE_MIN, CALL_CHECK], vec![], vec![], vec![]];
+    let hist_river = [
+        vec![RAISE_MIN, CALL_CHECK],
+        vec![RAISE_THIRD_POT, CALL_CHECK],
+        vec![CALL_CHECK, CALL_CHECK],
+        vec![],
+    ];
+
+    /* 1. Context carries posterior 1326-combo reach from Flop -> River and clears cleanly on reset_hand */
+    let solver = SubgameSolver::new(150);
+    let mut ctx = SubgameContext::new();
+    let _ = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board_flop,
+            round: 2,
+            contributions: [800, 800],
+            ..Default::default()
+        },
+        &hist_flop,
+        Some(&mut ctx),
+    );
+    assert_eq!(ctx.last_opp_reach.as_ref().map(|r| r.round), Some(2));
+    let _ = solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board_river,
+            round: 4,
+            contributions: [1400, 1400],
+            ..Default::default()
+        },
+        &hist_river,
+        Some(&mut ctx),
+    );
+    assert_eq!(ctx.last_opp_reach.as_ref().map(|r| r.round), Some(4));
+    ctx.reset_hand();
+    assert!(ctx.last_opp_reach.is_none() && ctx.last_hero_reach.is_none());
+
+    /* 2. Node-locking with OppStreetProfile: bluff with missed T9s more often vs over-folding River nit */
+    let nl_solver = SubgameSolver::new(400).with_threads(1);
+    let high_fold_prof = OppStreetProfile {
+        river_fold_to_bet: Some(0.90),
+        postflop_raise_rate: Some(0.08),
+        ..Default::default()
+    };
+    let station_prof = OppStreetProfile {
+        river_fold_to_bet: Some(0.05),
+        postflop_raise_rate: Some(0.15),
+        ..Default::default()
+    };
+
+    let p_vs_folder = nl_solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board_river,
+            round: 4,
+            contributions: [1400, 1400],
+            opp_profile: Some(high_fold_prof),
+            ..Default::default()
+        },
+        &hist_river,
+        None,
+    );
+    let p_vs_station = nl_solver.solve(
+        &SubgameRequest {
+            hole,
+            board: &board_river,
+            round: 4,
+            contributions: [1400, 1400],
+            opp_profile: Some(station_prof),
+            ..Default::default()
+        },
+        &hist_river,
+        None,
+    );
+    let bet_folder: f64 = p_vs_folder[2..=5].iter().sum();
+    let bet_station: f64 = p_vs_station[2..=5].iter().sum();
+    assert!(
+        bet_folder > bet_station,
+        "Node-locking against 90% river folder should bet missed bluff ({bet_folder:.3}) more often than vs 5% folder ({bet_station:.3})"
+    );
+}
+
+#[test]
+fn test_subgame_multi_policy_continuation_leaves_and_srp_flop() {
+    assert_eq!(SUBGAME_FLOP_TRIGGER_POT, BIG_BLIND * 4);
+
+    let board_flop = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Six, Suit::Spades),
+        Card::new(Rank::Two, Suit::Diamonds),
+    ];
+    let nfd_overcards = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let air_hand = [
+        Card::new(Rank::Seven, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let hist_srp_flop = [
+        vec![RAISE_MIN, CALL_CHECK],
+        vec![CALL_CHECK],
+        vec![],
+        vec![],
+    ];
+
+    /* 1. SRP Flop (5 BB pot = [250, 250]): NFD + two overcards facing small flop bet must continue
+     * more often than pure air under depth-limited multi-policy continuation leaves */
+    let srp_solver = SubgameSolver::new(300).with_threads(1);
+    let p_nfd = srp_solver.solve(
+        &SubgameRequest {
+            hole: nfd_overcards,
+            board: &board_flop,
+            round: 2,
+            my_player: 0,
+            contributions: [250, 400],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &hist_srp_flop,
+        None,
+    );
+    let p_air = srp_solver.solve(
+        &SubgameRequest {
+            hole: air_hand,
+            board: &board_flop,
+            round: 2,
+            my_player: 0,
+            contributions: [250, 400],
+            raises_this_round: 1,
+            ..Default::default()
+        },
+        &hist_srp_flop,
+        None,
+    );
+    assert!((p_nfd.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+    assert!(p_nfd.iter().all(|x| x.is_finite()));
+    assert!(
+        p_nfd[FOLD as usize] < 0.08 && p_nfd[FOLD as usize] < p_air[FOLD as usize],
+        "NFD+2OC on SRP flop must rarely fold ({:.3}) and fold less than air ({:.3})",
+        p_nfd[FOLD as usize],
+        p_air[FOLD as usize]
+    );
+
+    /* 2. Turn depth-1 multi-policy continuation leaf with extended nut-flush-blocker river cutoff
+     * remains finite and normalized in both single-thread and multi-thread runs */
+    let turn_board = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Clubs),
+    ];
+    let blocker_hand = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Two, Suit::Diamonds),
+    ];
+    let hist_turn = [
+        vec![RAISE_MIN, CALL_CHECK],
+        vec![CALL_CHECK, CALL_CHECK],
+        vec![],
+        vec![],
+    ];
+    for threads in [1usize, 4usize] {
+        let turn_solver = SubgameSolver::new(250)
+            .with_threads(threads)
+            .with_max_depth_streets(1);
+        let p_turn = turn_solver.solve(
+            &SubgameRequest {
+                hole: blocker_hand,
+                board: &turn_board,
+                round: 3,
+                my_player: 0,
+                contributions: [800, 800],
+                ..Default::default()
+            },
+            &hist_turn,
+            None,
+        );
+        assert!((p_turn.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+        assert!(p_turn.iter().all(|x| x.is_finite()));
+    }
 }

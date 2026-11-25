@@ -1,7 +1,7 @@
 /*! Real-time Decision Engine for Live Poker Client */
 use std::collections::HashMap;
 
-use super::protocol::{ActionMapRequest, map_action_index};
+use super::protocol::{ActionMapRequest, ActionTranslationBlend, map_action_index};
 use crate::cfr::abstraction::{
     BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
     BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
@@ -35,6 +35,7 @@ pub struct LiveDecisionRequest<'a> {
     pub my_chips: i32,
     pub opp_chips: Option<i32>,
     pub current_bet: i32,
+    pub active_bet_blend: Option<ActionTranslationBlend>,
     pub strategy_index: Option<&'a StrategyLookupIndex>,
     pub solver: Option<&'a SubgameSolver>,
 }
@@ -60,6 +61,7 @@ impl Default for LiveDecisionRequest<'_> {
             my_chips: 0,
             opp_chips: None,
             current_bet: 0,
+            active_bet_blend: None,
             strategy_index: None,
             solver: None,
         }
@@ -118,6 +120,7 @@ pub fn decide_action_traced(
         active_opponents,
         my_player: req.my_player,
         history: &req.history,
+        active_bet_blend: req.active_bet_blend,
     };
 
     if let Some(early) = try_extreme_pot_commit_rescue(&state) {
@@ -199,6 +202,7 @@ struct LiveDecisionState<'a> {
     active_opponents: usize,
     my_player: usize,
     history: &'a [RoundHistory; 4],
+    active_bet_blend: Option<ActionTranslationBlend>,
 }
 
 impl LiveDecisionState<'_> {
@@ -370,13 +374,90 @@ fn try_short_stack_nash_decision(
     }
 }
 
+fn lookup_blueprint_interpolated(
+    s: &LiveDecisionState<'_>,
+    strategy_map: &HashMap<String, Vec<f64>>,
+    eff_stack_bb: i32,
+) -> Option<Vec<f64>> {
+    if let Some(blend) = s.active_bet_blend
+        && blend.low_action != blend.high_action
+        && blend.low_weight > 0.0
+        && blend.low_weight < 1.0
+        && let r_idx @ 0..=3 = (s.round.saturating_sub(1)) as usize
+        && !s.history[r_idx].is_empty()
+    {
+        let last_idx = s.history[r_idx].len() - 1;
+        let last_act = s.history[r_idx][last_idx];
+        if last_act == blend.low_action || last_act == blend.high_action {
+            let mut slice_low = s.history[r_idx].as_slice().to_vec();
+            let mut slice_high = slice_low.clone();
+            slice_low[last_idx] = blend.low_action;
+            slice_high[last_idx] = blend.high_action;
+            let mut h_low = *s.history;
+            let mut h_high = *s.history;
+            h_low[r_idx] = RoundHistory::from_slice(&slice_low);
+            h_high[r_idx] = RoundHistory::from_slice(&slice_high);
+
+            let p_low = crate::cfr::fallback::lookup_strategy_stack_interpolated(
+                |k| strategy_map.get(k),
+                s.hole,
+                s.board,
+                s.round,
+                &h_low,
+                eff_stack_bb,
+            );
+            let p_high = crate::cfr::fallback::lookup_strategy_stack_interpolated(
+                |k| strategy_map.get(k),
+                s.hole,
+                s.board,
+                s.round,
+                &h_high,
+                eff_stack_bb,
+            );
+
+            match (p_low, p_high) {
+                (Some(lo), Some(hi)) => {
+                    let n = lo.len().min(hi.len());
+                    let w = blend.low_weight;
+                    let mut blended = vec![0.0f64; n];
+                    let mut sum = 0.0f64;
+                    for i in 0..n {
+                        let v = (w * lo[i] + (1.0 - w) * hi[i]).max(0.0);
+                        blended[i] = v;
+                        sum += v;
+                    }
+                    if sum > 1e-12 {
+                        let inv = 1.0 / sum;
+                        for v in &mut blended {
+                            *v *= inv;
+                        }
+                    }
+                    return Some(blended);
+                }
+                (Some(lo), None) => return Some(lo),
+                (None, Some(hi)) => return Some(hi),
+                (None, None) => {}
+            }
+        }
+    }
+
+    crate::cfr::fallback::lookup_strategy_stack_interpolated(
+        |k| strategy_map.get(k),
+        s.hole,
+        s.board,
+        s.round,
+        s.history,
+        eff_stack_bb,
+    )
+}
+
 fn resolve_raw_strategy_probs(
     s: &LiveDecisionState<'_>,
     tracker: &OpponentTracker,
     sp: LiveSubgameParams<'_>,
 ) -> (Vec<f64>, bool) {
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for medium/big pots when Heads-Up 1v1) */
-    let flop_trigger_pot = (s.bb * 8).max(1);
+    /* 1. Real-time Subgame Search (Turn & River, or Flop for HU single-raised+ pots >= 4 BB) */
+    let flop_trigger_pot = (s.bb * 4).max(1);
     let use_subgame = sp.subgame_search
         && s.active_opponents == 1
         && (s.round >= ROUND_TURN || (s.round == ROUND_FLOP && s.pot >= flop_trigger_pot));
@@ -406,26 +487,20 @@ fn resolve_raw_strategy_probs(
                 opp_vpip: opp_vpip_opt,
                 opp_pfr: opp_pfr_opt,
                 opp_aggression: tracker.subgame_bluff_multiplier(),
+                opp_profile: tracker.subgame_street_profile(),
             },
             s.history,
             Some(sp.strategy_map),
             sp.solver_ctx,
         )
     } else {
-        /* 2. Abstract Strategy Model Lookup (single-model multi-stack aware) with O(1) Fallback */
+        /* 2. Abstract Strategy Model Lookup (single-model multi-stack & pseudo-harmonic interpolation aware) */
         let eff_stack_bb = if s.eff_chips > 0 && s.bb > 0 {
             s.eff_chips / s.bb
         } else {
             100
         };
-        if let Some(p) = crate::cfr::fallback::lookup_strategy_hierarchical_owned_with_stack(
-            |k| sp.strategy_map.get(k).cloned(),
-            s.hole,
-            s.board,
-            s.round,
-            s.history,
-            eff_stack_bb,
-        ) {
+        if let Some(p) = lookup_blueprint_interpolated(s, sp.strategy_map, eff_stack_bb) {
             p
         } else {
             let req = FallbackRequest {

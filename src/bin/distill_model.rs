@@ -40,9 +40,7 @@ struct Args {
 
 #[inline(always)]
 fn strip_stack_prefix(key: &str) -> &str {
-    key.strip_prefix("S15|")
-        .or_else(|| key.strip_prefix("S30|"))
-        .unwrap_or(key)
+    lil_poker_mccfr::cfr::abstraction::strip_stack_prefix(key).1
 }
 
 fn get_street(key: &str) -> u8 {

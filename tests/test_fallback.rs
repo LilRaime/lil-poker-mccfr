@@ -466,7 +466,7 @@ fn test_unified_single_model_multi_stack_keys_and_lookup() {
 }
 
 #[test]
-fn test_v2_board_texture_keys_hash_parity_and_fallback() {
+fn test_board_texture_keys_hash_parity_and_fallback() {
     use lil_poker_mccfr::cfr::abstraction::{
         append_texture_to_key, compact_board_texture_char, get_holdem_infoset_key_rich,
         hash_from_infoset_key_str, hash_holdem_infoset_key_rich, mix_stack_prefix_hash,
@@ -509,7 +509,7 @@ fn test_v2_board_texture_keys_hash_parity_and_fallback() {
         "hash_from_infoset_key_str must match incremental stack+texture hash for {tex_key}"
     );
 
-    /* 2. Lookup prefers textured key when present and falls back to untextured v1 key when absent */
+    /* 2. Lookup prefers textured key when present and falls back to untextured key when absent */
     let b_mono = postflop_equity_bucket(&hole, &mono_board);
     let mut map: HashMap<String, Vec<f64>> = HashMap::new();
     map.insert(
@@ -529,7 +529,7 @@ fn test_v2_board_texture_keys_hash_parity_and_fallback() {
         &history,
         15,
     )
-    .expect("v2 textured 15 BB lookup");
+    .expect("textured 15 BB lookup");
     assert!((p_mono_15[CALL_CHECK as usize] - 0.80).abs() < 1e-6);
 
     let p_mono_100 = lookup_strategy_hierarchical_owned_with_stack(
@@ -540,6 +540,141 @@ fn test_v2_board_texture_keys_hash_parity_and_fallback() {
         &history,
         100,
     )
-    .expect("v1 untextured fallback lookup");
+    .expect("untextured fallback lookup");
     assert!((p_mono_100[RAISE_THIRD_POT as usize] - 0.90).abs() < 1e-6);
+}
+
+#[test]
+fn test_turn_texture_stacks_hash_parity_and_three_tier_compatibility() {
+    use lil_poker_mccfr::cfr::abstraction::{
+        append_texture_to_key, compact_turn_texture_char, get_holdem_infoset_key_rich_with_bucket,
+        hash_from_infoset_key_str, hash_holdem_infoset_key_rich_fast, mix_stack_prefix_hash,
+        mix_texture_hash, postflop_equity_bucket, postflop_extended_bucket,
+        stack_depth_prefix_four_tier,
+    };
+    use lil_poker_mccfr::cfr::fallback::{
+        StrategyLookupIndex, lookup_strategy_hierarchical_owned_with_stack,
+        lookup_strategy_stack_interpolated,
+    };
+    use lil_poker_mccfr::game::config::NUM_ROUNDS;
+    use lil_poker_mccfr::game::holdem::RoundHistory;
+    use std::collections::HashMap;
+
+    let clean_turn = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let paired_turn = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    let danger_turn = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Two, Suit::Hearts),
+    ];
+    assert_eq!(compact_turn_texture_char(&clean_turn), 'c');
+    assert_eq!(compact_turn_texture_char(&paired_turn), 'p');
+    assert_eq!(compact_turn_texture_char(&danger_turn), 'x');
+
+    assert_eq!(stack_depth_prefix_four_tier(15), "S15|");
+    assert_eq!(stack_depth_prefix_four_tier(25), "S25|");
+    assert_eq!(stack_depth_prefix_four_tier(45), "S45|");
+    assert_eq!(stack_depth_prefix_four_tier(100), "");
+
+    let hole = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let turn_board_tp_nfd = [
+        Card::new(Rank::King, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let b_ext = postflop_extended_bucket(&hole, &turn_board_tp_nfd) as u8;
+    let b_base = postflop_equity_bucket(&hole, &turn_board_tp_nfd) as u8;
+    assert_eq!(b_ext, 109);
+    assert_eq!(b_base, 49);
+
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+    history[1].push(CALL_CHECK);
+    history[1].push(CALL_CHECK);
+
+    /* 1. Hash parity for S25| + 3-digit extended bucket 109 + turn texture 'c' */
+    let turn_tex = compact_turn_texture_char(&turn_board_tp_nfd);
+    let base_key = get_holdem_infoset_key_rich_with_bucket(&hole, b_ext, 3, &history);
+    let ext_key = format!("S25|{}", append_texture_to_key(&base_key, turn_tex));
+    let expected_h = mix_stack_prefix_hash(
+        mix_texture_hash(
+            hash_holdem_infoset_key_rich_fast(b_ext, 3, &history),
+            turn_tex,
+        ),
+        "S25|",
+    );
+    assert_eq!(
+        hash_from_infoset_key_str(&ext_key),
+        expected_h,
+        "turn texture + S25| + 3-digit bucket hash mismatch for {ext_key}"
+    );
+
+    /* 2. Backward compatibility: 3-tier model (S30| + B49) vs 4-tier extended model (S25| + S45| + B109c) */
+    let mut three_tier_map: HashMap<String, Vec<f64>> = HashMap::new();
+    three_tier_map.insert(
+        "S30|P:rc|F:cc|T:B49/".to_string(),
+        vec![0.0, 0.25, 0.75, 0.0, 0.0, 0.0],
+    );
+    let p_three_tier_25 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| three_tier_map.get(k).cloned(),
+        &hole,
+        &turn_board_tp_nfd,
+        3,
+        &history,
+        25,
+    )
+    .expect("3-tier fallback at 25 BB -> S30| and B49");
+    assert!((p_three_tier_25[RAISE_MIN as usize] - 0.75).abs() < 1e-6);
+
+    let mut ext_map: HashMap<String, Vec<f64>> = HashMap::new();
+    ext_map.insert(ext_key, vec![0.0, 0.10, 0.0, 0.90, 0.0, 0.0]);
+    ext_map.insert(
+        format!("S45|{}", append_texture_to_key(&base_key, turn_tex)),
+        vec![0.0, 0.50, 0.0, 0.50, 0.0, 0.0],
+    );
+    let p_ext_25 = lookup_strategy_hierarchical_owned_with_stack(
+        |k| ext_map.get(k).cloned(),
+        &hole,
+        &turn_board_tp_nfd,
+        3,
+        &history,
+        25,
+    )
+    .expect("extended native S25| + B109c lookup");
+    assert!((p_ext_25[RAISE_THIRD_POT as usize] - 0.90).abs() < 1e-6);
+
+    /* Stack interpolation at 35 BB (exact midpoint between 25 BB and 45 BB) */
+    let p_interp = lookup_strategy_stack_interpolated(
+        |k| ext_map.get(k),
+        &hole,
+        &turn_board_tp_nfd,
+        3,
+        &history,
+        35,
+    )
+    .expect("4-tier stack interpolation at 35 BB");
+    assert!((p_interp[RAISE_THIRD_POT as usize] - 0.70).abs() < 1e-6);
+
+    /* StrategyLookupIndex must index and query 3-digit extended buckets (109) */
+    let idx = StrategyLookupIndex::build_from_map(&ext_map);
+    let avg = idx
+        .query_bucket_avg(3, &hole, &turn_board_tp_nfd, 0)
+        .expect("StrategyLookupIndex 3-digit extended bucket query");
+    assert!((avg[RAISE_THIRD_POT as usize] - 0.70).abs() < 1e-6);
 }

@@ -181,7 +181,7 @@ pub fn board_texture_code(board: &[Card]) -> &'static str {
     }
 }
 
-/** Compact 4-state postflop board texture char for v2 blueprint infoset keys:
+/** Compact 4-state postflop board texture char for flop blueprint infoset keys:
  * 'm' = monotone (3+ same suit), 'p' = paired, 'w' = wet (two-tone & connected), 'd' = dry. */
 #[inline(always)]
 pub fn compact_board_texture_char(board: &[Card]) -> char {
@@ -197,6 +197,23 @@ pub fn compact_board_texture_char(board: &[Card]) -> char {
         'w'
     } else {
         'd'
+    }
+}
+
+/** Compact 3-state turn board texture char for turn blueprint infoset keys (`T:`):
+ * `'x'` = 3-flush, 4-flush, or 4-straight danger; `'p'` = paired; `'c'` = clean. */
+#[inline(always)]
+pub fn compact_turn_texture_char(board: &[Card]) -> char {
+    if board.len() < 4 {
+        return 'c';
+    }
+    let summary = compute_board_summary(board);
+    if summary.is_three_fl || summary.is_four_fl || summary.is_four_st {
+        'x'
+    } else if summary.is_paired {
+        'p'
+    } else {
+        'c'
     }
 }
 

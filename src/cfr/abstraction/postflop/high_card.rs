@@ -45,7 +45,10 @@ pub(super) fn bucket_high_card_or_draw(hole: [Card; NUM_HOLE_CARDS], board: &[Ca
         .unwrap_or_else(|| bucket_unpaired_high_card(hole_high, hole_low, false))
 }
 
-fn detect_flop_backdoors(hole: [Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, bool, bool) {
+pub(super) fn detect_flop_backdoors(
+    hole: [Card; NUM_HOLE_CARDS],
+    board: &[Card],
+) -> (bool, bool, bool) {
     let mut bdfd = false;
     let mut nut_bdfd = false;
     for s in 0..4u8 {

@@ -1,11 +1,11 @@
 /*! Opponent Archetype Heuristics and Action Sampling */
 use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
-    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, detect_draws,
-    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    detect_draws, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
 use crate::cfr::fallback::{FallbackRequest, get_holdem_fallback_strategy};
-use crate::game::config::{BIG_BLIND, ROUND_PREFLOP, ROUND_TURN};
+use crate::game::config::{BIG_BLIND, ROUND_FLOP, ROUND_PREFLOP, ROUND_TURN};
 use crate::game::holdem::{
     ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, TexasHoldemGame,
 };
@@ -74,6 +74,7 @@ pub fn sample_opponent_action(
         "rock" | "nit" | "tight_passive" => sample_nit_action(&ctx, rng),
         "shove_bot" | "push_bot" | "allin_bot" => sample_shove_bot_action(&ctx, rng),
         "trapper" | "check_raiser" => sample_trapper_action(&ctx, rng),
+        "overbet_aggro" | "overbet" | "aggro_ob" => sample_overbet_aggro_action(&ctx, rng),
         "self" | "model" => sample_model_action(&ctx, opp_strategy, rng),
         _ => ctx.legal[rng.random_range(0..ctx.legal.len())],
     }
@@ -291,18 +292,93 @@ fn sample_trapper_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
     }
 }
 
+fn sample_overbet_aggro_action(c: &OppActionCtx<'_>, rng: &mut SmallRng) -> u8 {
+    if c.game.round == ROUND_PREFLOP {
+        let (idx, _) = preflop_bucket(c.hole[0], c.hole[1]);
+        let tier = preflop_strength_tier(idx);
+        if c.opp_to_call <= BIG_BLIND {
+            if tier <= 6 || (tier == 7 && rng.random_bool(0.40)) {
+                pick_preferred_action(c.legal, &[RAISE_MIN, RAISE_THIRD_POT, CALL_CHECK], rng)
+            } else if c.opp_to_call == 0 {
+                CALL_CHECK
+            } else {
+                H_FOLD
+            }
+        } else if tier <= 3 || ((5..=6).contains(&tier) && rng.random_bool(0.30)) {
+            pick_preferred_action(
+                c.legal,
+                &[RAISE_HALF_POT, RAISE_THIRD_POT, ALL_IN, CALL_CHECK],
+                rng,
+            )
+        } else if tier <= 5 && c.opp_to_call <= BIG_BLIND * 10 {
+            CALL_CHECK
+        } else {
+            H_FOLD
+        }
+    } else {
+        let bucket = postflop_equity_bucket(c.hole, c.board);
+        let (has_fd, has_sd) = detect_draws(c.hole, c.board);
+        if c.opp_to_call == 0 {
+            if c.game.round == ROUND_FLOP {
+                if rng.random_bool(0.75) && c.legal.contains(&RAISE_HALF_POT) {
+                    RAISE_HALF_POT
+                } else {
+                    pick_preferred_action(
+                        c.legal,
+                        &[RAISE_THIRD_POT, RAISE_HALF_POT, CALL_CHECK],
+                        rng,
+                    )
+                }
+            } else if bucket >= BUCKET_TOP_PAIR_MIN
+                || (c.game.round == ROUND_TURN && (has_fd || has_sd))
+            {
+                pick_preferred_action(
+                    c.legal,
+                    &[RAISE_HALF_POT, ALL_IN, RAISE_THIRD_POT, CALL_CHECK],
+                    rng,
+                )
+            } else if rng.random_bool(0.38) {
+                pick_preferred_action(
+                    c.legal,
+                    &[RAISE_HALF_POT, RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK],
+                    rng,
+                )
+            } else if c.game.round > ROUND_TURN && rng.random_bool(0.35) {
+                pick_preferred_action(c.legal, &[RAISE_MIN, RAISE_THIRD_POT, CALL_CHECK], rng)
+            } else {
+                CALL_CHECK
+            }
+        } else if bucket >= BUCKET_TWO_PAIR_MIN
+            || ((bucket >= BUCKET_TOP_PAIR_MIN || has_fd || has_sd) && c.game.round == ROUND_FLOP)
+            || (c.game.round == ROUND_FLOP && rng.random_bool(0.30))
+            || (c.game.round > ROUND_FLOP && rng.random_bool(0.20) && bucket < BUCKET_WEAK_PAIR_MIN)
+        {
+            pick_preferred_action(c.legal, &[RAISE_HALF_POT, ALL_IN, CALL_CHECK], rng)
+        } else if bucket >= BUCKET_TOP_PAIR_MIN
+            || ((bucket >= BUCKET_WEAK_PAIR_MIN || has_fd || has_sd)
+                && c.opp_to_call <= (c.pot / 2).max(BIG_BLIND * 3))
+        {
+            CALL_CHECK
+        } else {
+            H_FOLD
+        }
+    }
+}
+
 fn sample_model_action(
     c: &OppActionCtx<'_>,
     opp_strategy: Option<&HoldemStrategy>,
     rng: &mut SmallRng,
 ) -> u8 {
     if let Some(strat) = opp_strategy {
-        let probs = if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical(
+        let eff_stack_bb = (c.game.stack_size / BIG_BLIND.max(1)).max(1);
+        let probs = if let Some(s) = crate::cfr::fallback::lookup_strategy_hierarchical_with_stack(
             |k| strat.get(k),
             c.hole,
             c.board,
             c.game.round,
             &c.game.history,
+            eff_stack_bb,
         ) {
             s.to_vec()
         } else {

@@ -303,6 +303,7 @@ fn compute_bot_raw_probs(
                 opp_vpip: obs_vpip,
                 opp_pfr: obs_pfr,
                 opp_aggression: opp_tracker.subgame_bluff_multiplier(),
+                opp_profile: opp_tracker.subgame_street_profile(),
             },
             &game.history,
             cfg.strategy,
@@ -501,7 +502,16 @@ fn step_opponent_turn(
     } else {
         0
     };
-    let act = sample_opponent_action(cfg.opp_archetype, cfg.opp_strategy, game, cp, rng);
+    let effective_opp_strategy = if cfg.opp_strategy.is_some() {
+        cfg.opp_strategy
+    } else if cfg.opp_archetype.eq_ignore_ascii_case("self")
+        || cfg.opp_archetype.eq_ignore_ascii_case("model")
+    {
+        cfg.strategy
+    } else {
+        None
+    };
+    let act = sample_opponent_action(cfg.opp_archetype, effective_opp_strategy, game, cp, rng);
     if round_before == ROUND_PREFLOP {
         if pf_state.opp_pf_pfr && prior_pf_raises >= 2 && !pf_state.opp_faced_3bet_recorded {
             opp_tracker.record_facing_3bet(act == H_FOLD);

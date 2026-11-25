@@ -457,120 +457,7 @@ pub fn lookup_strategy_hierarchical<'a, V>(
     round: u8,
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
 ) -> Option<&'a V> {
-    use crate::cfr::abstraction::{
-        append_texture_to_key, compact_board_texture_char, get_holdem_infoset_key,
-        get_holdem_infoset_key_rich, get_holdem_infoset_key_rich_with_bucket,
-        get_holdem_infoset_key_with_bucket, postflop_equity_bucket,
-    };
-
-    let tex_opt = if round >= ROUND_FLOP && !board.is_empty() {
-        Some(compact_board_texture_char(board))
-    } else {
-        None
-    };
-    let try_get = |k: &str| -> Option<&'a V> {
-        if let Some(tex) = tex_opt {
-            let tk = append_texture_to_key(k, tex);
-            if let Some(v) = get_fn(&tk) {
-                return Some(v);
-            }
-        }
-        get_fn(k)
-    };
-
-    /* 1. Exact rich key (try v2 board-textured key first, then untextured v1 key) */
-    let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
-    let exact_key = get_holdem_infoset_key(hole, board, round, history);
-    if let Some(v) = try_get(&rich_key) {
-        return Some(v);
-    }
-
-    /* 2. Exact compact key (for non-rich models, e.g. "F:B36/c") */
-    if let Some(v) = try_get(&exact_key) {
-        return Some(v);
-    }
-
-    if round >= ROUND_FLOP {
-        let bucket = postflop_equity_bucket(hole, board) as i32;
-
-        /* 3. Adjacent bucket search (+1, -1, +2, -2) preserving exact street history and active player */
-        for delta in [1i32, -1, 2, -2] {
-            let nb = bucket + delta;
-            if (0..NUM_EQUITY_BUCKETS as i32).contains(&nb) {
-                let adj_rich =
-                    get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
-                if let Some(v) = try_get(&adj_rich) {
-                    return Some(v);
-                }
-                let adj_exact = get_holdem_infoset_key_with_bucket(hole, nb as u8, round, history);
-                if let Some(v) = try_get(&adj_exact) {
-                    return Some(v);
-                }
-            }
-        }
-
-        /* 4. Canonical preflop line with exact current street action (same player turn) */
-        if round == ROUND_FLOP {
-            let rc_key = format!("P:rc|{exact_key}");
-            if let Some(v) = try_get(&rc_key) {
-                return Some(v);
-            }
-            let cc_key = format!("P:cc|{exact_key}");
-            if let Some(v) = try_get(&cc_key) {
-                return Some(v);
-            }
-        } else if round == ROUND_TURN {
-            let rc_f_c = format!("P:rc|F:cc|{exact_key}");
-            if let Some(v) = try_get(&rc_f_c) {
-                return Some(v);
-            }
-            let rc_f_rc = format!("P:rc|F:rc|{exact_key}");
-            if let Some(v) = try_get(&rc_f_rc) {
-                return Some(v);
-            }
-            let cc_f_c = format!("P:cc|F:cc|{exact_key}");
-            if let Some(v) = try_get(&cc_f_c) {
-                return Some(v);
-            }
-        }
-
-        /* 5. Even-step street action truncation (steps of 2 ONLY, and preserving facing-bet parity
-         * so a facing-bet state NEVER falls back to a check-node with 0% fold probability!) */
-        if let Some(slash_idx) = exact_key.find('/') {
-            let street_prefix = &exact_key[..slash_idx];
-            let acts = &exact_key[slash_idx + 1..];
-            let orig_facing_bet = acts.chars().last().is_some_and(|c| c != 'c');
-            let mut end = acts.len();
-            while end >= 2 {
-                end -= 2;
-                let sub_acts = &acts[..end];
-                let sub_facing_bet = sub_acts.chars().last().is_some_and(|c| c != 'c');
-                if orig_facing_bet != sub_facing_bet {
-                    continue;
-                }
-                let truncated_exact = format!("{street_prefix}/{sub_acts}");
-                if round == ROUND_TURN {
-                    let t_rc_f_c = format!("P:rc|F:cc|{truncated_exact}");
-                    if let Some(v) = try_get(&t_rc_f_c) {
-                        return Some(v);
-                    }
-                }
-                let t_rc = format!("P:rc|{truncated_exact}");
-                if let Some(v) = try_get(&t_rc) {
-                    return Some(v);
-                }
-                let t_cc = format!("P:cc|{truncated_exact}");
-                if let Some(v) = try_get(&t_cc) {
-                    return Some(v);
-                }
-                if let Some(v) = try_get(&truncated_exact) {
-                    return Some(v);
-                }
-            }
-        }
-    }
-
-    None
+    lookup_strategy_hierarchical_owned(get_fn, hole, board, round, history)
 }
 
 pub fn lookup_strategy_hierarchical_owned<V>(
@@ -581,13 +468,16 @@ pub fn lookup_strategy_hierarchical_owned<V>(
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
 ) -> Option<V> {
     use crate::cfr::abstraction::{
-        append_texture_to_key, compact_board_texture_char, get_holdem_infoset_key,
-        get_holdem_infoset_key_rich, get_holdem_infoset_key_rich_with_bucket,
-        get_holdem_infoset_key_with_bucket, postflop_equity_bucket,
+        append_texture_to_key, compact_board_texture_char, compact_turn_texture_char,
+        get_holdem_infoset_key, get_holdem_infoset_key_rich,
+        get_holdem_infoset_key_rich_with_bucket, get_holdem_infoset_key_with_bucket,
+        postflop_equity_bucket, postflop_extended_bucket,
     };
 
-    let tex_opt = if round >= ROUND_FLOP && !board.is_empty() {
+    let tex_opt = if round == ROUND_FLOP && !board.is_empty() {
         Some(compact_board_texture_char(board))
+    } else if round == ROUND_TURN && board.len() >= 4 {
+        Some(compact_turn_texture_char(board))
     } else {
         None
     };
@@ -601,96 +491,135 @@ pub fn lookup_strategy_hierarchical_owned<V>(
         get_fn(k)
     };
 
-    let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
-    let exact_key = get_holdem_infoset_key(hole, board, round, history);
-    if let Some(v) = try_get(&rich_key) {
+    if round < ROUND_FLOP {
+        let rich_key = get_holdem_infoset_key_rich(hole, board, round, history);
+        if let Some(v) = try_get(&rich_key) {
+            return Some(v);
+        }
+        let exact_key = get_holdem_infoset_key(hole, board, round, history);
+        return try_get(&exact_key);
+    }
+
+    let b_base = postflop_equity_bucket(hole, board) as u8;
+    let b_ext = postflop_extended_bucket(hole, board) as u8;
+
+    if b_ext != b_base {
+        let rich_ext = get_holdem_infoset_key_rich_with_bucket(hole, b_ext, round, history);
+        if let Some(v) = try_get(&rich_ext) {
+            return Some(v);
+        }
+    }
+    let rich_base = get_holdem_infoset_key_rich_with_bucket(hole, b_base, round, history);
+    if let Some(v) = try_get(&rich_base) {
         return Some(v);
     }
 
-    if let Some(v) = try_get(&exact_key) {
+    if b_ext != b_base {
+        let exact_ext = get_holdem_infoset_key_with_bucket(hole, b_ext, round, history);
+        if let Some(v) = try_get(&exact_ext) {
+            return Some(v);
+        }
+    }
+    let exact_base = get_holdem_infoset_key_with_bucket(hole, b_base, round, history);
+    if let Some(v) = try_get(&exact_base) {
         return Some(v);
     }
 
-    if round >= ROUND_FLOP {
-        let bucket = postflop_equity_bucket(hole, board) as i32;
-        for delta in [1i32, -1, 2, -2] {
-            let nb = bucket + delta;
-            if (0..NUM_EQUITY_BUCKETS as i32).contains(&nb) {
-                let adj_rich =
-                    get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
-                if let Some(v) = try_get(&adj_rich) {
-                    return Some(v);
-                }
-                let adj_exact = get_holdem_infoset_key_with_bucket(hole, nb as u8, round, history);
-                if let Some(v) = try_get(&adj_exact) {
-                    return Some(v);
-                }
+    let bucket = i32::from(b_base);
+    for delta in [1i32, -1, 2, -2] {
+        let nb = bucket + delta;
+        if (0..NUM_EQUITY_BUCKETS as i32).contains(&nb) {
+            let adj_rich = get_holdem_infoset_key_rich_with_bucket(hole, nb as u8, round, history);
+            if let Some(v) = try_get(&adj_rich) {
+                return Some(v);
+            }
+            let adj_exact = get_holdem_infoset_key_with_bucket(hole, nb as u8, round, history);
+            if let Some(v) = try_get(&adj_exact) {
+                return Some(v);
             }
         }
+    }
 
+    let exact_ext_key = if b_ext != b_base {
+        Some(get_holdem_infoset_key_with_bucket(
+            hole, b_ext, round, history,
+        ))
+    } else {
+        None
+    };
+    let try_canonical = |base: &str| -> Option<V> {
         if round == ROUND_TURN {
-            let rc_f_c = format!("P:rc|F:cc|{exact_key}");
-            if let Some(v) = try_get(&rc_f_c) {
-                return Some(v);
-            }
-            let rc_f_rc = format!("P:rc|F:rc|{exact_key}");
-            if let Some(v) = try_get(&rc_f_rc) {
-                return Some(v);
-            }
-            let cc_f_c = format!("P:cc|F:cc|{exact_key}");
-            if let Some(v) = try_get(&cc_f_c) {
-                return Some(v);
+            for pref in ["P:rc|F:cc|", "P:rc|F:rc|", "P:cc|F:cc|"] {
+                let k = format!("{pref}{base}");
+                if let Some(v) = try_get(&k) {
+                    return Some(v);
+                }
             }
         }
-        let rc_key = format!("P:rc|{exact_key}");
+        let rc_key = format!("P:rc|{base}");
         if let Some(v) = try_get(&rc_key) {
             return Some(v);
         }
-        let cc_key = format!("P:cc|{exact_key}");
+        let cc_key = format!("P:cc|{base}");
         if let Some(v) = try_get(&cc_key) {
             return Some(v);
         }
+        None
+    };
+    if let Some(ref ek_ext) = exact_ext_key
+        && let Some(v) = try_canonical(ek_ext)
+    {
+        return Some(v);
+    }
+    if let Some(v) = try_canonical(&exact_base) {
+        return Some(v);
+    }
 
-        if let Some(slash_idx) = exact_key.find('/') {
-            let street_prefix = &exact_key[..slash_idx];
-            let acts = &exact_key[slash_idx + 1..];
-            let orig_facing_bet = acts.chars().last().is_some_and(|c| c != 'c');
-            let mut end = acts.len();
-            while end >= 2 {
-                end -= 2;
-                let sub_acts = &acts[..end];
-                let sub_facing_bet = sub_acts.chars().last().is_some_and(|c| c != 'c');
-                if orig_facing_bet != sub_facing_bet {
-                    continue;
-                }
-                let truncated_exact = format!("{street_prefix}/{sub_acts}");
-                if round == ROUND_TURN {
-                    let t_rc_f_c = format!("P:rc|F:cc|{truncated_exact}");
-                    if let Some(v) = try_get(&t_rc_f_c) {
-                        return Some(v);
-                    }
-                }
-                let t_rc = format!("P:rc|{truncated_exact}");
-                if let Some(v) = try_get(&t_rc) {
-                    return Some(v);
-                }
-                let t_cc = format!("P:cc|{truncated_exact}");
-                if let Some(v) = try_get(&t_cc) {
-                    return Some(v);
-                }
-                if let Some(v) = try_get(&truncated_exact) {
+    let try_truncated = |base: &str| -> Option<V> {
+        let slash_idx = base.find('/')?;
+        let street_prefix = &base[..slash_idx];
+        let acts = &base[slash_idx + 1..];
+        let orig_facing_bet = acts.chars().last().is_some_and(|c| c != 'c');
+        let mut end = acts.len();
+        while end >= 2 {
+            end -= 2;
+            let sub_acts = &acts[..end];
+            let sub_facing_bet = sub_acts.chars().last().is_some_and(|c| c != 'c');
+            if orig_facing_bet != sub_facing_bet {
+                continue;
+            }
+            let truncated_exact = format!("{street_prefix}/{sub_acts}");
+            if round == ROUND_TURN {
+                let t_rc_f_c = format!("P:rc|F:cc|{truncated_exact}");
+                if let Some(v) = try_get(&t_rc_f_c) {
                     return Some(v);
                 }
             }
+            let t_rc = format!("P:rc|{truncated_exact}");
+            if let Some(v) = try_get(&t_rc) {
+                return Some(v);
+            }
+            let t_cc = format!("P:cc|{truncated_exact}");
+            if let Some(v) = try_get(&t_cc) {
+                return Some(v);
+            }
+            if let Some(v) = try_get(&truncated_exact) {
+                return Some(v);
+            }
         }
+        None
+    };
+    if let Some(ref ek_ext) = exact_ext_key
+        && let Some(v) = try_truncated(ek_ext)
+    {
+        return Some(v);
     }
-
-    None
+    try_truncated(&exact_base)
 }
 
 /** Stack-aware hierarchical lookup for unified single-file multi-stack models:
- * tries stack-depth prefixed keys ("S15|" for <= 20 BB, "S30|" for 21..=45 BB) first,
- * and seamlessly falls back to unprefixed 100 BB blueprint keys if absent. */
+ * probes 4-tier (`S15|`, `S25|`, `S45|`) and 3-tier (`S15|`, `S30|`) prefixes in priority order
+ * before falling back to unprefixed 100 BB blueprint keys. */
 pub fn lookup_strategy_hierarchical_with_stack<'a, V>(
     get_fn: impl Fn(&str) -> Option<&'a V>,
     hole: &[Card; 2],
@@ -699,22 +628,7 @@ pub fn lookup_strategy_hierarchical_with_stack<'a, V>(
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
     eff_stack_bb: i32,
 ) -> Option<&'a V> {
-    let prefix = crate::cfr::abstraction::stack_depth_prefix(eff_stack_bb);
-    if !prefix.is_empty()
-        && let Some(v) = lookup_strategy_hierarchical(
-            |k| {
-                let prefixed = format!("{prefix}{k}");
-                get_fn(&prefixed)
-            },
-            hole,
-            board,
-            round,
-            history,
-        )
-    {
-        return Some(v);
-    }
-    lookup_strategy_hierarchical(get_fn, hole, board, round, history)
+    lookup_strategy_hierarchical_owned_with_stack(get_fn, hole, board, round, history, eff_stack_bb)
 }
 
 pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
@@ -725,9 +639,11 @@ pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
     history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
     eff_stack_bb: i32,
 ) -> Option<V> {
-    let prefix = crate::cfr::abstraction::stack_depth_prefix(eff_stack_bb);
-    if !prefix.is_empty()
-        && let Some(v) = lookup_strategy_hierarchical_owned(
+    for &prefix in crate::cfr::abstraction::stack_depth_candidates(eff_stack_bb) {
+        if prefix.is_empty() {
+            return lookup_strategy_hierarchical_owned(get_fn, hole, board, round, history);
+        }
+        if let Some(v) = lookup_strategy_hierarchical_owned(
             |k| {
                 let prefixed = format!("{prefix}{k}");
                 get_fn(&prefixed)
@@ -736,9 +652,81 @@ pub fn lookup_strategy_hierarchical_owned_with_stack<V>(
             board,
             round,
             history,
-        )
-    {
-        return Some(v);
+        ) {
+            return Some(v);
+        }
     }
-    lookup_strategy_hierarchical_owned(get_fn, hole, board, round, history)
+    None
+}
+
+/** Smoothly interpolates strategies between adjacent 4-tier stack anchors (`15 / 25 / 45 / 100 BB`)
+ * when `eff_stack_bb` lies strictly between two anchors that both exist in the blueprint;
+ * otherwise delegates directly to `lookup_strategy_hierarchical_owned_with_stack`. */
+pub fn lookup_strategy_stack_interpolated<S: AsRef<[f64]>>(
+    get_fn: impl Fn(&str) -> Option<S>,
+    hole: &[Card; 2],
+    board: &[Card],
+    round: u8,
+    history: &(impl crate::cfr::abstraction::HistoryActions + ?Sized),
+    eff_stack_bb: i32,
+) -> Option<Vec<f64>> {
+    type StackAnchor<'a> = (i32, &'a str);
+    let bracket: Option<(StackAnchor<'_>, StackAnchor<'_>)> =
+        if eff_stack_bb > 15 && eff_stack_bb < 25 {
+            Some(((15, "S15|"), (25, "S25|")))
+        } else if eff_stack_bb > 25 && eff_stack_bb < 45 {
+            Some(((25, "S25|"), (45, "S45|")))
+        } else if eff_stack_bb > 45 && eff_stack_bb < 100 {
+            Some(((45, "S45|"), (100, "")))
+        } else {
+            None
+        };
+
+    if let Some(((lo_bb, lo_pref), (hi_bb, hi_pref))) = bracket {
+        let probe = |pref: &str| -> Option<Vec<f64>> {
+            lookup_strategy_hierarchical_owned(
+                |k| {
+                    if pref.is_empty() {
+                        get_fn(k).map(|s| s.as_ref().to_vec())
+                    } else {
+                        let prefixed = format!("{pref}{k}");
+                        get_fn(&prefixed).map(|s| s.as_ref().to_vec())
+                    }
+                },
+                hole,
+                board,
+                round,
+                history,
+            )
+        };
+        if let (Some(lo), Some(hi)) = (probe(lo_pref), probe(hi_pref)) {
+            let n = lo.len().min(hi.len());
+            if n > 0 {
+                let w = ((hi_bb - eff_stack_bb) as f64 / (hi_bb - lo_bb) as f64).clamp(0.0, 1.0);
+                let mut blended = vec![0.0f64; n];
+                let mut sum = 0.0f64;
+                for i in 0..n {
+                    let v = (w * lo[i] + (1.0 - w) * hi[i]).max(0.0);
+                    blended[i] = v;
+                    sum += v;
+                }
+                if sum > 1e-12 {
+                    let inv = 1.0 / sum;
+                    for v in &mut blended {
+                        *v *= inv;
+                    }
+                }
+                return Some(blended);
+            }
+        }
+    }
+
+    lookup_strategy_hierarchical_owned_with_stack(
+        |k| get_fn(k).map(|s| s.as_ref().to_vec()),
+        hole,
+        board,
+        round,
+        history,
+        eff_stack_bb,
+    )
 }

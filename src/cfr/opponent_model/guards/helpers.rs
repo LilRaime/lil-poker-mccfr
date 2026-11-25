@@ -194,9 +194,16 @@ pub(super) fn apply_river_bluff_cap(
             reasons.push("POST_RIVER_BLUFF_CAP");
             let c_idx = action_idx(ctx.legal_actions, CALL_CHECK);
             let tp_idx = action_idx(ctx.legal_actions, RAISE_THIRD_POT);
+            let favor_thin_value =
+                !strip_half_and_allin_for_air && ctx.bucket >= 45 && !ctx.is_four_board_danger;
+            let (call_share, bet_share) = if favor_thin_value {
+                (0.30, 0.70)
+            } else {
+                (0.70, 0.30)
+            };
             if let (Some(c_i), Some(tp_i)) = (c_idx, tp_idx) {
-                probs[c_i] += shifted * 0.70;
-                probs[tp_i] += shifted * 0.30;
+                probs[c_i] += shifted * call_share;
+                probs[tp_i] += shifted * bet_share;
             } else if let Some(c_i) = c_idx {
                 probs[c_i] += shifted;
             }

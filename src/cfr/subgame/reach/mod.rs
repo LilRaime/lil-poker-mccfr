@@ -13,6 +13,27 @@ use std::collections::HashMap;
 use postflop::{flop_likelihood, monotone_texture_multiplier, river_likelihood, turn_likelihood};
 use preflop::{preflop_prior_weight, style_width_multiplier};
 
+pub const NUM_HOLE_COMBOS: usize = 1326;
+
+/** Canonical bijective index (`0..1326`) for an unordered two-card hole hand. */
+#[inline(always)]
+pub fn combo_index(c0: Card, c1: Card) -> usize {
+    let id0 = (c0.rank as usize) * 4 + (c0.suit as usize);
+    let id1 = (c1.rank as usize) * 4 + (c1.suit as usize);
+    let (a, b) = if id0 < id1 { (id0, id1) } else { (id1, id0) };
+    a * (103 - a) / 2 + (b - a - 1)
+}
+
+/** Persistent posterior combo distribution from an earlier street within the same hand. */
+#[derive(Debug, Clone)]
+pub struct CachedStreetReach {
+    pub round: u8,
+    pub target_player: usize,
+    pub board_prefix: [Card; 5],
+    pub board_len: usize,
+    pub weights: Box<[f64; NUM_HOLE_COMBOS]>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReachRequest<'a> {
     pub remaining_deck: &'a [Card],
@@ -392,5 +413,97 @@ impl OpponentReachDistribution {
 
     pub fn effective_combos(&self) -> usize {
         self.combos.len()
+    }
+
+    /** Export normalized weights into a fixed 1326-combo table for cross-street carryover. */
+    pub fn to_cached_reach(
+        &self,
+        round: u8,
+        target_player: usize,
+        board: &[Card],
+    ) -> CachedStreetReach {
+        let mut weights = Box::new([1e-5f64; NUM_HOLE_COMBOS]);
+        let inv = if self.total_weight > 1e-12 {
+            1.0 / self.total_weight
+        } else {
+            1.0
+        };
+        for (&combo, &w) in self.combos.iter().zip(self.weights.iter()) {
+            if combo[0] != combo[1] {
+                weights[combo_index(combo[0], combo[1])] = (w * inv).max(1e-6);
+            }
+        }
+        let mut board_prefix = [Card::default(); 5];
+        let board_len = board.len().min(5);
+        board_prefix[..board_len].copy_from_slice(&board[..board_len]);
+        CachedStreetReach {
+            round,
+            target_player,
+            board_prefix,
+            board_len,
+            weights,
+        }
+    }
+
+    /** Build posterior reach distribution carrying forward earlier-street weights (`Flop -> Turn -> River`)
+     * when `prior_reach` matches the same hand and board prefix. */
+    pub fn build_with_prior<
+        H: crate::cfr::abstraction::HistoryActions + ?Sized,
+        V: AsRef<[f64]>,
+    >(
+        req: &ReachRequest<'_>,
+        history: &H,
+        strategy_map: Option<&HashMap<String, V>>,
+        prior_reach: Option<&CachedStreetReach>,
+    ) -> Self {
+        let Some(prev) = prior_reach else {
+            return Self::build_with_strategy(req, history, strategy_map);
+        };
+        let rem_len = req.remaining_deck.len();
+        if rem_len < 2
+            || prev.round >= req.round
+            || Some(prev.target_player) != req.target_player
+            || prev.board_len < 3
+            || req.board.len() < prev.board_len
+            || req.board[..prev.board_len] != prev.board_prefix[..prev.board_len]
+        {
+            return Self::build_with_strategy(req, history, strategy_map);
+        }
+
+        let num_combos = rem_len * (rem_len - 1) / 2;
+        let mut combos = Vec::with_capacity(num_combos);
+        let mut weights = Vec::with_capacity(num_combos);
+        let ctx = extract_reach_context(
+            req.board,
+            req.round,
+            history,
+            req.target_player,
+            req.active_player,
+            req.opp_aggression,
+        );
+        let prev_monotone = find_monotone_suit(&prev.board_prefix[..prev.board_len]).is_some();
+        let mut sum_w = 0.0f64;
+
+        for i in 0..rem_len {
+            for j in (i + 1)..rem_len {
+                let cand = [req.remaining_deck[i], req.remaining_deck[j]];
+                let mut w = prev.weights[combo_index(cand[0], cand[1])].max(1e-6);
+                if prev.round < ROUND_TURN && req.round >= ROUND_TURN {
+                    w *= turn_likelihood(cand, req.board, req.round, &ctx);
+                }
+                if prev.round < ROUND_RIVER && req.round >= ROUND_RIVER {
+                    w *= river_likelihood(cand, req.board, req.round, &ctx);
+                }
+                if !prev_monotone && ctx.monotone_suit.is_some() {
+                    w *= monotone_texture_multiplier(cand, &ctx);
+                }
+                let final_w = w.max(1e-5f64);
+                combos.push(cand);
+                weights.push(final_w);
+                sum_w += final_w;
+            }
+        }
+
+        finalize_distribution(combos, weights, sum_w)
     }
 }

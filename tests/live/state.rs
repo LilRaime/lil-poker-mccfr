@@ -840,3 +840,24 @@ fn test_emergency_fallback_candidate_order_and_safety() {
     });
     assert_eq!(allin_call_after_retry, vec![("all_in", 0)]);
 }
+
+#[test]
+fn test_parse_live_state_prefers_participant_id_for_profile_key() {
+    let payload = json!({
+        "phase": "Preflop",
+        "pot": 150,
+        "current_bet": 100,
+        "big_blind": 100,
+        "active_player_id": "hero",
+        "players": [
+            { "id": "hero", "name": "RustBot", "hole": ["As", "Kd"], "bet": 50, "chips": 9950, "is_small_blind": true },
+            { "id": "seat_2", "participant_id": "bot_uuid_42", "name": "RotatingName", "bet": 100, "chips": 9900, "is_big_blind": true }
+        ],
+        "legal_actions": ["fold", "call", "raise"]
+    });
+    let snap = parse_live_state(&payload, "hero").expect("parse with participant_id");
+    assert_eq!(
+        snap.opp_name, "bot_uuid_42",
+        "Persistent profile key should prefer participant_id over mutable table display name"
+    );
+}

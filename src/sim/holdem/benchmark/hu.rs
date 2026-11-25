@@ -363,12 +363,14 @@ fn run_standard_episodes(
     }
 }
 
-/** Full 52-Card Texas Hold'em Benchmark and A/B Evaluation Suite */
-pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkResult {
+/** Run benchmark reusing preloaded strategy maps (avoids repeated disk deserialization in Elo sweeps). */
+pub fn run_holdem_benchmark_preloaded(
+    cfg: &HoldemBenchmarkConfig<'_>,
+    strategy: Option<&HoldemStrategy>,
+    strategy_index: Option<&StrategyLookupIndex>,
+    opp_strategy: Option<&HoldemStrategy>,
+) -> HoldemBenchmarkResult {
     let stack_size = cfg.stack_size.max(BIG_BLIND * 2);
-    let (strategy, opp_strategy) = load_strategies_and_log(cfg, stack_size);
-    let strategy_index = strategy.as_ref().map(StrategyLookupIndex::build_from_map);
-
     let mut rng = match cfg.seed {
         Some(s) => SmallRng::seed_from_u64(s),
         None => rand::make_rng(),
@@ -380,10 +382,10 @@ pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkR
 
     let base_hand_cfg = SimHandConfig {
         my_player: 0,
-        strategy: strategy.as_ref(),
-        strategy_index: strategy_index.as_ref(),
+        strategy,
+        strategy_index,
         opp_archetype: cfg.opp_archetype,
-        opp_strategy: opp_strategy.as_ref(),
+        opp_strategy,
         subgame_solver: Some(&subgame_solver),
         enable_subgame_search: cfg.enable_subgame_search,
         delay_ms: cfg.delay_ms,
@@ -414,11 +416,12 @@ pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkR
         print_opponent_tracker_summary(&opp_tracker);
     }
 
+    let opp_strat_owned = opp_strategy.cloned();
     let mut res = if cfg.duplicate_mode {
         summarize_duplicate_result(
             &duplicate_stats,
             &total_stats,
-            &opp_strategy,
+            &opp_strat_owned,
             cfg.opp_strategy_path,
             cfg.opp_archetype,
             cfg.quiet,
@@ -443,4 +446,17 @@ pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkR
     }
     res.guard_telemetry = guard_telemetry;
     res
+}
+
+/** Full 52-Card Texas Hold'em Benchmark and A/B Evaluation Suite */
+pub fn run_holdem_benchmark(cfg: &HoldemBenchmarkConfig<'_>) -> HoldemBenchmarkResult {
+    let stack_size = cfg.stack_size.max(BIG_BLIND * 2);
+    let (strategy, opp_strategy) = load_strategies_and_log(cfg, stack_size);
+    let strategy_index = strategy.as_ref().map(StrategyLookupIndex::build_from_map);
+    run_holdem_benchmark_preloaded(
+        cfg,
+        strategy.as_ref(),
+        strategy_index.as_ref(),
+        opp_strategy.as_ref(),
+    )
 }

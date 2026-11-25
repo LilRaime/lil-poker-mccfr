@@ -24,7 +24,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     checkpoint_every: u64,
 
-    /** Also keep versioned checkpoint files */
+    /** Also keep per-checkpoint snapshot files */
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     keep_checkpoints: bool,
 
@@ -64,13 +64,17 @@ struct Args {
     #[arg(long, default_value_t = false)]
     multi_stack: bool,
 
-    /** Include compact 4-state board texture (d/w/p/m) in postflop infoset keys (v2 model) */
+    /** Include compact 4-state board texture (d/w/p/m) in postflop infoset keys */
     #[arg(long, default_value_t = false)]
     board_texture: bool,
 
-    /** Train only 15 BB (S15|) and 30 BB (S30|) episodes while keeping 100 BB nodes frozen */
+    /** Train only short stacks while keeping 100 BB nodes frozen */
     #[arg(long, default_value_t = false)]
     short_stacks_only: bool,
+
+    /** Enable extended abstraction (112 O(1) blocker/potential buckets, Flop+Turn texture, 15/25/45/100 BB) */
+    #[arg(long, default_value_t = false)]
+    extended: bool,
 }
 
 fn get_checkpoint_path(save_path: &str, done: u64) -> String {
@@ -140,18 +144,24 @@ fn main() {
         println!("Checkpoint every: disabled");
     }
 
-    let capacity = if args.iterations >= 100_000_000 {
-        4_194_304
+    let capacity = if args.extended || args.iterations >= 100_000_000 {
+        8_388_608
     } else {
         2_097_152
     };
     let shards = if args.threads >= 8 { 16384 } else { 2048 };
     let stack_chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-    if args.short_stacks_only {
+    let effective_multi_stack = args.multi_stack || args.extended;
+    let effective_board_texture = args.board_texture || args.extended;
+    if args.extended {
+        println!(
+            "Extended mode:    true [112 buckets, Flop+Turn texture, 15/25/45/100 BB, 8M slots]"
+        );
+    } else if args.short_stacks_only {
         println!(
             "Stack mode:       Short-Stacks Only [15 BB (S15|) + 30 BB (S30|)] (100 BB frozen)"
         );
-    } else if args.multi_stack {
+    } else if effective_multi_stack {
         println!(
             "Stack mode:       Unified Multi-Stack [15 BB (S15|), 30 BB (S30|), 100 BB] in 1 model"
         );
@@ -161,7 +171,7 @@ fn main() {
             args.stack_bb, stack_chips
         );
     }
-    println!("Board texture:    {}", args.board_texture);
+    println!("Board texture:    {effective_board_texture}");
     let solver = HoldemMCCFRSolver::with_options(
         args.rich_history,
         args.pruning,
@@ -170,9 +180,10 @@ fn main() {
         shards,
     )
     .with_stack_size(stack_chips)
-    .with_multi_stack(args.multi_stack)
+    .with_multi_stack(effective_multi_stack)
     .with_short_stacks_only(args.short_stacks_only)
-    .with_board_texture(args.board_texture);
+    .with_board_texture(effective_board_texture)
+    .with_extended_abstraction(args.extended);
     if let Some(ref resume_path) = args.resume {
         match solver.warm_start_from_file(resume_path) {
             Ok(loaded) => println!("Warm-started solver from {resume_path} ({loaded} infosets)."),

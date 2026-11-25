@@ -6,10 +6,10 @@ A parallel poker solver, real-time depth-limited subgame resolver, and exploitat
 
 - **Parallel MCCFR with DCFR & Regret-Based Pruning** — Lock-free Structure-of-Arrays regret/strategy tables, incremental FNV-1a traversal state, L3-resident preflop slot caching, and epoch-based Pluribus DCFR discounting with RBP pruning.
 - **$O(1)$ Bitwise 7-Card Evaluator & Compile-Time LUTs** — Zero-allocation vertical bitboard hand evaluation, SWAR suit detection, hardware `leading_zeros()` kickers, and L1 rank-mask lookup tables for straights, draws, and board textures.
-- **Real-Time Subgame Search & Safe Resolving** — Depth-limited Turn, River, and Flop subgame solver with Bayesian `OpponentReachDistribution`, dynamic pot/street/pressure iteration budgeting, GTO fallback blending, and pseudo-harmonic action translation.
-- **Texture & Unified Multi-Stack Abstraction** — 169 canonical preflop buckets (`0..=168`) and 88 equity/draw postflop buckets (`0..=87`) with optional 4-state flop texture keys and single-file multi-stack training (`15 BB` / `30 BB` / `100 BB`).
+- **Real-Time Subgame Search & Safe Resolving** — Depth-limited Turn, River, and SRP Flop ($\ge 4\text{ BB}$) subgame solver with Bayesian `OpponentReachDistribution`, cross-street reach carryover, street-profile node locking, Pluribus-style `4×4` continuation leaves, dynamic iteration budgeting, GTO fallback blending, and continuous pseudo-harmonic action interpolation.
+- **Extended Texture & Tournament Multi-Stack Abstraction** — 169 canonical preflop buckets (`0..=168`) and 88 base / 112 extended blocker- & potential-aware postflop buckets (`0..=111`) with 4-state flop & 3-state turn textures, single-file multi-stack training (`15 / 25 / 45 / 100 BB` or `15 / 30 / 100 BB`), and smooth stack-anchor interpolation.
 - **Opponent Modeling & Priority Guard Pipeline** — Tracks VPIP, PFR, 3-bet, c-bet, barrel, and showdown tells with Wilson intervals to drive style classification, short-stack Nash push/fold, exploitative sizing, and multi-tier safety guards.
-- **Live Server Client & Exact Leduc Testbed** — Async WebSocket/REST client (`play_live`) for [lil-poker](https://github.com/LilRaime/lil-poker) HU/6-max rooms with execution commit guards and non-escalating rejected-action fallbacks, plus exact full-tree Vanilla CFR+ and NashConv analysis for Leduc Hold'em.
+- **Live Server Client & Exact Leduc Testbed** — Async WebSocket/REST client (`play_live`) for [lil-poker](https://github.com/LilRaime/lil-poker) HU/6-max rooms with execution commit guards and non-escalating rejected-action fallbacks, plus 8-archetype Gauntlet & round-robin Elo benchmarks and exact Leduc Vanilla CFR+/NashConv analysis.
 
 ## Documentation
 
@@ -25,7 +25,7 @@ cargo build --release
 cargo test --all-targets
 ```
 
-Runs **136** integration tests across 8 suites covering CFR+/DCFR, `TrainState` & LUT parity, 88-bucket abstraction, subgame reach/solving, live protocol & fallback guards, and opponent modeling.
+Runs **147** integration tests across 8 suites covering CFR+/DCFR, `TrainState` & LUT parity, 88/112-bucket abstraction, subgame reach/continuation leaves, live protocol & fallback guards, and opponent modeling.
 
 ### Train a Hold'em Blueprint
 
@@ -34,8 +34,7 @@ cargo run --release --bin train_holdem -- \
   --iterations 200000000 \
   --threads 16 \
   --log-every 5000000 \
-  --multi-stack \
-  --board-texture \
+  --extended \
   --save-raw-ckpt \
   --save-path models/holdem_abstract_strategy.bin
 ```

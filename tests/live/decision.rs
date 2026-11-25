@@ -626,3 +626,102 @@ fn test_flop_oop_donk_suppresses_min_and_third_pot() {
         assert!(tr.guard_reasons.contains(&"FLOP_OOP_MICRO_DONK_SUPPRESS"));
     }
 }
+
+#[test]
+fn test_live_decision_pseudo_harmonic_linear_interpolation() {
+    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
+    use lil_poker_mccfr::game::config::{RAISE_HALF_POT, RAISE_THIRD_POT};
+    use lil_poker_mccfr::live::protocol::ActionTranslationBlend;
+
+    let mut tracker = OpponentTracker::new();
+    tracker.set_exploit_enabled(false);
+    let hole = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::King, Suit::Hearts),
+    ];
+    let board = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Diamonds),
+    ];
+    let bucket = postflop_equity_bucket(&hole, &board);
+
+    let mut history = [RoundHistory::new(); NUM_ROUNDS];
+    history[0].push(RAISE_MIN);
+    history[0].push(CALL_CHECK);
+    history[1].push(CALL_CHECK);
+    history[1].push(RAISE_THIRD_POT);
+
+    let mut strategy_map = HashMap::new();
+    /* low_action = RAISE_THIRD_POT ('t'): pure CALL_CHECK (1) */
+    strategy_map.insert(
+        format!("P:rc|F:B{bucket:02}/ct"),
+        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    );
+    /* high_action = RAISE_HALF_POT ('h'): pure FOLD (0) */
+    strategy_map.insert(
+        format!("P:rc|F:B{bucket:02}/ch"),
+        vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    let legal = vec!["fold".to_string(), "call".to_string()];
+    let mut base_req = LiveDecisionRequest {
+        hole,
+        board: &board,
+        legal: &legal,
+        to_call: 250,
+        pot: 500,
+        subgame_search: false,
+        history,
+        my_player: 0,
+        contributions: [250, 500],
+        big_blind: 100,
+        my_chips: 9500,
+        opp_chips: Some(9500),
+        ..Default::default()
+    };
+
+    base_req.active_bet_blend = Some(ActionTranslationBlend {
+        low_action: RAISE_THIRD_POT,
+        high_action: RAISE_HALF_POT,
+        low_weight: 0.85,
+    });
+    let (_, _, tr_hi) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
+    assert_eq!(
+        tr_hi.raw_top_action, CALL_CHECK,
+        "High low_weight interpolation should favor low_action top choice (CALL_CHECK)"
+    );
+
+    base_req.active_bet_blend = Some(ActionTranslationBlend {
+        low_action: RAISE_THIRD_POT,
+        high_action: RAISE_HALF_POT,
+        low_weight: 0.10,
+    });
+    let (_, _, tr_lo) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
+    assert_eq!(
+        tr_lo.raw_top_action, FOLD,
+        "Low low_weight interpolation should shift top choice toward high_action policy (FOLD)"
+    );
+
+    base_req.active_bet_blend = Some(ActionTranslationBlend {
+        low_action: RAISE_THIRD_POT,
+        high_action: RAISE_HALF_POT,
+        low_weight: 0.99,
+    });
+    let (act_call, _, _) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
+    assert_eq!(
+        act_call, "call",
+        "0.99 low_weight should purify deterministically to call"
+    );
+
+    base_req.active_bet_blend = Some(ActionTranslationBlend {
+        low_action: RAISE_THIRD_POT,
+        high_action: RAISE_HALF_POT,
+        low_weight: 0.01,
+    });
+    let (act_fold, _, _) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
+    assert_eq!(
+        act_fold, "fold",
+        "0.01 low_weight should purify deterministically to fold"
+    );
+}

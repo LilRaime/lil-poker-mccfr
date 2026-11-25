@@ -252,3 +252,58 @@ fn test_holdem_game_short_stack_parameterization() {
     assert_eq!(called.returns[0], 1500.0);
     assert_eq!(called.returns[1], -1500.0);
 }
+
+#[test]
+fn test_overbet_aggro_archetype_and_stack_aware_self_lookup() {
+    use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
+    use lil_poker_mccfr::sim::{HoldemStrategy, sample_opponent_action};
+    use std::collections::HashMap;
+
+    let mut rng = SmallRng::seed_from_u64(777);
+    let mut game = TexasHoldemGame::new_random(&mut rng);
+    game = game.apply_action(RAISE_MIN);
+    game = game.apply_action(CALL_CHECK);
+    let cp = game.current_player();
+
+    /* Overbet Aggro should produce legal actions and frequent postflop aggression when checked to */
+    let mut raises = 0usize;
+    for _ in 0..40 {
+        let act = sample_opponent_action("overbet_aggro", None, &game, cp, &mut rng);
+        assert!(game.legal_actions().contains(&act));
+        if act >= RAISE_MIN {
+            raises += 1;
+        }
+    }
+    assert!(
+        raises >= 30,
+        "OVERBET_AGGRO should frequently c-bet/donk flop when checked to, got {raises}/40 raises"
+    );
+
+    /* Stack-aware `self` lookup at 15 BB must read `S15|P:...` keys instead of 100 BB keys */
+    let h0 = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::King, Suit::Spades),
+    ];
+    let h1 = [
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Hearts),
+    ];
+    let runout = [
+        Card::new(Rank::Two, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let short_game = TexasHoldemGame::new_dealt_with_stack(h0, h1, &runout, 1500);
+    let (_, pf_name) = preflop_bucket(h0[0], h0[1]);
+    let mut strat: HoldemStrategy = HashMap::new();
+    strat.insert(format!("S15|P:{pf_name}/"), [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    strat.insert(format!("P:{pf_name}/"), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+    let act_self = sample_opponent_action("self", Some(&strat), &short_game, 0, &mut rng);
+    assert_eq!(
+        act_self, ALL_IN,
+        "15 BB `self` archetype must read S15| stack-prefixed blueprint branch"
+    );
+}

@@ -73,6 +73,14 @@ struct Args {
     /** Show detailed strategy profile table for key infosets */
     #[arg(short, long)]
     verbose: bool,
+
+    /** Directory scanned for `.bin` models when running `--opponent elo` */
+    #[arg(long, default_value = "models")]
+    elo_dir: String,
+
+    /** Optional comma-separated strategy paths for round-robin Elo (`--opponent elo`) */
+    #[arg(long)]
+    elo_models: Option<String>,
 }
 
 fn resolve_holdem_strategy_path(arg: Option<String>) -> String {
@@ -173,6 +181,7 @@ fn run_blind_schedule_mode(
         "shove_bot",
         "trapper",
         "rock",
+        "overbet_aggro",
         "self",
     ];
     let mut total_bb100 = 0.0;
@@ -365,6 +374,27 @@ fn run_standard_holdem_mode(
     }
 }
 
+fn discover_elo_models(elo_dir: &str, elo_models: Option<&str>) -> Vec<String> {
+    if let Some(raw) = elo_models {
+        return raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(elo_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("bin")) {
+                paths.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
 fn run_holdem_evaluation(args: Args) {
     let strategy_path = resolve_holdem_strategy_path(args.strategy.clone());
     let hands = args.hands.unwrap_or(5000);
@@ -373,6 +403,20 @@ fn run_holdem_evaluation(args: Args) {
 
     if args.blind_schedule {
         run_blind_schedule_mode(&args, &strategy_path, hands, &disabled_guards);
+    } else if args.opponent.eq_ignore_ascii_case("elo") {
+        let model_paths = discover_elo_models(&args.elo_dir, args.elo_models.as_deref());
+        let chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+        let _ = lil_poker_mccfr::sim::run_holdem_elo_tournament(
+            &lil_poker_mccfr::sim::EloTournamentConfig {
+                model_paths: &model_paths,
+                deals_per_pair: hands,
+                enable_subgame_search: args.subgame,
+                exploit_factor: args.exploit_factor,
+                base_seed: args.seed,
+                stack_size: chips,
+                quiet: false,
+            },
+        );
     } else if args.opponent.eq_ignore_ascii_case("ablate")
         || args.opponent.eq_ignore_ascii_case("ablation")
     {

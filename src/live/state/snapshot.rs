@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::{
     extract_blind_flags, extract_player_bet, extract_player_chips, extract_player_id,
-    extract_player_name, is_player_folded, parse_cards_array, resolve_blinds,
+    extract_player_profile_key, is_player_folded, parse_cards_array, resolve_blinds,
 };
 use crate::game::config::STACK_SIZE;
 use crate::game::holdem::Card;
@@ -131,7 +131,7 @@ fn summarize_players(players: &[Value], player_id: &str) -> TablePlayersSummary 
                 sum.opp_bet = p_bet;
                 sum.opp_chips = p_chips;
                 sum.opp_is_sb = is_sb;
-                sum.opp_name = extract_player_name(p, p_id).to_string();
+                sum.opp_name = extract_player_profile_key(p, p_id).to_string();
             }
         }
     }

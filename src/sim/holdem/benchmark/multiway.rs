@@ -318,6 +318,7 @@ fn apply_bot_seat_action(
             current_bet: street_current_bet,
             strategy_index: Some(res.strategy_index),
             solver: Some(res.subgame_solver),
+            ..Default::default()
         },
         res.strategy,
         &trackers[primary_opp_idx],

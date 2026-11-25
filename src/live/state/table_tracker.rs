@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::{
     extract_blind_flags, extract_player_bet, extract_player_chips, extract_player_id,
-    extract_player_name, is_player_folded, parse_cards_array, resolve_blinds,
+    extract_player_profile_key, is_player_folded, parse_cards_array, resolve_blinds,
 };
 use crate::cfr::opponent_model::OpponentTracker;
 use crate::game::config::{BIG_BLIND, SMALL_BLIND};
@@ -48,7 +48,7 @@ pub fn process_showdown_multiway(
         } else {
             fallback_opp_name
         };
-        let p_name = extract_player_name(p, fallback_id);
+        let p_name = extract_player_profile_key(p, fallback_id);
         if !p_name.is_empty() {
             let p_bet = extract_player_bet(p);
             let (p_raised_river, p_last_bet) = if is_hu {
@@ -191,7 +191,7 @@ impl LiveTableTracker {
             if p_id.eq_ignore_ascii_case(my_player_id) {
                 continue;
             }
-            let opp_key = extract_player_name(p, p_id).to_string();
+            let opp_key = extract_player_profile_key(p, p_id).to_string();
             if opp_key.is_empty() {
                 continue;
             }
@@ -296,7 +296,7 @@ impl LiveTableTracker {
         if p_id.eq_ignore_ascii_case(my_player_id) {
             return;
         }
-        let opp_key = extract_player_name(p, p_id).to_string();
+        let opp_key = extract_player_profile_key(p, p_id).to_string();
         if opp_key.is_empty() {
             return;
         }
@@ -484,7 +484,7 @@ impl LiveTableTracker {
                 if p_id.eq_ignore_ascii_case(my_player_id) {
                     continue;
                 }
-                let opp_key = extract_player_name(p, p_id).to_string();
+                let opp_key = extract_player_profile_key(p, p_id).to_string();
                 if !opp_key.is_empty() {
                     let (is_sb, _) = extract_blind_flags(p);
                     self.opp_states

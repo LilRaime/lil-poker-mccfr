@@ -1,7 +1,9 @@
 use super::{combo_weight, remaining_deck_excluding};
-use lil_poker_mccfr::cfr::subgame::{OpponentReachDistribution, ReachRequest};
+use lil_poker_mccfr::cfr::subgame::{
+    NUM_HOLE_COMBOS, OpponentReachDistribution, ReachRequest, combo_index,
+};
 use lil_poker_mccfr::game::holdem::{
-    CALL_CHECK, Card, NUM_ROUNDS, RAISE_HALF_POT, Rank, RoundHistory, Suit,
+    ALL_52_CARDS, CALL_CHECK, Card, NUM_ROUNDS, RAISE_HALF_POT, RAISE_MIN, Rank, RoundHistory, Suit,
 };
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -490,5 +492,80 @@ fn test_subgame_reach_aggression_bluff_multiplier() {
     assert!(
         w_aggro > w_neutral * 2.5 && w_neutral > w_nit * 1.8,
         "River bluff air likelihood must scale with opp_aggression: aggro={w_aggro:.5}, neutral={w_neutral:.5}, nit={w_nit:.5}"
+    );
+}
+
+#[test]
+fn test_combo_index_bijection_and_cross_street_carryover() {
+    let mut seen = [false; NUM_HOLE_COMBOS];
+    for (i, &c_i) in ALL_52_CARDS.iter().enumerate() {
+        for &c_j in &ALL_52_CARDS[(i + 1)..] {
+            let idx_ab = combo_index(c_i, c_j);
+            let idx_ba = combo_index(c_j, c_i);
+            assert_eq!(idx_ab, idx_ba);
+            assert!(!seen[idx_ab], "Duplicate combo_index {idx_ab}");
+            seen[idx_ab] = true;
+        }
+    }
+    assert!(
+        seen.iter().all(|&s| s),
+        "Every index 0..1326 must be covered"
+    );
+
+    let hole = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Diamonds),
+    ];
+    let flop = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let turn = [
+        flop[0],
+        flop[1],
+        flop[2],
+        Card::new(Rank::Queen, Suit::Diamonds),
+    ];
+    let rem_flop = remaining_deck_excluding(&[hole[0], hole[1], flop[0], flop[1], flop[2]]);
+    let rem_turn =
+        remaining_deck_excluding(&[hole[0], hole[1], turn[0], turn[1], turn[2], turn[3]]);
+    let hist = [
+        vec![RAISE_MIN, CALL_CHECK],
+        vec![RAISE_HALF_POT, CALL_CHECK],
+        vec![RAISE_HALF_POT],
+        vec![],
+    ];
+
+    let flop_dist = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &rem_flop,
+            board: &flop,
+            round: 2,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &hist,
+    );
+    let cached_flop = flop_dist.to_cached_reach(2, 0, &flop);
+    let no_map: Option<&HashMap<String, Vec<f64>>> = None;
+    let turn_dist = OpponentReachDistribution::build_with_prior(
+        &ReachRequest {
+            remaining_deck: &rem_turn,
+            board: &turn,
+            round: 3,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &hist,
+        no_map,
+        Some(&cached_flop),
+    );
+    assert!(turn_dist.total_weight > 0.0);
+    assert_eq!(
+        turn_dist.effective_combos(),
+        rem_turn.len() * (rem_turn.len() - 1) / 2
     );
 }

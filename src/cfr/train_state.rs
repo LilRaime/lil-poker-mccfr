@@ -10,8 +10,9 @@ use std::fmt::Write as FmtWrite;
 
 use crate::cfr::abstraction::{
     FNV_OFFSET_BASIS, action_to_char, append_texture_to_key, compact_board_texture_char,
-    fnv1a_combine, mix_texture_hash, postflop_equity_bucket, postflop_equity_bucket_with_score,
-    preflop_bucket,
+    compact_turn_texture_char, fnv1a_combine, mix_stack_prefix_hash, mix_texture_hash,
+    postflop_equity_bucket, postflop_equity_bucket_with_score, postflop_extended_bucket,
+    postflop_extended_bucket_with_score, preflop_bucket,
 };
 use crate::cfr::flat_table::PF_SEQ_CACHE_STRIDE;
 use crate::game::config::{
@@ -27,7 +28,9 @@ use crate::game::holdem::{ALL_52_CARDS, Card, evaluate_7cards};
 pub(crate) enum StackTag {
     Deep,
     S15,
+    S25,
     S30,
+    S45,
 }
 
 impl StackTag {
@@ -44,18 +47,22 @@ impl StackTag {
     }
 
     #[inline(always)]
-    pub(crate) fn mix_hash(self, hash: u64) -> u64 {
-        match self {
-            Self::Deep => hash,
-            Self::S15 => fnv1a_combine(
-                fnv1a_combine(fnv1a_combine(fnv1a_combine(hash, b'S'), b'1'), b'5'),
-                b'|',
-            ),
-            Self::S30 => fnv1a_combine(
-                fnv1a_combine(fnv1a_combine(fnv1a_combine(hash, b'S'), b'3'), b'0'),
-                b'|',
-            ),
+    pub(crate) fn from_stack_chips_four_tier(stack_size: i32) -> Self {
+        let bb = stack_size / BIG_BLIND.max(1);
+        if bb > 0 && bb <= 20 {
+            Self::S15
+        } else if bb > 0 && bb <= 35 {
+            Self::S25
+        } else if bb > 0 && bb <= 65 {
+            Self::S45
+        } else {
+            Self::Deep
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn mix_hash(self, hash: u64) -> u64 {
+        mix_stack_prefix_hash(hash, self.prefix_str())
     }
 
     #[inline(always)]
@@ -63,7 +70,9 @@ impl StackTag {
         match self {
             Self::Deep => "",
             Self::S15 => "S15|",
+            Self::S25 => "S25|",
             Self::S30 => "S30|",
+            Self::S45 => "S45|",
         }
     }
 
@@ -73,6 +82,8 @@ impl StackTag {
             Self::Deep => 0,
             Self::S15 => 1,
             Self::S30 => 2,
+            Self::S25 => 3,
+            Self::S45 => 4,
         }
     }
 }
@@ -124,16 +135,23 @@ pub(crate) struct EpisodeCtx {
     postflop: [[Cell<u8>; 2]; 3],
     river_scores: [Cell<u64>; 2],
     flop_tex: Cell<char>,
+    turn_tex: Cell<char>,
     sd_outcome: Cell<i8>,
     pub(crate) stack_size: i32,
     pub(crate) stack_floor_scaled: i64,
     pub(crate) stack_tag: StackTag,
     pub(crate) is_wet_flop: bool,
+    pub(crate) extended_buckets: bool,
 }
 
 impl EpisodeCtx {
     #[inline(always)]
-    pub(crate) fn new(hole: [[Card; 2]; 2], runout: [Card; 5], stack_size: i32) -> Self {
+    pub(crate) fn new_with_mode(
+        hole: [[Card; 2]; 2],
+        runout: [Card; 5],
+        stack_size: i32,
+        extended_abstraction: bool,
+    ) -> Self {
         let eff_stack = stack_size.max(BIG_BLIND * 2);
         let stack_floor = (eff_stack as f64 * 0.06).max(90.0);
         let (pf0, n0) = preflop_bucket(hole[0][0], hole[0][1]);
@@ -141,6 +159,11 @@ impl EpisodeCtx {
         let is_wet_flop = runout[0].suit == runout[1].suit
             || runout[0].suit == runout[2].suit
             || runout[1].suit == runout[2].suit;
+        let stack_tag = if extended_abstraction {
+            StackTag::from_stack_chips_four_tier(eff_stack)
+        } else {
+            StackTag::from_stack_chips(eff_stack)
+        };
         Self {
             hole,
             runout,
@@ -153,11 +176,13 @@ impl EpisodeCtx {
             ],
             river_scores: [Cell::new(u64::MAX), Cell::new(u64::MAX)],
             flop_tex: Cell::new('\0'),
+            turn_tex: Cell::new('\0'),
             sd_outcome: Cell::new(i8::MIN),
             stack_size: eff_stack,
             stack_floor_scaled: (stack_floor * 1_000_000.0) as i64,
-            stack_tag: StackTag::from_stack_chips(eff_stack),
+            stack_tag,
             is_wet_flop,
+            extended_buckets: extended_abstraction,
         }
     }
 
@@ -184,10 +209,18 @@ impl EpisodeCtx {
         }
         let b = if round == ROUND_RIVER {
             let r_score = self.get_river_score(player);
-            postflop_equity_bucket_with_score(&self.hole[player], &self.runout, r_score) as u8
+            if self.extended_buckets {
+                postflop_extended_bucket_with_score(&self.hole[player], &self.runout, r_score) as u8
+            } else {
+                postflop_equity_bucket_with_score(&self.hole[player], &self.runout, r_score) as u8
+            }
         } else {
             let board_len = (round as usize) + 1;
-            postflop_equity_bucket(&self.hole[player], &self.runout[..board_len]) as u8
+            if self.extended_buckets {
+                postflop_extended_bucket(&self.hole[player], &self.runout[..board_len]) as u8
+            } else {
+                postflop_equity_bucket(&self.hole[player], &self.runout[..board_len]) as u8
+            }
         };
         self.postflop[s_idx][player].set(b);
         b
@@ -201,6 +234,17 @@ impl EpisodeCtx {
         }
         let tc = compact_board_texture_char(&self.runout[..3]);
         self.flop_tex.set(tc);
+        tc
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_turn_texture(&self) -> char {
+        let c = self.turn_tex.get();
+        if c != '\0' {
+            return c;
+        }
+        let tc = compact_turn_texture_char(&self.runout[..4]);
+        self.turn_tex.set(tc);
         tc
     }
 
@@ -407,7 +451,25 @@ impl TrainState {
         stack_chips: i32,
         rich_history: bool,
     ) -> String {
-        let stack_prefix = StackTag::from_stack_chips(stack_chips).prefix_str();
+        self.format_infoset_key_tagged(
+            pf_name,
+            bucket,
+            tex_char,
+            StackTag::from_stack_chips(stack_chips),
+            rich_history,
+        )
+    }
+
+    #[cold]
+    pub(crate) fn format_infoset_key_tagged(
+        &self,
+        pf_name: &str,
+        bucket: u8,
+        tex_char: Option<char>,
+        stack_tag: StackTag,
+        rich_history: bool,
+    ) -> String {
+        let stack_prefix = stack_tag.prefix_str();
         let mut out = String::with_capacity(36);
         if self.round == ROUND_PREFLOP {
             out.push_str("P:");

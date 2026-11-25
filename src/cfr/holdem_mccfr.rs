@@ -82,6 +82,7 @@ pub struct HoldemMCCFRSolver {
     pub multi_stack: bool,
     pub short_stacks_only: bool,
     pub board_texture: bool,
+    pub extended_abstraction: bool,
     pub global_iterations: AtomicU64,
 }
 
@@ -116,6 +117,7 @@ impl HoldemMCCFRSolver {
             multi_stack: false,
             short_stacks_only: false,
             board_texture: false,
+            extended_abstraction: false,
             global_iterations: AtomicU64::new(0),
         }
     }
@@ -137,6 +139,15 @@ impl HoldemMCCFRSolver {
 
     pub fn with_board_texture(mut self, board_texture: bool) -> Self {
         self.board_texture = board_texture;
+        self
+    }
+
+    pub fn with_extended_abstraction(mut self, extended_abstraction: bool) -> Self {
+        self.extended_abstraction = extended_abstraction;
+        if extended_abstraction {
+            self.multi_stack = true;
+            self.board_texture = true;
+        }
         self
     }
 
@@ -210,7 +221,22 @@ impl HoldemMCCFRSolver {
                 let mut g_idx = start_global;
                 while g_idx < end_global {
                     let deal_pair_idx = g_idx / 2;
-                    let ep_stack = if repair_short_only {
+                    let ep_stack = if self.extended_abstraction {
+                        if repair_short_only {
+                            match deal_pair_idx % 3 {
+                                0 => BIG_BLIND * 15,
+                                1 => BIG_BLIND * 25,
+                                _ => BIG_BLIND * 45,
+                            }
+                        } else {
+                            match deal_pair_idx % 20 {
+                                0..=2 => BIG_BLIND * 15,
+                                3..=6 => BIG_BLIND * 25,
+                                7..=11 => BIG_BLIND * 45,
+                                _ => STACK_SIZE,
+                            }
+                        }
+                    } else if repair_short_only {
                         match deal_pair_idx % 2 {
                             0 => BIG_BLIND * 15,
                             _ => BIG_BLIND * 30,
@@ -226,7 +252,12 @@ impl HoldemMCCFRSolver {
                     };
 
                     let (hole, runout) = deal_9_cards(&mut rng);
-                    let ep = EpisodeCtx::new(hole, runout, ep_stack);
+                    let ep = EpisodeCtx::new_with_mode(
+                        hole,
+                        runout,
+                        ep_stack,
+                        self.extended_abstraction,
+                    );
                     let root = TrainState::new_hand(ep.stack_size);
 
                     if (g_idx & 1) == 0 && g_idx + 1 < end_global {
@@ -392,6 +423,8 @@ impl HoldemMCCFRSolver {
         let bucket = ep.get_bucket(state.round, curr_player);
         let tex_char = if self.board_texture && state.round == ROUND_FLOP {
             Some(ep.get_flop_texture())
+        } else if self.extended_abstraction && state.round == ROUND_TURN {
+            Some(ep.get_turn_texture())
         } else {
             None
         };
@@ -402,11 +435,11 @@ impl HoldemMCCFRSolver {
                 pf_cache_idx,
                 || state.infoset_hash_tagged(bucket, None, ep.stack_tag),
                 || {
-                    state.format_infoset_key(
+                    state.format_infoset_key_tagged(
                         ep.pf_name[curr_player],
                         bucket,
                         None,
-                        ep.stack_size,
+                        ep.stack_tag,
                         rich_hist,
                     )
                 },
@@ -414,11 +447,11 @@ impl HoldemMCCFRSolver {
         } else {
             let hash = state.infoset_hash_tagged(bucket, tex_char, ep.stack_tag);
             self.table.get_or_insert(hash, || {
-                state.format_infoset_key(
+                state.format_infoset_key_tagged(
                     ep.pf_name[curr_player],
                     bucket,
                     tex_char,
-                    ep.stack_size,
+                    ep.stack_tag,
                     rich_hist,
                 )
             })

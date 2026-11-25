@@ -2,7 +2,7 @@
 
 Structural overview of `lil-poker-mccfr`, its real-time live decision & safety guard pipeline, model formats, and complete CLI reference.
 
-> See [Algorithms & Engine Internals](algorithms.md) for CFR math, bitwise evaluation, lookup tables, and subgame solving details, or return to the [README](../README.md). *(A full per-file directory map is maintained in [`AGENTS.md`](../AGENTS.md).)*
+> See [Algorithms & Engine Internals](algorithms.md) for CFR math, bitwise evaluation, lookup tables, and subgame solving details, or return to the [README](../README.md).
 
 ---
 
@@ -11,15 +11,15 @@ Structural overview of `lil-poker-mccfr`, its real-time live decision & safety g
 ```mermaid
 flowchart LR
     Game["game (Rules, Bitwise Eval, Geometric Sizing)"] --> CFR["cfr (FlatInfosetTable, TrainState, MCCFR/DCFR)"]
-    Game --> Abstraction["cfr/abstraction (169 Preflop, 88 Postflop, LUTs)"]
+    Game --> Abstraction["cfr/abstraction (169 Preflop, 88/112 Postflop, Flop+Turn Texture, LUTs)"]
     Abstraction --> CFR
-    Abstraction --> Subgame["cfr/subgame (Depth-Limited CFR+, Bayesian Reach)"]
+    Abstraction --> Subgame["cfr/subgame (Depth-Limited CFR+, 4x4 Leaves, Bayesian Reach)"]
     CFR --> Fallback["cfr/fallback (GTO Heuristics, Lookup Index)"]
     Fallback --> Subgame
     Subgame --> OppModel["cfr/opponent_model (Tracker, Archetypes, Guards)"]
     Fallback --> OppModel
     OppModel --> Live["live (REST/WS Client, Commit & Fallback Safety)"]
-    OppModel --> Sim["sim (HU Duplicate, Gauntlet, 6-Max, Leduc)"]
+    OppModel --> Sim["sim (HU Duplicate, Elo, Gauntlet, 6-Max, Leduc)"]
     Live --> Bin["bin (play_live, train_holdem, evaluate, distill)"]
     Sim --> Bin
     CFR --> Bin
@@ -28,11 +28,11 @@ flowchart LR
 | Subsystem | Location | Responsibility |
 | :--- | :--- | :--- |
 | **Game Engine** | `src/game/` | Leduc & 52-card Texas Hold'em state machines, 1-based (`ROUND_*`) Hold'em street constants, geometric bet sizing, and $O(1)$ bitwise 7-card evaluator (`evaluate_7cards`). |
-| **MCCFR Solver & Storage** | `src/cfr/` | Parallel DCFR/RBP Hold'em trainer (`holdem_mccfr.rs`), lock-free SoA `FlatInfosetTable`, compact `TrainState`, Leduc MCCFR, and exact Vanilla CFR+. |
-| **Card Abstraction** | `src/cfr/abstraction/` | 169 canonical preflop buckets, 88 postflop buckets, single-pass board texture & draw LUTs, and zero-alloc FNV-1a infoset key hashing. |
-| **Online Subgame & Fallbacks** | `src/cfr/subgame/`, `src/cfr/fallback/` | Adaptive depth-limited Turn/River/Flop subgame resolver with `OpponentReachDistribution`, safe resolving, and `StrategyLookupIndex` nearest-prefix fallback blending. |
+| **MCCFR Solver & Storage** | `src/cfr/` | Parallel DCFR/RBP Hold'em trainer (`holdem_mccfr.rs`), lock-free 5-bank SoA `FlatInfosetTable`, compact `TrainState`, Leduc MCCFR, and exact Vanilla CFR+. |
+| **Card Abstraction** | `src/cfr/abstraction/` | 169 canonical preflop buckets, 88 base / 112 extended postflop buckets (`0..=111`), 4-state flop & 3-state turn textures, single-pass board/draw LUTs, and zero-alloc FNV-1a infoset key hashing. |
+| **Online Subgame & Fallbacks** | `src/cfr/subgame/`, `src/cfr/fallback/` | Adaptive depth-limited Turn/River/Flop subgame resolver with cross-street `CachedReach` carryover, `OppStreetProfile` node locking, Pluribus-style `4×4` continuation leaves, safe resolving, `StrategyLookupIndex`, and stack-interpolated fallback lookup. |
 | **Opponent Modeling & Guards** | `src/cfr/opponent_model/` | Persistent JSON profiles, VPIP/PFR/3-bet/c-bet/barrel stats, Wilson confidence bounds, showdown tells, style classification, short-stack Nash push/fold, and priority tactical guards. |
-| **Live Client, Sim & Binaries** | `src/live/`, `src/sim/`, `src/bin/` | Tokio WebSocket/REST client (`play_live`), HU/6-max table state tracking, execution commit & non-escalating fallback guards, Duplicate/Gauntlet/sweep benchmarks, and CLI tools. |
+| **Live Client, Sim & Binaries** | `src/live/`, `src/sim/`, `src/bin/` | Tokio WebSocket/REST client (`play_live`), HU/6-max table state tracking, execution commit & non-escalating fallback guards, Duplicate/Elo/8-archetype Gauntlet/sweep benchmarks, and CLI tools. |
 
 ---
 
@@ -47,9 +47,9 @@ flowchart TD
     Rescue -- Yes --> ExecCommit["Live Commit & Fallback Guards"]
     Rescue -- No --> Nash{"Preflop & eff_chips <= 12 BB?"}
     Nash -- Yes --> ShortStack["Short-Stack Nash Push/Call Engine"] --> ExecCommit
-    Nash -- No --> Source{"Subgame Eligible? (HU: Turn/River or Flop >= 8 BB)"}
-    Source -- Yes --> Subgame["SubgameSolver (Bayesian Reach + Safe Resolving)"] --> Guards
-    Source -- No --> Blueprint["Blueprint Lookup / StrategyLookupIndex / Heuristic Fallback"] --> Guards
+    Nash -- No --> Source{"Subgame Eligible? (HU: Turn/River or Flop >= 4 BB)"}
+    Source -- Yes --> Subgame["SubgameSolver (Reach Carryover, 4x4 Leaves, Safe Resolving)"] --> Guards
+    Source -- No --> Blueprint["Stack/Bet-Interpolated Blueprint / Lookup Index / Heuristic Fallback"] --> Guards
 
     subgraph Guards["Priority Guard Pipeline (guards/mod.rs)"]
         G1["1. Tier 1 Soft Boosts (tier1_boosts: value, steals, nut blockers)"] --> G2{"from_subgame && round >= Turn?"}
@@ -88,8 +88,7 @@ cargo run --release --bin train_holdem -- \
   --iterations 200000000 \
   --threads 16 \
   --log-every 5000000 \
-  --multi-stack \
-  --board-texture \
+  --extended \
   --save-raw-ckpt \
   --save-path models/holdem_abstract_strategy.bin
 ```
@@ -101,7 +100,7 @@ cargo run --release --bin train_holdem -- \
 | `-l, --log-every <N>` | `50000` | Progress logging interval. |
 | `-s, --save-path <PATH>` | `models/holdem_abstract_strategy.bin` | Output path for strategy binary/JSON. |
 | `--checkpoint-every <N>` | `0` | Periodic checkpoint interval (`0` = disabled). |
-| `--keep-checkpoints <bool>` | `true` | Retain versioned milestone checkpoint files. |
+| `--keep-checkpoints <bool>` | `true` | Retain per-checkpoint snapshot files. |
 | `--rich-history <bool>` | `true` | Preserve prior-street betting context in infoset keys. |
 | `--pruning <bool>` | `true` | Enable Regret-Based Pruning (RBP). |
 | `--dcfr <bool>` | `true` | Enable Pluribus Discounted CFR (DCFR). |
@@ -109,10 +108,11 @@ cargo run --release --bin train_holdem -- \
 | `--max-turn-actions <N>` | `0` | Cap retained turn actions on save (`0` = unlimited). |
 | `--resume <PATH>` | — | Warm-start from an existing `.bin`/`.json` or `.ckpt` raw state. |
 | `--save-raw-ckpt` | `false` | Write lossless `.ckpt` alongside the strategy file. |
-| `--stack-bb <N>` | `100` | Starting effective stack depth when `--multi-stack` is false. |
+| `--stack-bb <N>` | `100` | Starting effective stack depth when `--multi-stack` and `--extended` are false. |
 | `--multi-stack` | `false` | Train unified `15 BB` / `30 BB` / `100 BB` blueprint in one file. |
 | `--board-texture` | `false` | Include compact 4-state postflop flop texture (`d`/`w`/`p`/`m`). |
-| `--short-stacks-only` | `false` | Train only `15 BB` (`S15|`) and `30 BB` (`S30|`) episodes, keeping `100 BB` frozen. |
+| `--short-stacks-only` | `false` | Train only short stacks (`15 BB` / `30 BB`, or `15 / 25 / 45 BB` with `--extended`), keeping `100 BB` frozen. |
+| `--extended` | `false` | Enable extended abstraction (`112` postflop buckets, Flop+Turn textures, `15 / 25 / 45 / 100 BB` stack grid, 8M table slots). |
 
 ### Distillation & Model Inspection (`distill_model`, `analyze_model`)
 ```bash
@@ -175,8 +175,9 @@ cargo run --release --bin evaluate -- \
 cargo run --release --bin evaluate -- --game holdem --hands 1000 --stack-sweep --subgame
 cargo run --release --bin evaluate -- --game holdem --hands 1000 --blind-schedule --level-hands 20 --subgame
 
-# 7-archetype Gauntlet or 6-max multiway table evaluation
+# 8-archetype Gauntlet, round-robin Duplicate Elo, or 6-max multiway table evaluation
 cargo run --release --bin evaluate -- --game holdem --hands 1000 --opponent gauntlet --subgame
+cargo run --release --bin evaluate -- --game holdem --hands 1000 --opponent elo --elo-dir models --subgame
 cargo run --release --bin evaluate -- --game holdem --hands 1000 --opponent 6max --subgame
 
 # A/B head-to-head match between two strategies (with deterministic seed)
@@ -189,7 +190,7 @@ cargo run --release --bin evaluate -- \
 # Exact Leduc NashConv / Best Response analysis
 cargo run --release --bin evaluate -- --game leduc --strategy models/leduc_strategy.json --hands 500000
 ```
-Additional `evaluate` options: `--exploit-factor` (default `0.70`), `--stack-bb` (default `100`), `--disable-guard <CODES>` (comma-separated guard ablation), `--opponent ablate`, and `-v, --verbose`.
+Additional `evaluate` options: `--exploit-factor` (default `0.70`), `--stack-bb` (default `100`), `--disable-guard <CODES>` (comma-separated guard ablation), `--opponent ablate`, `--elo-dir <DIR>`, `--elo-models <PATHS>`, and `-v, --verbose`.
 
 ### Leduc Hold'em Training (`train`, `train_vanilla`)
 ```bash
@@ -204,15 +205,15 @@ cargo run --release --bin train_vanilla -- --iterations 5000 --save-path models/
 
 ## 5. Integration Test Suites
 
-Run `cargo test --all-targets` to execute all **136** deterministic integration tests across 8 test suites in `tests/`:
+Run `cargo test --all-targets` to execute all **147** deterministic integration tests across 8 test suites in `tests/`:
 
 | Test Suite | Coverage |
 | :--- | :--- |
 | `tests/test_abstraction.rs` | Board texture codes, rich multi-street infoset keys & hashing |
-| `tests/test_cfr.rs` | CFR+ regret clamping, DCFR discounting, `TrainState` / `.ckpt` roundtrip parity |
-| `tests/test_eval.rs` | 7-card evaluator tiebreakers, L1 LUT randomized parity, 88 postflop buckets |
-| `tests/test_fallback.rs` | Preflop & postflop GTO-aligned fallback strategy bounds |
-| `tests/test_game.rs` | Hold'em state transitions, geometric sizing, duplicate dealing |
-| `tests/test_live.rs` | Live protocol translation, HU/6-max snapshots, non-escalating fallbacks |
+| `tests/test_cfr.rs` | CFR+ regret clamping, DCFR discounting, `TrainState` & extended 4-tier/turn-texture `.ckpt` roundtrip |
+| `tests/test_eval.rs` | 7-card evaluator tiebreakers, L1 LUT randomized parity, 88 base & 112 extended postflop buckets |
+| `tests/test_fallback.rs` | Preflop/postflop GTO heuristics, `StrategyLookupIndex`, 3-/4-tier stack fallback & interpolation |
+| `tests/test_game.rs` | Hold'em state transitions, geometric sizing, duplicate dealing, `overbet_aggro` archetype |
+| `tests/test_live.rs` | Live protocol translation, HU/6-max snapshots, continuous bet-blend & non-escalating fallbacks |
 | `tests/test_opponent.rs` | Metrics/Wilson bounds, style classification, sizing/station & preflop/postflop/subgame guards |
-| `tests/test_subgame.rs` | Bayesian opponent/hero reach ranges, adaptive budgeting, multi-threaded solver |
+| `tests/test_subgame.rs` | Bayesian opponent/hero reach ranges, cross-street carryover, `4×4` continuation leaves, adaptive budgeting, multi-threaded solver |

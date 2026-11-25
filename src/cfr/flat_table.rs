@@ -20,7 +20,7 @@ use crate::game::config::HOLDEM_NUM_ACTIONS;
 const MAX_PROBE: usize = 64;
 const NUM_OCCUPIED_SHARDS: usize = 64;
 pub(crate) const PF_SEQ_CACHE_STRIDE: usize = 781;
-const PF_SLOT_CACHE_LEN: usize = 3 * 169 * PF_SEQ_CACHE_STRIDE;
+const PF_SLOT_CACHE_LEN: usize = 5 * 169 * PF_SEQ_CACHE_STRIDE;
 
 #[repr(C, align(64))]
 pub(crate) struct RegretSlot {
@@ -350,7 +350,10 @@ impl FlatInfosetTable {
                 if short_stacks_only {
                     let is_short = self.keys.get(&idx).is_some_and(|e| {
                         let k = &e.value().1;
-                        k.starts_with("S15|") || k.starts_with("S30|")
+                        k.starts_with("S15|")
+                            || k.starts_with("S25|")
+                            || k.starts_with("S30|")
+                            || k.starts_with("S45|")
                     });
                     if !is_short {
                         continue;
@@ -383,7 +386,11 @@ impl FlatInfosetTable {
             self.overflow.iter().par_bridge().for_each(|entry| {
                 if short_stacks_only {
                     let k = &entry.value().key;
-                    if !k.starts_with("S15|") && !k.starts_with("S30|") {
+                    if !k.starts_with("S15|")
+                        && !k.starts_with("S25|")
+                        && !k.starts_with("S30|")
+                        && !k.starts_with("S45|")
+                    {
                         return;
                     }
                 }

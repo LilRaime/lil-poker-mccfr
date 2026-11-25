@@ -51,8 +51,15 @@ impl OpponentTracker {
         scale(&mut self.showdown_large_monster_count);
         scale(&mut self.showdown_hands);
         scale(&mut self.showdown_bluff_count);
+        scale(&mut self.showdown_thin_value_pair_count);
         scale(&mut self.showdown_trap_count);
         scale(&mut self.showdown_loose_count);
+        scale(&mut self.flop_cbet_opps);
+        scale(&mut self.flop_cbet_made);
+        scale(&mut self.turn_barrel_opps);
+        scale(&mut self.turn_barrel_made);
+        scale(&mut self.showdown_overbet_hands);
+        scale(&mut self.showdown_overbet_value_hands);
         scale(&mut self.sb_vpip_hands);
         scale(&mut self.sb_pfr_hands);
         scale(&mut self.sb_total_hands);
@@ -69,6 +76,11 @@ impl OpponentTracker {
         self.sb_pfr_hands = self.sb_pfr_hands.min(self.sb_vpip_hands);
         self.bb_vpip_hands = self.bb_vpip_hands.min(self.bb_total_hands);
         self.fold_to_3bet_count = self.fold_to_3bet_count.min(self.faced_3bet_count);
+        self.flop_cbet_made = self.flop_cbet_made.min(self.flop_cbet_opps);
+        self.turn_barrel_made = self.turn_barrel_made.min(self.turn_barrel_opps);
+        self.showdown_overbet_value_hands = self
+            .showdown_overbet_value_hands
+            .min(self.showdown_overbet_hands);
     }
 
     /** Decay historical statistics when the table Big Blind steps up significantly (e.g. every 20 hands)
@@ -118,9 +130,9 @@ impl OpponentTracker {
         Ok(())
     }
 
-    /** Load opponent profile from disk JSON database (checking /tmp runtime fallback first)
-     * and apply mild session decay */
-    pub fn load_profile(path: &str, opp_key: &str) -> Option<Self> {
+    /** Load opponent profile from disk JSON database (checking `/tmp` runtime fallback first)
+     * and apply `decay` exponential session decay factor */
+    pub fn load_profile_with_decay(path: &str, opp_key: &str, decay: f64) -> Option<Self> {
         if opp_key.is_empty() {
             return None;
         }
@@ -144,9 +156,18 @@ impl OpponentTracker {
         tracker.hand_saw_flop_recorded = false;
         tracker.hand_pf_raises = 0;
         tracker.hand_post_raises = 0;
+        tracker.hand_flop_cbet_recorded = false;
+        tracker.hand_flop_bet_made = false;
+        tracker.hand_turn_barrel_recorded = false;
         tracker.last_observed_bb = 0;
-        tracker.apply_session_decay(0.90);
+        tracker.apply_session_decay(decay);
         Some(tracker)
+    }
+
+    /** Load opponent profile from disk JSON database (checking `/tmp` runtime fallback first)
+     * and apply default `0.90` session decay */
+    pub fn load_profile(path: &str, opp_key: &str) -> Option<Self> {
+        Self::load_profile_with_decay(path, opp_key, 0.90)
     }
 }
 

@@ -44,6 +44,7 @@ pub fn run_holdem_gauntlet_benchmark(
         "shove_bot",
         "trapper",
         "rock",
+        "overbet_aggro",
         "self",
     ];
     let mut results = Vec::with_capacity(archetypes.len());
@@ -151,6 +152,14 @@ pub fn run_holdem_ablation_benchmark(
     let base_avg: f64 =
         baseline.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>() / baseline.len().max(1) as f64;
 
+    let extract_arch_bb = |res: &[(String, HoldemBenchmarkResult)], name: &str| -> f64 {
+        res.iter()
+            .find(|(a, _)| a == name)
+            .map_or(0.0, |(_, r)| r.win_rate_bb100)
+    };
+    let base_self = extract_arch_bb(&baseline, "self");
+    let base_ob = extract_arch_bb(&baseline, "overbet_aggro");
+
     let guard_candidates = [
         "PASSIVE_STATION_BOOST",
         "PF_BUTTON_STEAL",
@@ -161,17 +170,24 @@ pub fn run_holdem_ablation_benchmark(
         "POST_POT_CONTROL_CAP",
         "POST_PAIRED_FLUSH_STRAIGHT_CAP",
         "POST_BARREL_FOLD",
+        "POST_RIVER_BLUFF_CAP",
+        "OVERBET_BLUFF_CATCH",
+        "POST_OVERBET_ALLIN_CAP",
     ];
 
     println!("============================================================");
     println!("     🔬  Guard Ablation Study (Identical Seed={seed:?})      ");
     println!("============================================================");
-    println!("Baseline Gauntlet Average : {base_avg:+.2} bb/100");
     println!(
-        "{:<32} | {:>14} | {:>18}",
-        "Disabled Guard Family", "Ablated bb/100", "Guard Value (Δ bb)"
+        "Baseline Gauntlet Avg: {base_avg:+.2} bb/100 | SELF: {base_self:+.2} | OVERBET_AGGRO: {base_ob:+.2}"
     );
-    println!("--------------------------------------------------------------------");
+    println!(
+        "{:<32} | {:>11} | {:>11} | {:>11} | {:>11}",
+        "Disabled Guard Family", "Ablated Avg", "Avg Δ bb", "SELF Δ bb", "OB_AGGRO Δ"
+    );
+    println!(
+        "----------------------------------------------------------------------------------------"
+    );
 
     for &g in &guard_candidates {
         let disabled = vec![g.to_string()];
@@ -183,7 +199,11 @@ pub fn run_holdem_ablation_benchmark(
         let ablated_avg: f64 = ablated.iter().map(|(_, r)| r.win_rate_bb100).sum::<f64>()
             / ablated.len().max(1) as f64;
         let guard_value = base_avg - ablated_avg;
-        println!("{g:<32} | {ablated_avg:>+11.2} bb | {guard_value:>+15.2} bb");
+        let self_delta = base_self - extract_arch_bb(&ablated, "self");
+        let ob_delta = base_ob - extract_arch_bb(&ablated, "overbet_aggro");
+        println!(
+            "{g:<32} | {ablated_avg:>+8.2} bb | {guard_value:>+8.2} bb | {self_delta:>+8.2} bb | {ob_delta:>+8.2} bb"
+        );
     }
     println!("============================================================\n");
 }

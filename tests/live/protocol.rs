@@ -4,7 +4,7 @@ use lil_poker_mccfr::game::holdem::{
 };
 use lil_poker_mccfr::live::protocol::{
     ActionMapRequest, map_action_index, parse_card_str, parse_json_i32,
-    pseudo_harmonic_action_mapping, pseudo_harmonic_prob,
+    pseudo_harmonic_action_mapping, pseudo_harmonic_action_weights, pseudo_harmonic_prob,
 };
 use rand::SeedableRng;
 use serde_json::json;
@@ -374,4 +374,29 @@ fn test_sb_150_300_allin_never_leaves_one_chip() {
         assert_eq!(raise_act, "raise");
         assert_eq!(raise_amt, expected_total);
     }
+}
+
+#[test]
+fn test_pseudo_harmonic_weights_smooth_overbet_interpolation() {
+    /* Smooth weight transitions across RAISE_MIN -> RAISE_THIRD_POT -> RAISE_HALF_POT -> ALL_IN */
+    let b_mid = pseudo_harmonic_action_weights(450, 1000, 8000);
+    assert_eq!(b_mid.low_action, RAISE_MIN);
+    assert_eq!(b_mid.high_action, RAISE_THIRD_POT);
+    assert!(b_mid.low_weight > 0.0 && b_mid.low_weight < 1.0);
+
+    let b_overbet = pseudo_harmonic_action_weights(1500, 1000, 8000);
+    assert_eq!(b_overbet.low_action, RAISE_HALF_POT);
+    assert_eq!(b_overbet.high_action, ALL_IN);
+    assert!(
+        b_overbet.low_weight > 0.1 && b_overbet.low_weight < 0.99,
+        "150% pot overbet below allin threshold must smoothly interpolate between RAISE_HALF_POT and ALL_IN, got {b_overbet:?}"
+    );
+
+    let b_bigger_overbet = pseudo_harmonic_action_weights(4500, 1000, 8000);
+    assert_eq!(b_bigger_overbet.low_action, RAISE_HALF_POT);
+    assert_eq!(b_bigger_overbet.high_action, ALL_IN);
+    assert!(
+        b_bigger_overbet.low_weight < b_overbet.low_weight,
+        "Larger overbet must shift weight monotonically toward ALL_IN"
+    );
 }

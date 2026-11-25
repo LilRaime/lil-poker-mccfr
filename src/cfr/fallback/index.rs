@@ -3,9 +3,12 @@
  */
 
 use super::heuristic::{FallbackRequest, get_holdem_fallback_strategy};
-use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
+use crate::cfr::abstraction::{
+    postflop_equity_bucket, postflop_extended_bucket, preflop_bucket, strip_stack_prefix,
+};
 use crate::game::config::{
-    HOLDEM_NUM_ACTIONS, NUM_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
+    HOLDEM_NUM_ACTIONS, NUM_EXTENDED_EQUITY_BUCKETS, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER,
+    ROUND_TURN,
 };
 use crate::game::holdem::Card;
 use std::collections::HashMap;
@@ -13,18 +16,18 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub struct StrategyLookupIndex {
     preflop_avg: HashMap<String, [f64; HOLDEM_NUM_ACTIONS]>,
-    flop_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    flop_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    turn_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    turn_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    river_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    river_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    flop_check_valid: [bool; NUM_EQUITY_BUCKETS],
-    flop_bet_valid: [bool; NUM_EQUITY_BUCKETS],
-    turn_check_valid: [bool; NUM_EQUITY_BUCKETS],
-    turn_bet_valid: [bool; NUM_EQUITY_BUCKETS],
-    river_check_valid: [bool; NUM_EQUITY_BUCKETS],
-    river_bet_valid: [bool; NUM_EQUITY_BUCKETS],
+    flop_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    flop_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    turn_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    turn_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    river_check_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    river_bet_avg: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    flop_check_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    flop_bet_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    turn_check_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    turn_bet_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    river_check_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    river_bet_valid: [bool; NUM_EXTENDED_EQUITY_BUCKETS],
 }
 
 impl Default for StrategyLookupIndex {
@@ -37,18 +40,18 @@ impl StrategyLookupIndex {
     pub fn new() -> Self {
         StrategyLookupIndex {
             preflop_avg: HashMap::new(),
-            flop_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            flop_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            turn_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            turn_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            river_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            river_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            flop_check_valid: [false; NUM_EQUITY_BUCKETS],
-            flop_bet_valid: [false; NUM_EQUITY_BUCKETS],
-            turn_check_valid: [false; NUM_EQUITY_BUCKETS],
-            turn_bet_valid: [false; NUM_EQUITY_BUCKETS],
-            river_check_valid: [false; NUM_EQUITY_BUCKETS],
-            river_bet_valid: [false; NUM_EQUITY_BUCKETS],
+            flop_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            flop_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            turn_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            turn_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            river_check_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            river_bet_avg: [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            flop_check_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
+            flop_bet_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
+            turn_check_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
+            turn_bet_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
+            river_check_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
+            river_bet_valid: [false; NUM_EXTENDED_EQUITY_BUCKETS],
         }
     }
 
@@ -134,65 +137,64 @@ impl StrategyLookupIndex {
             let (_, name) = preflop_bucket(hole[0], hole[1]);
             self.preflop_avg.get(name).copied()
         } else {
-            let bucket = postflop_equity_bucket(hole, board);
-            if bucket >= NUM_EQUITY_BUCKETS {
-                return None;
-            }
             let facing_bet = to_call > 0;
-            match round {
-                ROUND_FLOP => {
-                    if facing_bet {
-                        if self.flop_bet_valid[bucket] {
-                            Some(self.flop_bet_avg[bucket])
-                        } else if self.flop_check_valid[bucket] {
-                            Some(self.flop_check_avg[bucket])
-                        } else {
-                            None
-                        }
-                    } else if self.flop_check_valid[bucket] {
-                        Some(self.flop_check_avg[bucket])
-                    } else if self.flop_bet_valid[bucket] {
-                        Some(self.flop_bet_avg[bucket])
-                    } else {
-                        None
-                    }
-                }
-                ROUND_TURN => {
-                    if facing_bet {
-                        if self.turn_bet_valid[bucket] {
-                            Some(self.turn_bet_avg[bucket])
-                        } else if self.turn_check_valid[bucket] {
-                            Some(self.turn_check_avg[bucket])
-                        } else {
-                            None
-                        }
-                    } else if self.turn_check_valid[bucket] {
-                        Some(self.turn_check_avg[bucket])
-                    } else if self.turn_bet_valid[bucket] {
-                        Some(self.turn_bet_avg[bucket])
-                    } else {
-                        None
-                    }
-                }
-                ROUND_RIVER => {
-                    if facing_bet {
-                        if self.river_bet_valid[bucket] {
-                            Some(self.river_bet_avg[bucket])
-                        } else if self.river_check_valid[bucket] {
-                            Some(self.river_check_avg[bucket])
-                        } else {
-                            None
-                        }
-                    } else if self.river_check_valid[bucket] {
-                        Some(self.river_check_avg[bucket])
-                    } else if self.river_bet_valid[bucket] {
-                        Some(self.river_bet_avg[bucket])
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
+            let b_ext = postflop_extended_bucket(hole, board);
+            let b_base = postflop_equity_bucket(hole, board);
+            if let Some(res) = self.query_single_bucket(round, b_ext, facing_bet) {
+                return Some(res);
             }
+            if b_base != b_ext {
+                return self.query_single_bucket(round, b_base, facing_bet);
+            }
+            None
+        }
+    }
+
+    #[inline]
+    fn query_single_bucket(
+        &self,
+        round: u8,
+        bucket: usize,
+        facing_bet: bool,
+    ) -> Option<[f64; HOLDEM_NUM_ACTIONS]> {
+        if bucket >= NUM_EXTENDED_EQUITY_BUCKETS {
+            return None;
+        }
+        let (check_avg, check_valid, bet_avg, bet_valid) = match round {
+            ROUND_FLOP => (
+                &self.flop_check_avg,
+                &self.flop_check_valid,
+                &self.flop_bet_avg,
+                &self.flop_bet_valid,
+            ),
+            ROUND_TURN => (
+                &self.turn_check_avg,
+                &self.turn_check_valid,
+                &self.turn_bet_avg,
+                &self.turn_bet_valid,
+            ),
+            ROUND_RIVER => (
+                &self.river_check_avg,
+                &self.river_check_valid,
+                &self.river_bet_avg,
+                &self.river_bet_valid,
+            ),
+            _ => return None,
+        };
+        if facing_bet {
+            if bet_valid[bucket] {
+                Some(bet_avg[bucket])
+            } else if check_valid[bucket] {
+                Some(check_avg[bucket])
+            } else {
+                None
+            }
+        } else if check_valid[bucket] {
+            Some(check_avg[bucket])
+        } else if bet_valid[bucket] {
+            Some(bet_avg[bucket])
+        } else {
+            None
         }
     }
 
@@ -225,26 +227,26 @@ impl StrategyLookupIndex {
 }
 
 struct StreetBucketAccum {
-    check_sums: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    check_counts: [usize; NUM_EQUITY_BUCKETS],
-    bet_sums: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    bet_counts: [usize; NUM_EQUITY_BUCKETS],
+    check_sums: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    check_counts: [usize; NUM_EXTENDED_EQUITY_BUCKETS],
+    bet_sums: [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    bet_counts: [usize; NUM_EXTENDED_EQUITY_BUCKETS],
 }
 
 type FinalizedStreetBuckets = (
-    [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    [bool; NUM_EQUITY_BUCKETS],
-    [[f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-    [bool; NUM_EQUITY_BUCKETS],
+    [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    [bool; NUM_EXTENDED_EQUITY_BUCKETS],
+    [[f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+    [bool; NUM_EXTENDED_EQUITY_BUCKETS],
 );
 
 impl StreetBucketAccum {
     fn new() -> Self {
         Self {
-            check_sums: [[0.0f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            check_counts: [0usize; NUM_EQUITY_BUCKETS],
-            bet_sums: [[0.0f64; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS],
-            bet_counts: [0usize; NUM_EQUITY_BUCKETS],
+            check_sums: [[0.0f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            check_counts: [0usize; NUM_EXTENDED_EQUITY_BUCKETS],
+            bet_sums: [[0.0f64; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS],
+            bet_counts: [0usize; NUM_EXTENDED_EQUITY_BUCKETS],
         }
     }
 
@@ -263,11 +265,11 @@ impl StreetBucketAccum {
     }
 
     fn finalize(&self) -> FinalizedStreetBuckets {
-        let mut check_avg = [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS];
-        let mut check_valid = [false; NUM_EQUITY_BUCKETS];
-        let mut bet_avg = [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EQUITY_BUCKETS];
-        let mut bet_valid = [false; NUM_EQUITY_BUCKETS];
-        for b in 0..NUM_EQUITY_BUCKETS {
+        let mut check_avg = [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS];
+        let mut check_valid = [false; NUM_EXTENDED_EQUITY_BUCKETS];
+        let mut bet_avg = [[0.0; HOLDEM_NUM_ACTIONS]; NUM_EXTENDED_EQUITY_BUCKETS];
+        let mut bet_valid = [false; NUM_EXTENDED_EQUITY_BUCKETS];
+        for b in 0..NUM_EXTENDED_EQUITY_BUCKETS {
             if self.check_counts[b] > 0 {
                 let n = self.check_counts[b] as f64;
                 for i in 0..HOLDEM_NUM_ACTIONS {
@@ -289,10 +291,13 @@ impl StreetBucketAccum {
 
 fn parse_street_bucket(key: &str, tag: &str) -> Option<usize> {
     let pos = key.find(tag)?;
-    let start = pos + tag.len();
-    let tok = key.get(start..start + 2)?;
-    let b = tok.parse::<usize>().ok()?;
-    (b < NUM_EQUITY_BUCKETS).then_some(b)
+    let rest = key.get(pos + tag.len()..)?;
+    let num_len = rest.bytes().take_while(u8::is_ascii_digit).count().min(3);
+    if num_len == 0 {
+        return None;
+    }
+    let b = rest.get(..num_len)?.parse::<usize>().ok()?;
+    (b < NUM_EXTENDED_EQUITY_BUCKETS).then_some(b)
 }
 
 fn accumulate_preflop_key(
@@ -301,10 +306,7 @@ fn accumulate_preflop_key(
     preflop_sums: &mut HashMap<String, [f64; HOLDEM_NUM_ACTIONS]>,
     preflop_counts: &mut HashMap<String, usize>,
 ) {
-    let base_key = key
-        .strip_prefix("S15|")
-        .or_else(|| key.strip_prefix("S30|"))
-        .unwrap_or(key);
+    let (_, base_key) = strip_stack_prefix(key);
     if !base_key.starts_with("P:") || base_key.contains('|') {
         return;
     }

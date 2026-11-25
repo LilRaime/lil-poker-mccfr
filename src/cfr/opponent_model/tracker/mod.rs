@@ -2,7 +2,10 @@
 mod metrics;
 mod profile;
 
-use crate::cfr::abstraction::{preflop_bucket, preflop_strength_tier};
+use crate::cfr::abstraction::{
+    BUCKET_OVERPAIR_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, postflop_equity_bucket,
+    preflop_bucket, preflop_strength_tier,
+};
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_MIN, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
 };
@@ -52,8 +55,22 @@ pub struct OpponentTracker {
     /* Showdown observation analytics */
     pub showdown_hands: u64,
     pub showdown_bluff_count: u64,
+    #[serde(default)]
+    pub showdown_thin_value_pair_count: u64,
     pub showdown_trap_count: u64,
     pub showdown_loose_count: u64,
+    #[serde(default)]
+    pub flop_cbet_opps: u64,
+    #[serde(default)]
+    pub flop_cbet_made: u64,
+    #[serde(default)]
+    pub turn_barrel_opps: u64,
+    #[serde(default)]
+    pub turn_barrel_made: u64,
+    #[serde(default)]
+    pub showdown_overbet_hands: u64,
+    #[serde(default)]
+    pub showdown_overbet_value_hands: u64,
 
     /* Positional & 3-bet situational metrics */
     pub sb_vpip_hands: u64,
@@ -76,6 +93,12 @@ pub struct OpponentTracker {
     pub hand_pf_raises: u8,
     #[serde(default)]
     pub hand_post_raises: u8,
+    #[serde(default)]
+    pub hand_flop_cbet_recorded: bool,
+    #[serde(default)]
+    pub hand_flop_bet_made: bool,
+    #[serde(default)]
+    pub hand_turn_barrel_recorded: bool,
     #[serde(default)]
     pub last_observed_bb: i32,
 
@@ -122,8 +145,15 @@ impl OpponentTracker {
             showdown_large_monster_count: 0,
             showdown_hands: 0,
             showdown_bluff_count: 0,
+            showdown_thin_value_pair_count: 0,
             showdown_trap_count: 0,
             showdown_loose_count: 0,
+            flop_cbet_opps: 0,
+            flop_cbet_made: 0,
+            turn_barrel_opps: 0,
+            turn_barrel_made: 0,
+            showdown_overbet_hands: 0,
+            showdown_overbet_value_hands: 0,
             sb_vpip_hands: 0,
             sb_pfr_hands: 0,
             sb_total_hands: 0,
@@ -138,6 +168,9 @@ impl OpponentTracker {
             hand_saw_flop_recorded: false,
             hand_pf_raises: 0,
             hand_post_raises: 0,
+            hand_flop_cbet_recorded: false,
+            hand_flop_bet_made: false,
+            hand_turn_barrel_recorded: false,
             last_observed_bb: 0,
             disabled_guards: Vec::new(),
         }
@@ -258,6 +291,16 @@ impl OpponentTracker {
                 if action == CALL_CHECK && !facing_bet {
                     self.flop_checks += 1;
                 }
+                if !facing_bet && self.hand_pf_raises > 0 && !self.hand_flop_cbet_recorded {
+                    self.flop_cbet_opps += 1;
+                    self.hand_flop_cbet_recorded = true;
+                    if action >= RAISE_MIN {
+                        self.flop_cbet_made += 1;
+                    }
+                }
+                if action >= RAISE_MIN {
+                    self.hand_flop_bet_made = true;
+                }
                 if facing_bet {
                     self.flop_cbet_faced += 1;
                     if action == FOLD {
@@ -267,6 +310,13 @@ impl OpponentTracker {
             }
             ROUND_TURN => {
                 self.turn_actions[act_cat] += 1;
+                if !facing_bet && self.hand_flop_bet_made && !self.hand_turn_barrel_recorded {
+                    self.turn_barrel_opps += 1;
+                    self.hand_turn_barrel_recorded = true;
+                    if action >= RAISE_MIN {
+                        self.turn_barrel_made += 1;
+                    }
+                }
                 if facing_bet {
                     self.turn_cbet_faced += 1;
                     if action == FOLD {
@@ -314,6 +364,9 @@ impl OpponentTracker {
         self.hand_saw_flop_recorded = false;
         self.hand_pf_raises = 0;
         self.hand_post_raises = 0;
+        self.hand_flop_cbet_recorded = false;
+        self.hand_flop_bet_made = false;
+        self.hand_turn_barrel_recorded = false;
     }
 
     pub fn record_showdown(&mut self) {
@@ -379,10 +432,15 @@ impl OpponentTracker {
         self.went_to_showdown += 1;
         let score = evaluate_7cards(&opp_hole, board);
         let cat = score >> 32;
+        let bucket = postflop_equity_bucket(&opp_hole, board);
         let (pf_idx, _) = preflop_bucket(opp_hole[0], opp_hole[1]);
 
-        if opp_raised_river && cat <= 1 {
-            self.showdown_bluff_count += 1;
+        if opp_raised_river {
+            if cat == 0 || (cat == 1 && bucket <= BUCKET_WEAK_PAIR_MIN + 1) {
+                self.showdown_bluff_count += 1;
+            } else if cat == 1 && bucket >= BUCKET_TOP_PAIR_MIN {
+                self.showdown_thin_value_pair_count += 1;
+            }
         }
         if preflop_strength_tier(pf_idx) == 1
             && !opp_raised_river
@@ -399,8 +457,14 @@ impl OpponentTracker {
             let pct = (last_bet_amt as i64 * 100 / pot.max(1) as i64) as i32;
             if pct >= 75 && cat >= 2 {
                 self.showdown_large_monster_count += 1;
-            } else if pct <= 35 && cat <= 1 {
+            } else if pct <= 35 && (cat == 0 || (cat == 1 && bucket <= BUCKET_WEAK_PAIR_MIN + 1)) {
                 self.showdown_small_bluff_count += 1;
+            }
+            if (last_bet_amt as i64) * 10 > (pot as i64) * 12 {
+                self.showdown_overbet_hands += 1;
+                if cat >= 2 || (cat == 1 && bucket >= BUCKET_OVERPAIR_MIN) {
+                    self.showdown_overbet_value_hands += 1;
+                }
             }
         }
     }

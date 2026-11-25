@@ -37,6 +37,53 @@ pub fn stack_depth_prefix(stack_bb: i32) -> &'static str {
     }
 }
 
+/** 4-tier tournament stack prefix (`15 / 25 / 45 / 100 BB`). */
+#[inline(always)]
+pub fn stack_depth_prefix_four_tier(stack_bb: i32) -> &'static str {
+    if stack_bb > 0 && stack_bb <= 20 {
+        "S15|"
+    } else if stack_bb > 0 && stack_bb <= 35 {
+        "S25|"
+    } else if stack_bb > 0 && stack_bb <= 65 {
+        "S45|"
+    } else {
+        ""
+    }
+}
+
+/** Ordered list of stack prefixes to probe during lookup for 4-tier (`S15|`, `S25|`, `S45|`)
+ * and 3-tier (`S15|`, `S30|`) multi-stack models before falling back to base `100 BB` keys. */
+#[inline(always)]
+pub fn stack_depth_candidates(stack_bb: i32) -> &'static [&'static str] {
+    if stack_bb <= 0 || stack_bb > 65 {
+        &[""]
+    } else if stack_bb <= 20 {
+        &["S15|", ""]
+    } else if stack_bb <= 35 {
+        &["S25|", "S30|", ""]
+    } else if stack_bb <= 45 {
+        &["S45|", "S30|", ""]
+    } else {
+        &["S45|", ""]
+    }
+}
+
+/** Strips any known stack depth prefix (`S15|`, `S25|`, `S30|`, `S45|`). */
+#[inline(always)]
+pub fn strip_stack_prefix(key: &str) -> (&'static str, &str) {
+    if let Some(r) = key.strip_prefix("S15|") {
+        ("S15|", r)
+    } else if let Some(r) = key.strip_prefix("S25|") {
+        ("S25|", r)
+    } else if let Some(r) = key.strip_prefix("S30|") {
+        ("S30|", r)
+    } else if let Some(r) = key.strip_prefix("S45|") {
+        ("S45|", r)
+    } else {
+        ("", key)
+    }
+}
+
 #[inline(always)]
 pub fn mix_stack_prefix_hash(mut base_hash: u64, stack_prefix: &str) -> u64 {
     if stack_prefix.is_empty() {
@@ -636,13 +683,7 @@ pub fn char_to_action(c: u8) -> Option<u8> {
  * (both rich keys like `"P:rc|F:B39/c"` and compact keys like `"P:AKo/rc"` or `"R:B50/t"`),
  * matching `hash_holdem_infoset_key_rich_with_bucket` / `hash_holdem_infoset_key_with_bucket`. */
 pub fn hash_from_infoset_key_str(key: &str) -> u64 {
-    let (stack_prefix, rest) = if let Some(r) = key.strip_prefix("S15|") {
-        ("S15|", r)
-    } else if let Some(r) = key.strip_prefix("S30|") {
-        ("S30|", r)
-    } else {
-        ("", key)
-    };
+    let (stack_prefix, rest) = strip_stack_prefix(key);
 
     let mut h = FNV_OFFSET_BASIS;
     let parts: Vec<&str> = rest.split('|').collect();
@@ -693,7 +734,7 @@ pub fn hash_from_infoset_key_str(key: &str) -> u64 {
         h = fnv1a_combine(h, b':');
         let b_raw = head.split(":B").nth(1).unwrap_or("0");
         let b_str = if let Some(last_c) = b_raw.chars().last() {
-            if matches!(last_c, 'd' | 'w' | 'p' | 'm') {
+            if matches!(last_c, 'd' | 'w' | 'p' | 'm' | 'c' | 'x') {
                 tex_char = Some(last_c);
                 &b_raw[..b_raw.len() - 1]
             } else {

@@ -45,6 +45,7 @@ struct LiveSession {
     last_seen_hand_id: u64,
     round_tracker: LiveRoundTracker,
     table_tracker: LiveTableTracker,
+    hand_subgame_ctx: Option<SubgameContext>,
     subgame_solver: Arc<SubgameSolver>,
     strategy_index: Arc<StrategyLookupIndex>,
     strategy_arc: Arc<HashMap<String, Vec<f64>>>,
@@ -112,6 +113,9 @@ impl LiveSession {
             self.finalize_and_save_hand();
             self.round_tracker.reset_hand(0);
             self.table_tracker.reset_hand(0);
+            if let Some(ctx) = self.hand_subgame_ctx.as_mut() {
+                ctx.reset_hand();
+            }
             self.last_action_key.clear();
             self.last_hole = None;
             self.last_board_len = 0;
@@ -212,7 +216,7 @@ impl LiveSession {
             self.round_tracker.estimated_my_chips
         };
 
-        let (raw_action, raw_amount, trace) = self
+        let (raw_action, raw_amount, trace, returned_ctx) = self
             .compute_live_decision(
                 &snapshot,
                 tracker_clone,
@@ -221,6 +225,7 @@ impl LiveSession {
                 eff_chips,
             )
             .await?;
+        self.hand_subgame_ctx = Some(returned_ctx);
 
         let (chosen_action, amount) =
             apply_live_commit_guards(raw_action, raw_amount, &snapshot, eff_chips);
@@ -301,6 +306,9 @@ impl LiveSession {
             self.finalize_and_save_hand();
             self.round_tracker.reset_hand(msg_hand_id);
             self.table_tracker.reset_hand(msg_hand_id);
+            if let Some(ctx) = self.hand_subgame_ctx.as_mut() {
+                ctx.reset_hand();
+            }
             self.hand_active = false;
             self.hero_folded_this_hand = false;
         } else if msg_hand_id > 0 && self.table_tracker.hand_id == 0 {
@@ -334,6 +342,9 @@ impl LiveSession {
                 );
             }
             self.round_tracker.reset_hand(snapshot.hand_id);
+            if let Some(ctx) = self.hand_subgame_ctx.as_mut() {
+                ctx.reset_hand();
+            }
             self.hero_folded_this_hand = false;
         }
         self.last_hole = Some(snapshot.hole);
@@ -361,20 +372,28 @@ impl LiveSession {
     }
 
     async fn compute_live_decision(
-        &self,
+        &mut self,
         snapshot: &LiveSnapshot,
         tracker_clone: OpponentTracker,
         engine_contributions: [i32; 2],
         raises_this_round: u8,
         eff_chips: i32,
-    ) -> Result<(String, i32, crate::cfr::opponent_model::DecisionTrace), tokio::task::JoinError>
-    {
+    ) -> Result<
+        (
+            String,
+            i32,
+            crate::cfr::opponent_model::DecisionTrace,
+            SubgameContext,
+        ),
+        tokio::task::JoinError,
+    > {
         let strat_clone = Arc::clone(&self.strategy_arc);
         let index_clone = Arc::clone(&self.strategy_index);
         let solver_arc = Arc::clone(&self.subgame_solver);
         let subgame = self.subgame_search;
         let board_cards_clone = snapshot.board.clone();
         let history_clone = self.round_tracker.live_history;
+        let active_bet_blend = self.round_tracker.active_bet_blend;
         let hole = snapshot.hole;
         let legal_actions = snapshot.legal_actions.clone();
         let to_call = snapshot.to_call;
@@ -384,10 +403,10 @@ impl LiveSession {
         let big_blind = snapshot.big_blind;
         let opp_chips = snapshot.opp_chips;
         let current_bet_now = snapshot.current_bet;
+        let mut ctx = self.hand_subgame_ctx.take().unwrap_or_default();
 
         tokio::task::spawn_blocking(move || {
-            let mut ctx = SubgameContext::new();
-            decide_action_traced(
+            let (act, amt, trace) = decide_action_traced(
                 &LiveDecisionRequest {
                     hole,
                     board: &board_cards_clone,
@@ -404,13 +423,15 @@ impl LiveSession {
                     my_chips: eff_chips,
                     opp_chips,
                     current_bet: current_bet_now,
+                    active_bet_blend,
                     strategy_index: Some(&index_clone),
                     solver: Some(&solver_arc),
                 },
                 &strat_clone,
                 &tracker_clone,
                 Some(&mut ctx),
-            )
+            );
+            (act, amt, trace, ctx)
         })
         .await
     }
@@ -622,6 +643,7 @@ impl LiveSession {
                 my_chips,
                 opp_chips: snapshot.opp_chips,
                 current_bet: snapshot.current_bet,
+                active_bet_blend: self.round_tracker.active_bet_blend,
                 strategy_index: Some(&self.strategy_index),
                 solver: None,
             },
@@ -678,6 +700,7 @@ pub async fn run_live_bot(
         last_seen_hand_id: 0,
         round_tracker: LiveRoundTracker::new(),
         table_tracker: LiveTableTracker::new(),
+        hand_subgame_ctx: Some(SubgameContext::new()),
         subgame_solver: Arc::new(SubgameSolver::default()),
         strategy_index,
         strategy_arc: Arc::new(strategy_map),

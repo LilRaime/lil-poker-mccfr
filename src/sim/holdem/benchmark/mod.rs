@@ -1,5 +1,6 @@
 /*! Texas Hold'em Benchmark and A/B Evaluation Suite */
 pub mod blind_schedule;
+pub mod elo;
 pub mod gauntlet;
 pub mod hu;
 pub mod multiway;
@@ -17,8 +18,9 @@ pub use blind_schedule::{
     BlindScheduleConfig, BlindScheduleLevel, DEFAULT_BLIND_SCHEDULE,
     run_holdem_blind_schedule_benchmark,
 };
+pub use elo::{EloEntry, EloTournamentConfig, run_holdem_elo_tournament};
 pub use gauntlet::{GauntletConfig, run_holdem_ablation_benchmark, run_holdem_gauntlet_benchmark};
-pub use hu::{HoldemBenchmarkConfig, run_holdem_benchmark};
+pub use hu::{HoldemBenchmarkConfig, run_holdem_benchmark, run_holdem_benchmark_preloaded};
 pub use multiway::{MultiwayBenchmarkConfig, run_holdem_multiway_benchmark};
 
 /** Benchmark and Evaluation Result Structure */

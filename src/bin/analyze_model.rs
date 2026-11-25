@@ -106,17 +106,23 @@ impl StreetStats {
 fn get_stack_idx(key: &str) -> usize {
     if key.starts_with("S15|") {
         0
-    } else if key.starts_with("S30|") {
+    } else if key.starts_with("S25|") {
         1
-    } else {
+    } else if key.starts_with("S30|") {
         2
+    } else if key.starts_with("S45|") {
+        3
+    } else {
+        4
     }
 }
 
 fn stack_label(idx: usize) -> &'static str {
     match idx {
         0 => "15 BB (S15|)",
-        1 => "30 BB (S30|)",
+        1 => "25 BB (S25|)",
+        2 => "30 BB (S30|)",
+        3 => "45 BB (S45|)",
         _ => "100 BB (base)",
     }
 }
@@ -129,10 +135,7 @@ struct StackStats {
 }
 
 fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
-    let base_key = key
-        .strip_prefix("S15|")
-        .or_else(|| key.strip_prefix("S30|"))
-        .unwrap_or(key);
+    let (_, base_key) = lil_poker_mccfr::cfr::abstraction::strip_stack_prefix(key);
     let prefix = match street {
         ROUND_PREFLOP => "P:",
         ROUND_FLOP => "F:B",
@@ -153,7 +156,7 @@ fn extract_bucket_token(key: &str, street: u8) -> Option<String> {
         let end = rest.find('/').unwrap_or(rest.len());
         if end > 0 {
             let tok = &rest[..end];
-            let trimmed = tok.trim_end_matches(['d', 'w', 'p', 'm']);
+            let trimmed = tok.trim_end_matches(['d', 'w', 'p', 'm', 'c', 'x']);
             if !trimmed.is_empty() {
                 Some(trimmed.to_string())
             } else {
@@ -180,6 +183,19 @@ fn extract_flop_texture(key: &str) -> Option<char> {
     }
 }
 
+fn extract_turn_texture(key: &str) -> Option<char> {
+    let pos = key.find("T:B")?;
+    let rest = &key[pos + 3..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    let tok = &rest[..end];
+    let last = tok.chars().last()?;
+    if matches!(last, 'c' | 'p' | 'x') {
+        Some(last)
+    } else {
+        None
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
@@ -195,8 +211,9 @@ fn format_bytes(bytes: u64) -> String {
 #[derive(Default)]
 struct ModelSummary {
     stats: [StreetStats; 4],
-    stack_stats: [StackStats; 3],
+    stack_stats: [StackStats; 5],
     flop_tex_counts: [usize; 5],
+    turn_tex_counts: [usize; 4],
     postflop_buckets: HashSet<usize>,
 }
 
@@ -225,6 +242,13 @@ fn collect_model_stats<'a>(
                     Some('p') => summary.flop_tex_counts[2] += 1,
                     Some('m') => summary.flop_tex_counts[3] += 1,
                     _ => summary.flop_tex_counts[4] += 1,
+                }
+            } else if street == ROUND_TURN {
+                match extract_turn_texture(key) {
+                    Some('c') => summary.turn_tex_counts[0] += 1,
+                    Some('p') => summary.turn_tex_counts[1] += 1,
+                    Some('x') => summary.turn_tex_counts[2] += 1,
+                    _ => summary.turn_tex_counts[3] += 1,
                 }
             }
             summary.stats[(street - 1) as usize].add(probs, bucket_tok);
@@ -320,12 +344,22 @@ fn print_stack_and_texture_distribution(summary: &ModelSummary, total_infosets: 
     let textured_flop_total: usize = summary.flop_tex_counts[..4].iter().sum();
     if textured_flop_total > 0 {
         println!(
-            "Flop Textures:  Dry(d)={} | Wet(w)={} | Paired(p)={} | Monotone(m)={} | Untextured={}\n",
+            "Flop Textures:  Dry(d)={} | Wet(w)={} | Paired(p)={} | Monotone(m)={} | Untextured={}",
             summary.flop_tex_counts[0],
             summary.flop_tex_counts[1],
             summary.flop_tex_counts[2],
             summary.flop_tex_counts[3],
             summary.flop_tex_counts[4],
+        );
+    }
+    let textured_turn_total: usize = summary.turn_tex_counts[..3].iter().sum();
+    if textured_turn_total > 0 {
+        println!(
+            "Turn Textures:  Clean(c)={} | Paired(p)={} | Danger(x)={} | Untextured={}\n",
+            summary.turn_tex_counts[0],
+            summary.turn_tex_counts[1],
+            summary.turn_tex_counts[2],
+            summary.turn_tex_counts[3],
         );
     } else {
         println!();

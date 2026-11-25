@@ -303,7 +303,11 @@ impl OpponentTracker {
             };
             let nash_ok =
                 (ctx.is_allin_call || !ctx.can_raise) && ctx.to_call <= max_nash_bb * ctx.bb;
-            if !nash_ok && pf_tier >= 4 {
+            let defer_to_hu_shove_defense = ctx.active_opponents == 1
+                && (ctx.is_allin_call || !ctx.can_raise || ctx.is_short_stack)
+                && ((ctx.is_extreme_shove_bot && pf_tier <= 5)
+                    || (ctx.is_known_maniac && pf_tier == 4));
+            if !nash_ok && pf_tier >= 4 && !defer_to_hu_shove_defense {
                 reasons.push("PF_DISCIPLINE_GUARD");
                 let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);

@@ -24,8 +24,11 @@ pub const NUM_SUITS: usize = 4;
 pub const NUM_RANKS: usize = 13;
 pub const MAX_ROUND_ACTIONS: usize = 12;
 
-/** Number of postflop equity abstraction buckets (`0..=87`). */
+/** Number of base postflop equity abstraction buckets (`0..=87`). */
 pub const NUM_EQUITY_BUCKETS: usize = 88;
+
+/** Extended number of postflop buckets (`0..=111`, blocker/potential-aware abstraction). */
+pub const NUM_EXTENDED_EQUITY_BUCKETS: usize = 112;
 
 /** Number of canonical preflop starting hand combinations (`13` pairs + `78` suited + `78` offsuited). */
 pub const NUM_PREFLOP_BUCKETS: usize = 169;
@@ -76,8 +79,8 @@ pub const SUBGAME_POT_XS: i32 = BIG_BLIND * 6; /* 6 BB (small pot) */
 /** `to_call` amount above which subgame solver gets extra budget (≈ 10× BB). */
 pub const SUBGAME_BET_PRESSURE: i32 = BIG_BLIND * 10;
 
-/** Pot threshold to activate flop subgame search (≈ 8× BB, aligned with live play). */
-pub const SUBGAME_FLOP_TRIGGER_POT: i32 = BIG_BLIND * 8;
+/** Pot threshold to activate flop subgame search (`4× BB` covers HU single-raised pots). */
+pub const SUBGAME_FLOP_TRIGGER_POT: i32 = BIG_BLIND * 4;
 
 /* ── Action Recognition Thresholds (`play_live`) ─────────── */
 

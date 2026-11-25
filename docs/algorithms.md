@@ -18,17 +18,23 @@ The Texas Hold'em blueprint solver (`src/cfr/holdem_mccfr.rs`) implements **Para
 ### Discounted CFR (Pluribus Schedule)
 When `--dcfr` is enabled (the default), the solver applies epoch-based polynomial discounting (Brown & Sandholm 2019) across all visited infosets every `dcfr_epoch = (iterations / 20).clamp(50_000, 10_000_000)` iterations:
 
-$$\text{Positive regret discount} = \frac{t^\alpha}{t^\alpha + 1}, \qquad \alpha = 1.5$$
+$$
+\text{Positive regret discount} = \frac{t^\alpha}{t^\alpha + 1}, \qquad \alpha = 1.5
+$$
 
-$$\text{Negative regret discount} = \max\!\left(\frac{t}{t + 1},\, 0.75\right)$$
+$$
+\text{Negative regret discount} = \max\left(\frac{t}{t + 1}, 0.75\right)
+$$
 
-$$\text{Strategy sum discount} = \left(\frac{t}{t + 1}\right)^\gamma, \qquad \gamma = 2.0$$
+$$
+\text{Strategy sum discount} = \left(\frac{t}{t + 1}\right)^\gamma, \qquad \gamma = 2.0
+$$
 
 This clears early-iteration variance without needing hard warmup resets (when `--dcfr false` is passed, classic linear CFR+ weighting with non-negative regret clamping is used instead).
 
 ### Regret-Based Pruning (RBP)
 When `--pruning` and `--dcfr` are active past the warmup window (`(total_target / 20).clamp(1_000, 500_000)` iterations), RBP stochastically skips 95% of deeply negative branches:
-* Threshold: $-\max(3.5 \times \text{pot},\, 0.06 \times \text{stack\_size})$, compared directly in integer-scaled regret units (`raw_regrets[i] < r_thresh_scaled`) alongside `legal_probs[i] < 0.005`.
+* Threshold: $-\max(3.5 \times \text{pot}, 0.06 \times \text{stack size})$, compared directly in integer-scaled regret units (`raw_regrets[i] < r_thresh_scaled`) alongside `legal_probs[i] < 0.005`.
 * **Never pruned**: `FOLD`, any `ROUND_RIVER` action, or `CALL_CHECK` facing an opponent all-in (`contributions[opp] >= stack_size`).
 
 ---
@@ -45,8 +51,8 @@ All blueprint training optimizations are **lossless**—hand evaluation, abstrac
 
 ### Compact `TrainState` & L3 Preflop Slot Cache (`src/cfr/train_state.rs`)
 * **Value-Type Traversal State**: `TrainState` fits into compact copy-by-value fields tracking contributions, active round, raises, incremental FNV-1a street `prefix_hash`, and bit-packed preflop/flop coarse action histories (`u32`), avoiding heap allocations during recursion.
-* **Shared River Evaluation**: `EpisodeCtx` caches `river_scores: [Cell<u64>; 2]` and shares them between `ROUND_RIVER` equity bucketing (`postflop_equity_bucket_with_score`) and terminal showdown resolution.
-* **Collision-Free Base-5 Preflop Slot Cache**: Sequences of up to 4 preflop actions encode bijectively into `pf_seq` (`0..781`). `FlatInfosetTable::get_or_insert_preflop` caches resolved flat indices in `pf_slot_cache: Box<[AtomicU32]>` across `3 × 169 × 781` entries (~1.5 MB, L3-resident on modern desktop/laptop CPUs), bypassing FNV-1a hashing and open-addressing probes on repeated preflop visits while populating identically from `.ckpt` warm-starts.
+* **Shared River Evaluation**: `EpisodeCtx` caches `river_scores: [Cell<u64>; 2]` and shares them between `ROUND_RIVER` equity bucketing (`postflop_equity_bucket_with_score` / `postflop_extended_bucket_with_score`) and terminal showdown resolution.
+* **Collision-Free Base-5 Preflop Slot Cache**: Sequences of up to 4 preflop actions encode bijectively into `pf_seq` (`0..781`). `FlatInfosetTable::get_or_insert_preflop` caches resolved flat indices in `pf_slot_cache: Box<[AtomicU32]>` across `5 × 169 × 781` entries (~2.5 MB across the `Deep`, `S15|`, `S30|`, `S25|`, and `S45|` stack banks, L3-resident on modern desktop/laptop CPUs), bypassing FNV-1a hashing and open-addressing probes on repeated preflop visits while populating identically from `.ckpt` warm-starts.
 
 ### Optional Profile-Guided Optimization (PGO) Build
 For multi-hour training runs, a local PGO + `-Ctarget-cpu=native` build of `train_holdem` optimizes branch layout using runtime profile counters:
@@ -58,7 +64,7 @@ rm -rf /tmp/pgo-data /tmp/pgo_warmup*
 RUSTFLAGS="-Ctarget-cpu=native -Cprofile-generate=/tmp/pgo-data" cargo build --release --bin train_holdem
 
 ./target/release/train_holdem -i 25000000 --threads 16 --log-every 25000000 \
-  --multi-stack --board-texture --resume models/holdem_v2.bin.ckpt --save-path /tmp/pgo_warmup.bin
+  --extended --resume models/holdem_abstract_strategy.bin.ckpt --save-path /tmp/pgo_warmup.bin
 
 "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata" merge \
   -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
@@ -87,36 +93,44 @@ RUSTFLAGS="-Ctarget-cpu=native -Cprofile-use=/tmp/pgo-data/merged.profdata" \
 
 ### Preflop & Postflop Bucketing
 * **Preflop (`169` buckets, `0..=168`)**: Canonicalized into 13 pocket pairs, 78 suited combinations, and 78 offsuit combinations (`src/cfr/abstraction/preflop.rs`), grouped into 8 strength tiers (`1..=8`) with precomputed short-stack Nash push/call tables.
-* **Postflop (`88` equity buckets, `0..=87`)**: Category-aware bucketing (`src/cfr/abstraction/postflop/`) separating kicker strength, overpairs vs underpairs, paired-board holdings, board trips vs pocket sets, idiot-end/board straights, nut/second-nut flushes, full houses, and draw/combo/redraw equity (OESD, gutshot, flush draw, NFD, flop BDFD/BDSD).
-* **Optional Blueprint Keys (`--board-texture` & `--multi-stack`)**:
-  * `--board-texture` appends compact 4-state postflop flop texture codes (`m` monotone, `p` paired, `w` wet two-tone connected, `d` dry).
-  * `--multi-stack` interleaves `15 BB` (`S15|`), `30 BB` (`S30|`), and `100 BB` (default unprefixed) episodes (`25% / 25% / 50%` schedule) in one binary, allowing short-stack repair passes via `--short-stacks-only`.
+* **Base Postflop (`88` equity buckets, `0..=87`)**: Category-aware bucketing (`src/cfr/abstraction/postflop/`) separating kicker strength, overpairs vs underpairs, paired-board holdings, board trips vs pocket sets, idiot-end/board straights, nut/second-nut flushes, full houses, and draw/combo/redraw equity (OESD, gutshot, flush draw, NFD, flop BDFD/BDSD).
+* **Extended Postflop (`112` buckets, `0..=111`)**: `src/cfr/abstraction/postflop/extended.rs` preserves all `0..=87` definitions while splitting out 24 $O(1)$ blocker and potential scenarios (`88..=111`) — including river nut/second-nut flush and straight blockers, top full house / top set / strict top two pair, paired-board nut flushes, double gutshots, overcard+NFD/FD combos, and flop BDFD hands.
+* **Blueprint Abstraction Flags (`--board-texture`, `--multi-stack`, `--extended`)**:
+  * `--board-texture`: appends compact 4-state postflop flop texture codes (`m` monotone, `p` paired, `w` wet two-tone connected, `d` dry).
+  * `--multi-stack`: interleaves `15 BB` (`S15|`), `30 BB` (`S30|`), and `100 BB` (default unprefixed) episodes (`25% / 25% / 50%` schedule) in one binary, with optional short-stack repair via `--short-stacks-only`.
+  * `--extended`: enables all `112` postflop buckets (`0..=111`), 4-state flop texture + 3-state turn texture (`c` clean, `p` paired, `x` 3-flush/4-flush/4-straight danger), and a 4-tier tournament stack grid (`15 / 25 / 45 / 100 BB` via `S15|`, `S25|`, `S45|`, and unprefixed keys). During inference, `lookup_strategy_stack_interpolated` smoothly interpolates adjacent anchors (`15/25/45/100 BB`) and maintains backward compatibility with 3-tier `S30|` models.
 
 ### Geometric Street-Aware Bet Sizing (`src/game/holdem/actions.rs`, `src/game/holdem/state.rs`)
 Actions use discrete index codes `FOLD = 0`, `CALL_CHECK = 1`, `RAISE_MIN = 2`, `RAISE_THIRD_POT = 3`, `RAISE_HALF_POT = 4`, `ALL_IN = 5`:
-* Preflop opens size around `2.5x BB`, dry flops ~50% pot, wet flops/turns ~75% pot, and river `RAISE_HALF_POT` scales to ~125% polarized overbets.
+* Preflop opens size around `2.5x BB`, dry flops ~50% pot, wet flops/turns ~75% pot, and turn/river `RAISE_HALF_POT` scales to ~150% polarized overbets.
 * `calculate_geometric_bet_size` computes stack-committing multipliers across `streets_left`:
 
-$$\text{bet\_fraction} = \operatorname{clamp}\!\left(\frac{(1 + 2 \cdot \text{SPR})^{1/\text{streets\_left}} - 1}{2},\, 0.20,\, 2.0\right)$$
+$$
+\text{bet fraction} = \mathrm{clamp}\left(\frac{(1 + 2 \cdot \text{SPR})^{1/\text{streets left}} - 1}{2}, 0.20, 2.0\right)
+$$
 
 ---
 
 ## 5. Real-Time Subgame Search, Safe Resolving & Action Translation
 
 ### Depth-Limited Subgame Solver (`src/cfr/subgame/`)
-At `ROUND_TURN`, `ROUND_RIVER`, and medium/large `ROUND_FLOP` pots ($\ge 8\text{ BB}$ in Heads-Up play), `SubgameSolver` solves a localized depth-limited CFR+ tree:
-* **Bayesian Opponent Reach Ranges**: `OpponentReachDistribution` initializes priors from preflop action lines (limp, open, 3-bet) adapted by observed VPIP/PFR and updates weights across postflop streets, textures, and bet sizes.
+At `ROUND_TURN`, `ROUND_RIVER`, and `ROUND_FLOP` pots $\ge 4\text{ BB}$ in Heads-Up play (`SUBGAME_FLOP_TRIGGER_POT`, covering single-raised pots with a 1-street depth cap and `0.90×` fast budget when `< 8 BB`), `SubgameSolver` solves a localized depth-limited CFR+ tree:
+* **Bayesian Opponent Reach Ranges & Cross-Street Carryover**: `OpponentReachDistribution` initializes priors from preflop action lines (limp, open, 3-bet) adapted by observed VPIP/PFR and updates weights across postflop streets, textures, and bet sizes. Solved `CachedReach` distributions carry forward across Flop $\to$ Turn $\to$ River transitions via `RoundTracker`, and `OppStreetProfile` enables street-specific opponent node locking for fold/raise/overbet-bluff tendencies.
 * **Symmetry & Anti-Leakage**: When updating Hero, root hands alternate between exact private hole cards and `hero_reach`; when updating Opponent, Hero hole cards are always sampled from `hero_reach` so Opponent cannot learn a clairvoyant counter-strategy.
+* **Pluribus-Style `4 × 4` Multi-Policy Continuation Leaves** (`src/cfr/subgame/traversal.rs`): At depth-limited Flop/Turn cutoffs, both players select simultaneously over 4 continuation policies (`balanced`, `tight-fold`, `station-call`, `aggressive`) initialized from `opp_prior_bias` and `OppStreetProfile`. The zero-sum leaf evaluator models future realization (`IP 1.08×` vs `OOP 0.92×`), turn strong-draw implied odds (`buckets 15..=27`), and river nut-blocker bluffing propensities (`buckets 88..=90`).
 * **Adaptive Iteration Budget**:
 
-$$\text{Budget} = \text{Base} \times M_{\text{pot}} \times M_{\text{street}} \times M_{\text{pressure}}$$
+$$
+\text{Budget} = \text{Base} \times M_{\text{pot}} \times M_{\text{street}} \times M_{\text{pressure}}
+$$
 
 | Factor | Condition | Multiplier |
 | :--- | :--- | :---: |
-| Pot $\le 6\text{ BB}$ | Small pot (`SUBGAME_POT_XS`) | $0.55\times$ |
-| Pot $\ge 20\% / 40\% / 80\%$ stack | `SUBGAME_POT_SM` / `MD` / `LG` | $1.25\times$ / $1.6\times$ / $2.2\times$ |
-| Street | `ROUND_TURN` / `ROUND_RIVER` | $1.1\times$ / $1.35\times$ |
-| Bet pressure | `to_call >= 10 BB` (`SUBGAME_BET_PRESSURE`) | $1.25\times$ |
+| Pot ≤ 6 BB | Small pot (`SUBGAME_POT_XS`) | `0.55×` |
+| HU SRP Flop < 8 BB | Fast Flop depth-1 solve | `0.90×` |
+| Pot ≥ 20% / 40% / 80% stack | `SUBGAME_POT_SM` / `MD` / `LG` | `1.25×` / `1.6×` / `2.2×` |
+| Street | `ROUND_TURN` / `ROUND_RIVER` | `1.1×` / `1.35×` |
+| Bet pressure | `to_call >= 10 BB` (`SUBGAME_BET_PRESSURE`) | `1.25×` |
 
 Results are clamped to `[max(100, base / 3).min(base), max(base * 3, 6000)]`.
 
@@ -125,10 +139,14 @@ To prevent out-of-distribution exploitation, `finalize_root_strategy` blends sub
 * **Standard made hands & strong draws**: `88%` subgame solved / `12%` GTO fallback.
 * **Air & weak board-pair holdings** (`bucket < BUCKET_STRONG_DRAW_MIN` or `bucket` `28..=29`): zeroes `ALL_IN` (and all raises when facing a bet), then blends `65%` solved / `35%` fallback when `to_call == 0`, or `40%` solved / `60%` fallback when facing a bet.
 
-### Pseudo-Harmonic Action Translation (`src/live/protocol.rs`)
+### Pseudo-Harmonic Action Translation (`src/live/protocol.rs`, `src/live/decision.rs`)
 Off-tree continuous opponent bet sizes $x \in [A, B]$ between adjacent discrete game-tree sizes $A$ and $B$ map probabilistically to preserve pot-odds expectation (Ganzfried & Sandholm 2013):
 
-$$P(A) = \frac{(B - x)(1 + A)}{(B - A)(1 + x)}, \qquad P(B) = 1 - P(A)$$
+$$
+P(A) = \frac{(B - x)(1 + A)}{(B - A)(1 + x)}, \qquad P(B) = 1 - P(A)
+$$
+
+During blueprint lookup, `lookup_blueprint_interpolated` uses `pseudo_harmonic_weights` to linearly blend strategies queried at the two adjacent discrete facing actions (`low_action`, `high_action`).
 
 ---
 

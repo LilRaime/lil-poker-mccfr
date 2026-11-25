@@ -200,11 +200,65 @@ fn test_train_state_incremental_hash_key_and_payoff_parity() {
     assert_eq!(loaded_n, saved_n);
     let after = solver2.export_strategy();
     assert_eq!(before.len(), after.len());
-    for (k, v1) in &before {
-        let v2 = after.get(k).expect("missing key after ckpt restore");
-        for (a, b) in v1.iter().zip(v2.iter()) {
+    for (k, before_probs) in &before {
+        let after_probs = after.get(k).expect("missing key after ckpt restore");
+        for (a, b) in before_probs.iter().zip(after_probs.iter()) {
             assert!((a - b).abs() < 1e-9, "strategy mismatch on {k}");
         }
     }
+    let _ = std::fs::remove_file(ckpt_path);
+}
+
+#[test]
+fn test_extended_mccfr_training_checkpoint_and_key_generation() {
+    use lil_poker_mccfr::cfr::holdem_mccfr::HoldemMCCFRSolver;
+
+    let solver = HoldemMCCFRSolver::with_options(true, true, true, 131_072, 64)
+        .with_extended_abstraction(true);
+    solver.train(12_000, 2, 0);
+
+    let exported = solver.export_strategy();
+    assert!(!exported.is_empty());
+    assert!(
+        exported.keys().any(|k| k.starts_with("S25|")),
+        "extended training must generate S25| stack keys"
+    );
+    assert!(
+        exported.keys().any(|k| k.starts_with("S45|")),
+        "extended training must generate S45| stack keys"
+    );
+    assert!(
+        exported.keys().any(
+            |k| k.contains("T:B") && (k.contains("c/") || k.contains("p/") || k.contains("x/"))
+        ),
+        "extended training must generate c/p/x textured turn keys"
+    );
+    assert!(
+        exported.keys().any(|k| {
+            (88..=111).any(|b| {
+                k.contains(&format!(":B{b}d/"))
+                    || k.contains(&format!(":B{b}w/"))
+                    || k.contains(&format!(":B{b}p/"))
+                    || k.contains(&format!(":B{b}m/"))
+                    || k.contains(&format!(":B{b}c/"))
+                    || k.contains(&format!(":B{b}x/"))
+                    || k.contains(&format!(":B{b}/"))
+            })
+        }),
+        "extended training must emit extended bucket keys (B88..B111)"
+    );
+
+    let ckpt_path = "/tmp/test_extended_flat_table_roundtrip.ckpt";
+    let saved_n = solver
+        .save_raw_checkpoint(ckpt_path)
+        .expect("save extended ckpt");
+    let solver2 = HoldemMCCFRSolver::with_options(true, true, true, 131_072, 64)
+        .with_extended_abstraction(true);
+    let loaded_n = solver2
+        .warm_start_from_file(ckpt_path)
+        .expect("load extended ckpt");
+    assert_eq!(loaded_n, saved_n);
+    let after = solver2.export_strategy();
+    assert_eq!(exported.len(), after.len());
     let _ = std::fs::remove_file(ckpt_path);
 }

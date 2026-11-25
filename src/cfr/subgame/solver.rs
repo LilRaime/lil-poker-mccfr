@@ -6,14 +6,15 @@
 use super::reach::{OpponentReachDistribution, ReachRequest};
 use super::traversal::TraversalCtx;
 use crate::cfr::abstraction::{
-    BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, hash_holdem_infoset_key, postflop_equity_bucket,
+    BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, hash_holdem_infoset_key,
+    hash_holdem_infoset_key_with_bucket, postflop_equity_bucket, postflop_extended_bucket,
 };
 use crate::cfr::node::InfosetNode;
 use crate::game::config::{
     ALL_IN, BIG_BLIND, CALL_CHECK, DEFAULT_SUBGAME_ITERATIONS, FOLD, HOLDEM_NUM_ACTIONS,
     MAX_RAISES_PER_ROUND, NUM_CARDS_DECK, NUM_COMMUNITY_CARDS, NUM_ROUNDS, RAISE_HALF_POT,
-    RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN, STACK_SIZE, SUBGAME_BET_PRESSURE,
-    SUBGAME_POT_LG, SUBGAME_POT_MD, SUBGAME_POT_SM, SUBGAME_POT_XS,
+    RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER, ROUND_TURN, STACK_SIZE,
+    SUBGAME_BET_PRESSURE, SUBGAME_POT_LG, SUBGAME_POT_MD, SUBGAME_POT_SM, SUBGAME_POT_XS,
 };
 use crate::game::holdem::{ALL_52_CARDS, Card, TexasHoldemGame};
 use dashmap::DashMap;
@@ -45,7 +46,7 @@ fn build_iteration_state(
     ctx: &SubgameIterContext<'_>,
     sample_hero_from_range: bool,
     rng: &mut SmallRng,
-) -> (TexasHoldemGame, [[u8; 2]; 3]) {
+) -> (TexasHoldemGame, [[u8; 2]; 3], [u8; 2]) {
     let opp_hole = ctx.reach_dist.sample(rng);
     let hero_hole = if sample_hero_from_range {
         if let Some(hr) = ctx.hero_reach_opt {
@@ -107,6 +108,10 @@ fn build_iteration_state(
             postflop_equity_bucket(&p1_hole, &full_board_5[..5]) as u8,
         ],
     ];
+    let precomputed_ext_river = [
+        postflop_extended_bucket(&p0_hole, &full_board_5[..5]) as u8,
+        postflop_extended_bucket(&p1_hole, &full_board_5[..5]) as u8,
+    ];
 
     let s0 = crate::game::holdem::evaluate_7cards(&p0_hole, &full_board_5);
     let s1 = crate::game::holdem::evaluate_7cards(&p1_hole, &full_board_5);
@@ -139,7 +144,7 @@ fn build_iteration_state(
         is_wet_flop,
     };
 
-    (game, precomputed_buckets)
+    (game, precomputed_buckets, precomputed_ext_river)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,22 +156,45 @@ pub struct SubgameSolver {
     pub stack_size: i32,
 }
 
-/** Reusable context holding allocated `InfosetNode` maps across subgame solver invocations */
+/** Street-level opponent behavioral frequencies for fine-grained `SubgameSolver` node-locking. */
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OppStreetProfile {
+    pub flop_fold_to_cbet: Option<f64>,
+    pub turn_fold_to_barrel: Option<f64>,
+    pub river_fold_to_bet: Option<f64>,
+    pub postflop_raise_rate: Option<f64>,
+    pub overbet_freq: Option<f64>,
+    pub overbet_value_rate: Option<f64>,
+}
+
+/** Reusable context holding allocated `InfosetNode` maps and cross-street posterior ranges. */
 #[derive(Default)]
 pub struct SubgameContext {
     pub nodes: HashMap<u64, InfosetNode>,
+    pub last_opp_reach: Option<super::reach::CachedStreetReach>,
+    pub last_hero_reach: Option<super::reach::CachedStreetReach>,
 }
 
 impl SubgameContext {
     pub fn new() -> Self {
         SubgameContext {
             nodes: HashMap::with_capacity(512),
+            last_opp_reach: None,
+            last_hero_reach: None,
         }
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.nodes.clear();
+    }
+
+    /** Clears both node table and cached posterior ranges when transitioning to a new hand. */
+    #[inline]
+    pub fn reset_hand(&mut self) {
+        self.nodes.clear();
+        self.last_opp_reach = None;
+        self.last_hero_reach = None;
     }
 }
 
@@ -181,6 +209,7 @@ pub struct SubgameRequest<'a> {
     pub opp_vpip: Option<f64>,
     pub opp_pfr: Option<f64>,
     pub opp_aggression: Option<f64>,
+    pub opp_profile: Option<OppStreetProfile>,
 }
 
 impl Default for SubgameRequest<'_> {
@@ -195,6 +224,7 @@ impl Default for SubgameRequest<'_> {
             opp_vpip: None,
             opp_pfr: None,
             opp_aggression: None,
+            opp_profile: None,
         }
     }
 }
@@ -267,6 +297,9 @@ impl SubgameSolver {
             mult *= 1.35;
         } else if round == ROUND_TURN {
             mult *= 1.1;
+        } else if round == ROUND_FLOP && pot < BIG_BLIND * 8 && to_call == 0 {
+            /* Fast SRP flop subgames (4..8 BB): keep live latency compact with depth-1 continuation */
+            mult *= 0.90;
         }
 
         /* Bet pressure scaling: facing large bets or all-in requires deeper branch exploration */
@@ -328,9 +361,18 @@ impl SubgameSolver {
             strategy_map,
             &remaining_deck,
             &board_only_deck,
+            ctx,
         );
+        ctx.last_opp_reach =
+            Some(reach_dist.to_cached_reach(req.round, 1 - req.my_player, req.board));
+        ctx.last_hero_reach = Some(hero_reach.to_cached_reach(req.round, req.my_player, req.board));
 
-        let root_hash = hash_holdem_infoset_key(&req.hole, req.board, req.round, history);
+        let root_hash = if req.round == ROUND_RIVER {
+            let root_ext = postflop_extended_bucket(&req.hole, req.board) as u8;
+            hash_holdem_infoset_key_with_bucket(&req.hole, root_ext, req.round, history)
+        } else {
+            hash_holdem_infoset_key(&req.hole, req.board, req.round, history)
+        };
         let eff_stack_bb = self.stack_size / BIG_BLIND.max(1);
         let blueprint_root_opt = lookup_blueprint_root(
             strategy_map,
@@ -361,10 +403,18 @@ impl SubgameSolver {
             reach_dist: &reach_dist,
             hero_reach_opt: Some(&hero_reach),
         };
+        let root_pot = req.contributions[0] + req.contributions[1];
+        let effective_max_depth = if req.round == ROUND_FLOP && root_pot < BIG_BLIND * 8 {
+            self.max_depth_streets.min(1)
+        } else {
+            self.max_depth_streets
+        };
         let run_params = SubgameRunParams {
             root_hash,
             opp_prior_bias: compute_opp_prior_bias(req.opp_vpip, req.opp_pfr),
+            opp_profile: req.opp_profile,
             effective_iterations,
+            effective_max_depth,
             eff_threads: self.threads.min(available_threads),
             seed,
         };
@@ -424,17 +474,20 @@ impl SubgameSolver {
                     let updating_player = (iter_idx + t_id) % 2;
                     let sample_hero_from_range =
                         updating_player != iter_ctx.my_player || ((iter_idx / 2) % 2) == 1;
-                    let (game, precomputed_buckets) =
+                    let (game, precomputed_buckets, precomputed_ext_river) =
                         build_iteration_state(iter_ctx, sample_hero_from_range, &mut t_rng);
 
                     let ctx = TraversalCtx {
                         start_round: iter_ctx.round,
+                        effective_max_depth: params.effective_max_depth,
                         root_hash: params.root_hash,
                         my_player: iter_ctx.my_player,
                         opp_prior_bias: params.opp_prior_bias,
+                        opp_profile: params.opp_profile,
                         updating_player,
                         weight: (iter_idx + 1) as f64,
                         precomputed_buckets,
+                        precomputed_ext_river,
                     };
                     self.cfr_shared(&game, &ctx, &shared_nodes, &mut t_rng);
                 }
@@ -452,17 +505,20 @@ impl SubgameSolver {
                 let updating_player = iter_idx % 2;
                 let sample_hero_from_range =
                     updating_player != iter_ctx.my_player || ((iter_idx / 2) % 2) == 1;
-                let (game, precomputed_buckets) =
+                let (game, precomputed_buckets, precomputed_ext_river) =
                     build_iteration_state(iter_ctx, sample_hero_from_range, rng);
 
                 let ctx = TraversalCtx {
                     start_round: iter_ctx.round,
+                    effective_max_depth: params.effective_max_depth,
                     root_hash: params.root_hash,
                     my_player: iter_ctx.my_player,
                     opp_prior_bias: params.opp_prior_bias,
+                    opp_profile: params.opp_profile,
                     updating_player,
                     weight: (iter_idx + 1) as f64,
                     precomputed_buckets,
+                    precomputed_ext_river,
                 };
                 self.cfr_local(&game, &ctx, nodes, rng);
             }
@@ -476,7 +532,9 @@ impl SubgameSolver {
 struct SubgameRunParams {
     root_hash: u64,
     opp_prior_bias: Option<(f64, f64)>,
+    opp_profile: Option<OppStreetProfile>,
     effective_iterations: usize,
+    effective_max_depth: u8,
     eff_threads: usize,
     seed: u64,
 }
@@ -701,12 +759,13 @@ fn build_reach_ranges<H, V>(
     strategy_map: Option<&HashMap<String, V>>,
     remaining_deck: &[Card],
     board_only_deck: &[Card],
+    ctx: &SubgameContext,
 ) -> (OpponentReachDistribution, OpponentReachDistribution)
 where
     H: crate::cfr::abstraction::HistoryActions + ?Sized,
     V: AsRef<[f64]>,
 {
-    let reach_dist = OpponentReachDistribution::build_with_strategy(
+    let reach_dist = OpponentReachDistribution::build_with_prior(
         &ReachRequest {
             remaining_deck,
             board: req.board,
@@ -719,8 +778,9 @@ where
         },
         history,
         strategy_map,
+        ctx.last_opp_reach.as_ref(),
     );
-    let hero_reach = OpponentReachDistribution::build_with_strategy(
+    let hero_reach = OpponentReachDistribution::build_with_prior(
         &ReachRequest {
             remaining_deck: board_only_deck,
             board: req.board,
@@ -733,6 +793,7 @@ where
         },
         history,
         strategy_map,
+        ctx.last_hero_reach.as_ref(),
     );
     (reach_dist, hero_reach)
 }

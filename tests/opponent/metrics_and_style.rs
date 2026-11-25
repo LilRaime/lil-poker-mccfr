@@ -370,3 +370,62 @@ fn test_opponent_profile_save_and_load() {
     assert_eq!(loaded.total_hands, 9);
     let _ = std::fs::remove_file(tmp_path);
 }
+
+#[test]
+fn test_showdown_thin_value_pair_not_counted_as_bluff_and_street_profile() {
+    let mut tracker = OpponentTracker::new();
+    let board = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Clubs),
+    ];
+
+    /* 1. River raise with AA (Overpair, cat == 1) must count as thin value pair, NEVER bluff */
+    let aa_hole = [
+        Card::new(Rank::Ace, Suit::Spades),
+        Card::new(Rank::Ace, Suit::Clubs),
+    ];
+    tracker.record_showdown_hand_detailed(aa_hole, &board, true, 1400, 1000);
+    assert_eq!(tracker.showdown_bluff_count, 0);
+    assert_eq!(tracker.showdown_thin_value_pair_count, 1);
+    assert_eq!(tracker.showdown_overbet_hands, 1);
+    assert_eq!(tracker.showdown_overbet_value_hands, 1);
+
+    /* 2. River raise with QJ air (cat == 0) increments showdown_bluff_count */
+    let qj_hole = [
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Diamonds),
+    ];
+    tracker.record_showdown_hand_detailed(qj_hole, &board, true, 1500, 1000);
+    assert_eq!(tracker.showdown_bluff_count, 1);
+    assert_eq!(tracker.showdown_thin_value_pair_count, 1);
+    assert_eq!(tracker.showdown_overbet_hands, 2);
+    assert!((tracker.overbet_value_rate() - 0.50).abs() < 1e-6);
+
+    /* 3. Flop C-Bet and Turn Barrel frequency + Subgame street profile population */
+    for _ in 0..4 {
+        tracker.record_action_street_detailed(RAISE_MIN, 1, false, 250, 150);
+        tracker.record_action_street_detailed(RAISE_THIRD_POT, 2, false, 300, 500);
+        tracker.record_action_street_detailed(CALL_CHECK, 3, false, 0, 1100);
+        tracker.record_action_street_detailed(FOLD, 3, true, 0, 1100);
+        tracker.end_hand();
+    }
+    for _ in 0..3 {
+        tracker.record_action_street_detailed(FOLD, 4, true, 0, 1000);
+        tracker.end_hand();
+    }
+    assert!((tracker.flop_cbet_freq() - 1.0).abs() < 1e-6);
+    assert!((tracker.turn_barrel_freq() - 0.0).abs() < 1e-6);
+    let prof = tracker
+        .subgame_street_profile()
+        .expect("street profile should populate after >= 3 facing samples");
+    assert!(prof.turn_fold_to_barrel.unwrap_or(0.0) > 0.65);
+    assert!(prof.river_fold_to_bet.unwrap_or(0.0) > 0.55);
+
+    tracker.apply_session_decay(0.50);
+    assert!(tracker.flop_cbet_made <= tracker.flop_cbet_opps);
+    assert!(tracker.turn_barrel_made <= tracker.turn_barrel_opps);
+    assert!(tracker.showdown_overbet_value_hands <= tracker.showdown_overbet_hands);
+}

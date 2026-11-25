@@ -32,6 +32,20 @@ pub(super) fn extract_player_name<'a>(p: &'a Value, fallback_id: &'a str) -> &'a
         .unwrap_or(fallback_id)
 }
 
+/** Prefer stable cross-match identifier (`participant_id` / `user_id` / `bot_id`) for persistent
+ * opponent profiles, falling back cleanly to player `name` / `id`. */
+pub(super) fn extract_player_profile_key<'a>(p: &'a Value, fallback_id: &'a str) -> &'a str {
+    p.get("participant_id")
+        .or_else(|| p.get("participantId"))
+        .or_else(|| p.get("user_id"))
+        .or_else(|| p.get("userId"))
+        .or_else(|| p.get("bot_id"))
+        .or_else(|| p.get("botId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| extract_player_name(p, fallback_id))
+}
+
 pub(super) fn extract_player_bet(p: &Value) -> i32 {
     parse_json_i32(p.get("bet").or_else(|| p.get("current_bet")))
 }

@@ -1,6 +1,7 @@
 /*!
  * Postflop 88-bucket (0..=87) equity mapping and category-specific evaluators.
  */
+mod extended;
 mod high_card;
 mod pairs;
 
@@ -8,6 +9,7 @@ use crate::game::config::NUM_HOLE_CARDS;
 use crate::game::holdem::{Card, evaluate_7cards};
 
 use super::draws::detect_draws_detailed;
+pub use extended::*;
 use high_card::bucket_high_card_or_draw;
 use pairs::{bucket_one_pair, bucket_two_pair_or_paired_board};
 
@@ -157,7 +159,11 @@ fn bucket_full_house(score: u64, board: &[Card]) -> usize {
     }
 }
 
-fn find_unseen_flush_rank(board: &[Card], flush_suit: usize, start_rank: usize) -> usize {
+pub(super) fn find_unseen_flush_rank(
+    board: &[Card],
+    flush_suit: usize,
+    start_rank: usize,
+) -> usize {
     let mut rank = start_rank;
     while board
         .iter()

@@ -287,6 +287,82 @@ impl OpponentTracker {
         }
     }
 
+    pub fn flop_cbet_freq(&self) -> f64 {
+        if self.flop_cbet_opps == 0 {
+            0.55
+        } else {
+            self.flop_cbet_made as f64 / self.flop_cbet_opps as f64
+        }
+    }
+
+    pub fn turn_barrel_freq(&self) -> f64 {
+        if self.turn_barrel_opps == 0 {
+            0.45
+        } else {
+            self.turn_barrel_made as f64 / self.turn_barrel_opps as f64
+        }
+    }
+
+    pub fn overbet_value_rate(&self) -> f64 {
+        if self.showdown_overbet_hands == 0 {
+            0.50
+        } else {
+            self.showdown_overbet_value_hands as f64 / self.showdown_overbet_hands as f64
+        }
+    }
+
+    pub fn postflop_raise_rate(&self) -> f64 {
+        let post_total: u64 = self.flop_actions.iter().sum::<u64>()
+            + self.turn_actions.iter().sum::<u64>()
+            + self.river_actions.iter().sum::<u64>();
+        if post_total == 0 {
+            0.22
+        } else {
+            let post_raises = self.flop_actions[2] + self.turn_actions[2] + self.river_actions[2];
+            post_raises as f64 / post_total as f64
+        }
+    }
+
+    /** Measured street-level opponent behavioral frequencies for `SubgameSolver` node-locking. */
+    pub fn subgame_street_profile(&self) -> Option<crate::cfr::subgame::OppStreetProfile> {
+        if !self.exploit_enabled {
+            return None;
+        }
+        let post_total: u64 = self.flop_actions.iter().sum::<u64>()
+            + self.turn_actions.iter().sum::<u64>()
+            + self.river_actions.iter().sum::<u64>();
+        let flop_fold_to_cbet =
+            (self.flop_cbet_faced >= 4).then(|| self.smoothed_flop_fold_to_cbet());
+        let turn_fold_to_barrel =
+            (self.turn_cbet_faced >= 3).then(|| self.smoothed_turn_fold_to_cbet());
+        let river_fold_to_bet =
+            (self.river_bet_faced >= 3).then(|| self.smoothed_river_fold_to_bet());
+        let postflop_raise_rate = (post_total >= 8).then(|| self.postflop_raise_rate());
+        let overbet_freq = (self.postflop_bets_total >= 3).then(|| self.postflop_overbet_ratio());
+        let overbet_value_rate =
+            (self.showdown_overbet_hands >= 2).then(|| self.overbet_value_rate());
+
+        let prof = crate::cfr::subgame::OppStreetProfile {
+            flop_fold_to_cbet,
+            turn_fold_to_barrel,
+            river_fold_to_bet,
+            postflop_raise_rate,
+            overbet_freq,
+            overbet_value_rate,
+        };
+        if prof.flop_fold_to_cbet.is_some()
+            || prof.turn_fold_to_barrel.is_some()
+            || prof.river_fold_to_bet.is_some()
+            || prof.postflop_raise_rate.is_some()
+            || prof.overbet_freq.is_some()
+            || prof.overbet_value_rate.is_some()
+        {
+            Some(prof)
+        } else {
+            None
+        }
+    }
+
     /** Wilson score interval for statistical significance of frequency bounds.
      * Returns (`lower_bound`, `upper_bound`) at confidence level z (e.g. z=1.96 for 95%). */
     pub fn wilson_confidence(successes: u64, total: u64, z: f64) -> (f64, f64) {

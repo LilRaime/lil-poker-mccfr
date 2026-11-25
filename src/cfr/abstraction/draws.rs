@@ -151,6 +151,46 @@ pub fn detect_draws_detailed(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> D
     }
 }
 
+/** Fast `O(1)` double-gutshot detector (2+ distinct gutshot windows without an OESD). */
+#[inline(always)]
+pub fn is_double_gutshot(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> bool {
+    if board.len() >= NUM_COMMUNITY_CARDS || board.len() < 3 {
+        return false;
+    }
+    let mut board_mask = 0u16;
+    for &b in board {
+        board_mask |= 1u16 << (b.rank as usize);
+    }
+    let hole_mask = (1u16 << (hole[0].rank as usize)) | (1u16 << (hole[1].rank as usize));
+    let hole_only = hole_mask & !board_mask;
+    if hole_only == 0 {
+        return false;
+    }
+    let ranks_mask = board_mask | hole_mask;
+    let mut oesd_w = OESD_WIN_LUT[ranks_mask as usize];
+    while oesd_w != 0 {
+        let r = oesd_w.trailing_zeros() as usize;
+        if (hole_only & (0x0Fu16 << r)) != 0 {
+            return false;
+        }
+        oesd_w &= oesd_w - 1;
+    }
+    let mut gs_count = 0u32;
+    let mut gs_w = GUTSHOT_WIN_LUT[ranks_mask as usize];
+    while gs_w != 0 {
+        let r = gs_w.trailing_zeros() as usize;
+        let win_mask = if r < 9 { 0x1Fu16 << r } else { 0x100Fu16 };
+        if (hole_only & win_mask) != 0 {
+            gs_count += 1;
+            if gs_count >= 2 {
+                return true;
+            }
+        }
+        gs_w &= gs_w - 1;
+    }
+    false
+}
+
 /** Backward-compatible draw detection returning (`is_flush_draw`, `is_straight_draw`) */
 #[inline(always)]
 pub fn detect_draws(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> (bool, bool) {

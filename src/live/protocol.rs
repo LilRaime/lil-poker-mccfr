@@ -389,6 +389,63 @@ pub fn pseudo_harmonic_prob(x: i32, s1: i32, s2: i32, pot: i32) -> f64 {
     w1.clamp(0.0, 1.0)
 }
 
+/** Weighted pair of adjacent discrete actions from Pseudo-Harmonic translation. */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActionTranslationBlend {
+    pub low_action: u8,
+    pub high_action: u8,
+    pub low_weight: f64,
+}
+
+/** Deterministic Pseudo-Harmonic action translation returning `(low_action, high_action, low_weight)`.
+ * Smoothly interpolates `100%+` overbets between `RAISE_HALF_POT` and `ALL_IN` without clamping `100%–150%`. */
+#[inline]
+pub fn pseudo_harmonic_action_weights(
+    bet_amt: i32,
+    pot: i32,
+    allin_threshold: i32,
+) -> ActionTranslationBlend {
+    if bet_amt >= allin_threshold {
+        return ActionTranslationBlend {
+            low_action: ALL_IN,
+            high_action: ALL_IN,
+            low_weight: 1.0,
+        };
+    }
+
+    let eff_bb = (allin_threshold / 35).max(1);
+    let s_min = (pot / 3).max(eff_bb);
+    let s_third = (pot * 3 / 5).max(s_min + eff_bb);
+    let s_half = pot.max(s_third + eff_bb);
+
+    if bet_amt <= s_min {
+        ActionTranslationBlend {
+            low_action: RAISE_MIN,
+            high_action: RAISE_MIN,
+            low_weight: 1.0,
+        }
+    } else if bet_amt < s_third {
+        ActionTranslationBlend {
+            low_action: RAISE_MIN,
+            high_action: RAISE_THIRD_POT,
+            low_weight: pseudo_harmonic_prob(bet_amt, s_min, s_third, pot),
+        }
+    } else if bet_amt < s_half {
+        ActionTranslationBlend {
+            low_action: RAISE_THIRD_POT,
+            high_action: RAISE_HALF_POT,
+            low_weight: pseudo_harmonic_prob(bet_amt, s_third, s_half, pot),
+        }
+    } else {
+        let s_cap = allin_threshold.max(s_half + eff_bb);
+        ActionTranslationBlend {
+            low_action: RAISE_HALF_POT,
+            high_action: ALL_IN,
+            low_weight: pseudo_harmonic_prob(bet_amt, s_half, s_cap, pot),
+        }
+    }
+}
+
 /** Pseudo-Harmonic action translation: maps an arbitrary continuous bet amount into
  * a discrete action index (2: `RAISE_MIN`, 3: `RAISE_THIRD_POT`, 4: `RAISE_HALF_POT`, 5: `ALL_IN`)
  * preserving pot odds and expectation value.
@@ -399,45 +456,10 @@ pub fn pseudo_harmonic_action_mapping<R: rand::Rng>(
     allin_threshold: i32,
     rng: &mut R,
 ) -> u8 {
-    if bet_amt >= allin_threshold {
-        return ALL_IN;
-    }
-
-    let eff_bb = (allin_threshold / 35).max(1);
-    let s_min = (pot / 3).max(eff_bb);
-    let s_third = (pot * 3 / 5).max(s_min + eff_bb);
-    let s_half = pot.max(s_third + eff_bb);
-
-    if bet_amt <= s_min {
-        return RAISE_MIN;
-    }
-
-    if bet_amt < s_third {
-        let p_min = pseudo_harmonic_prob(bet_amt, s_min, s_third, pot);
-        if rng.random::<f64>() <= p_min {
-            RAISE_MIN
-        } else {
-            RAISE_THIRD_POT
-        }
-    } else if bet_amt < s_half {
-        let p_third = pseudo_harmonic_prob(bet_amt, s_third, s_half, pot);
-        if rng.random::<f64>() <= p_third {
-            RAISE_THIRD_POT
-        } else {
-            RAISE_HALF_POT
-        }
+    let blend = pseudo_harmonic_action_weights(bet_amt, pot, allin_threshold);
+    if blend.low_action == blend.high_action || rng.random::<f64>() <= blend.low_weight {
+        blend.low_action
     } else {
-        let s_overbet = (pot * 3 / 2).max(s_half + eff_bb);
-        if bet_amt <= s_overbet {
-            RAISE_HALF_POT
-        } else {
-            let s_cap = allin_threshold.max(s_overbet + eff_bb);
-            let p_half = pseudo_harmonic_prob(bet_amt, s_overbet, s_cap, pot);
-            if rng.random::<f64>() <= p_half {
-                RAISE_HALF_POT
-            } else {
-                ALL_IN
-            }
-        }
+        blend.high_action
     }
 }

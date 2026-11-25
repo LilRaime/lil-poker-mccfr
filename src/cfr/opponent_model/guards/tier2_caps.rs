@@ -337,6 +337,10 @@ impl OpponentTracker {
         ctx: &GuardContext<'_>,
         reasons: &mut Vec<&'static str>,
     ) {
+        let allow_free_station_value = ctx.to_call == 0
+            && ctx.is_passive_station
+            && !(ctx.is_three_flush && ctx.is_paired_board)
+            && !ctx.is_four_flush_board;
         if ctx.round >= ROUND_TURN
             && ctx.bucket == BUCKET_STRAIGHT_MIN
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
@@ -344,6 +348,7 @@ impl OpponentTracker {
             Self::cap_idiot_end_straight(probs, ctx, reasons);
         } else if ctx.round >= ROUND_TURN
             && ctx.bucket == 74
+            && !allow_free_station_value
             && (ctx.to_call >= ctx.bb * 3
                 || ctx.pot + ctx.to_call >= ctx.bb * 12
                 || ctx.is_three_flush)
@@ -360,6 +365,7 @@ impl OpponentTracker {
             }
         } else if ctx.round == ROUND_RIVER
             && (74..=BUCKET_STRAIGHT_MAX).contains(&ctx.bucket)
+            && !allow_free_station_value
             && (ctx.is_three_flush || ctx.is_paired_board || ctx.is_four_flush_board)
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
@@ -375,7 +381,8 @@ impl OpponentTracker {
                     && ctx.to_call > 0
                     && ctx.bucket == BUCKET_SECOND_NUT_FLUSH
                     && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.25)))
-            && (ctx.is_four_flush_board || (ctx.is_three_flush && ctx.is_paired_board))
+            && (ctx.is_four_flush_board
+                || (!allow_free_station_value && ctx.is_three_flush && ctx.is_paired_board))
             && self.is_guard_enabled("POST_PAIRED_FLUSH_STRAIGHT_CAP")
         {
             reasons.push("POST_PAIRED_FLUSH_STRAIGHT_CAP");
