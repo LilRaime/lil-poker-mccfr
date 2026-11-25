@@ -129,8 +129,20 @@ impl OpponentTracker {
         if should_rescue && let Some(f_i) = action_idx(ctx.legal_actions, FOLD) {
             let f_w = probs[f_i];
             probs[f_i] = 0.0;
-            if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
-                probs[c_i] += f_w;
+            let rem = ctx.my_chips.saturating_sub(ctx.to_call);
+            let new_pot = ctx.pot + ctx.to_call;
+            let prefers_shove = !ctx.is_allin_call
+                && ctx.can_raise
+                && ctx.my_chips > ctx.to_call
+                && (rem * 20 < new_pot * 11
+                    || (ctx.eff_stack_bb <= 25 && ctx.to_call * 5 >= ctx.my_chips * 2));
+            let order: &[u8] = if prefers_shove {
+                &[ALL_IN, CALL_CHECK]
+            } else {
+                &[CALL_CHECK, ALL_IN]
+            };
+            if let Some(t_i) = first_action_idx(ctx.legal_actions, order) {
+                probs[t_i] += f_w;
             }
         }
     }

@@ -161,9 +161,9 @@ impl OpponentTracker {
                 let steal_share = if is_short_suited_hu_open {
                     0.90
                 } else if is_playable_hu_steal && pf_tier == 7 {
-                    0.65
+                    0.85
                 } else if is_playable_hu_steal {
-                    0.45
+                    0.50
                 } else {
                     0.35
                 };
@@ -185,7 +185,7 @@ impl OpponentTracker {
                 let fold_shift = if is_short_suited_hu_open {
                     0.85
                 } else if pf_tier == 7 {
-                    0.30
+                    0.55
                 } else {
                     0.25
                 };
@@ -472,11 +472,21 @@ impl OpponentTracker {
         {
             let rem = ctx.my_chips - ctx.to_call;
             let new_pot = ctx.pot + ctx.to_call;
-            if rem * 20 < new_pot * 11 {
-                if pf_tier <= 2
+            let is_commit_call = rem * 20 < new_pot * 11
+                || (ctx.eff_stack_bb <= 25 && ctx.to_call * 5 >= ctx.my_chips * 2);
+            if is_commit_call {
+                let raw_nash_call = nash_call_shove_max_bb(
+                    ctx.bucket,
+                    ctx.active_opponents,
+                    ctx.is_known_maniac || ctx.is_extreme_shove_bot,
+                );
+                let push_rescue = pf_tier <= 2
                     || (pf_tier == 3
                         && (ctx.bucket <= 7 || ctx.is_known_maniac || ctx.is_extreme_shove_bot))
-                {
+                    || (ctx.eff_stack_bb <= 22
+                        && pf_tier <= 4
+                        && ctx.eff_stack_bb <= raw_nash_call);
+                if push_rescue {
                     if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
                         let mut shifted = 0.0f64;
                         for (i, &a) in ctx.legal_actions.iter().enumerate() {

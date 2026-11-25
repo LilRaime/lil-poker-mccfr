@@ -2,12 +2,12 @@
 use super::super::tracker::OpponentTracker;
 use super::helpers::{is_three_straight_board, river_nut_blocker_allowed};
 use crate::cfr::abstraction::{
-    BUCKET_NUT_FLUSH, BUCKET_SECOND_NUT_FLUSH, BUCKET_WEAK_PAIR_MIN, detect_board_texture,
-    detect_river_nut_blocker, is_dangerous_board, is_four_flush_board, is_four_straight_board,
-    preflop_strength_tier,
+    BUCKET_NUT_FLUSH, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
+    detect_board_texture, detect_river_nut_blocker, is_dangerous_board, is_four_flush_board,
+    is_four_straight_board, preflop_strength_tier,
 };
-use crate::game::config::{ALL_IN, RAISE_MIN, ROUND_PREFLOP, ROUND_RIVER};
-use crate::game::holdem::Card;
+use crate::game::config::{ALL_IN, NUM_SUITS, RAISE_MIN, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN};
+use crate::game::holdem::{Card, Rank};
 
 pub(in crate::cfr::opponent_model) struct GuardInput<'a> {
     pub legal_actions: &'a [u8],
@@ -64,6 +64,7 @@ pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
     pub never_fold_postflop: bool,
     pub allow_pot_commit_rescue: bool,
     pub has_river_nut_blocker: bool,
+    pub has_turn_one_card_fd: bool,
 }
 
 impl<'a> GuardContext<'a> {
@@ -95,16 +96,19 @@ impl<'a> GuardContext<'a> {
             || (tracker.total_actions() >= 15 && sm_fold < 0.14 && sm_raise <= 0.22);
         let is_overbet_bluffer = tracker.is_overbet_bluffer();
         let is_known_maniac = tracker.total_actions() >= 10
-            && (sm_raise > 0.36
-                || (sm_pfr > 0.48 && sm_raise > 0.28)
+            && ((sm_raise > 0.46 && sm_vpip >= 0.58)
+                || (sm_vpip > 0.65 && sm_raise > 0.38)
+                || (sm_pfr > 0.52 && sm_raise > 0.32)
                 || (sm_vpip > 0.80 && sm_raise > 0.28));
         let is_extreme_shove_bot = tracker.total_hands >= 8 && sm_raise > 0.42 && sm_vpip > 0.68;
         let is_hyper_aggressor = tracker.total_hands >= 12
-            && (tracker.raise_ratio() > 0.45
-                || (tracker.pfr_ratio() > 0.58 && tracker.raise_ratio() > 0.35));
-        let is_tight_passive_bb = tracker.total_hands >= 8
+            && (tracker.bb_total_hands < 5 || tracker.bb_vpip_ratio() >= 0.48)
+            && ((tracker.raise_ratio() > 0.55 && tracker.vpip_ratio() >= 0.55)
+                || (tracker.pfr_ratio() > 0.58 && tracker.raise_ratio() > 0.38));
+        let is_tight_passive_bb = (tracker.total_hands >= 8
             && ((sm_vpip < 0.30 && sm_pfr < 0.18)
-                || (tracker.vpip_ratio() < 0.28 && tracker.pfr_ratio() < 0.18));
+                || (tracker.vpip_ratio() < 0.28 && tracker.pfr_ratio() < 0.18)))
+            || (tracker.bb_total_hands >= 6 && tracker.bb_vpip_ratio() <= 0.42);
         let is_tight_passive_postflop = tracker.total_hands >= 8
             && ((sm_vpip < 0.30 && sm_pfr < 0.18)
                 || (tracker.vpip_ratio() < 0.26 && tracker.pfr_ratio() < 0.16));
@@ -139,6 +143,25 @@ impl<'a> GuardContext<'a> {
                 .hole
                 .zip(input.board)
                 .is_some_and(|(h, b)| detect_river_nut_blocker(h, b));
+
+        let has_turn_one_card_fd = input.round == ROUND_TURN
+            && input.is_three_flush
+            && !is_four_flush
+            && input.bucket < BUCKET_STRONG_DRAW_MIN
+            && input.hole.zip(input.board).is_some_and(|(h, b)| {
+                let mut suit_counts = [0u8; NUM_SUITS];
+                for c in b {
+                    suit_counts[c.suit as usize] += 1;
+                }
+                suit_counts
+                    .iter()
+                    .position(|&cnt| cnt == 3)
+                    .is_some_and(|fs| {
+                        h.iter().any(|c| {
+                            c.suit as usize == fs && (c.rank as usize) >= (Rank::Jack as usize)
+                        })
+                    })
+            });
 
         Self {
             legal_actions: input.legal_actions,
@@ -178,6 +201,7 @@ impl<'a> GuardContext<'a> {
             never_fold_postflop,
             allow_pot_commit_rescue,
             has_river_nut_blocker,
+            has_turn_one_card_fd,
         }
     }
 }

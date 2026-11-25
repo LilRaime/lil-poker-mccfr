@@ -238,7 +238,9 @@ impl OpponentTracker {
                 && ctx.is_three_flush
                 && ctx.to_call >= ctx.bb
                 && ctx.pot_odds >= 0.18
-                && ctx.bucket <= 18;
+                && ctx.bucket <= 18
+                && !(ctx.has_turn_one_card_fd
+                    && (ctx.pot_odds <= 0.28 || (ctx.is_overbet_bluffer && ctx.pot_odds <= 0.34)));
             if fold_three_flush_air && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_BARREL_FOLD");
             }
@@ -282,8 +284,9 @@ impl OpponentTracker {
                 reasons.push("POST_BARREL_FOLD");
             }
             if ctx.round >= ROUND_TURN && ctx.to_call >= ctx.bb * 5 {
-                let should_fold_weak_pair =
-                    (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket) && ctx.pot_odds >= 0.33;
+                let should_fold_weak_pair = (BUCKET_WEAK_PAIR_MIN..=30).contains(&ctx.bucket)
+                    && !ctx.is_overbet_bluffer
+                    && ctx.pot_odds >= 0.33;
                 let should_fold_three_flush_tp = ctx.is_three_flush
                     && (BUCKET_WEAK_PAIR_MIN..=42).contains(&ctx.bucket)
                     && ctx.pot_odds >= 0.28;

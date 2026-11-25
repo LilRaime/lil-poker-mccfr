@@ -1,4 +1,6 @@
-use super::{LEGAL_FULL, LEGAL_OPEN, make_aggro_maniac, make_overbet_bluffer, make_ultra_nit};
+use super::{
+    LEGAL_FULL, LEGAL_OPEN, LEGAL_SHOVE, make_aggro_maniac, make_overbet_bluffer, make_ultra_nit,
+};
 use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
 use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
@@ -1367,5 +1369,138 @@ fn test_subgame_early_overbet_river_thin_value_and_turn_two_pair_cap() {
     assert!(
         mixed_hyper.raise_ratio() >= 0.45 && mixed_hyper.is_overbet_bluffer(),
         "Hyper-aggressive opponent with 37.5% postflop overbets must trigger is_overbet_bluffer()"
+    );
+}
+
+#[test]
+fn test_turn_overbet_bluffer_draw_defense_and_srp_barrel_unlock() {
+    let overbet_villain = make_overbet_bluffer();
+    let neutral = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(20_261_125);
+    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
+
+    /* 1. Turn two pair on paired board + OESD (bucket 33/38) vs overbet bluffer must bluff-catch instead of folding */
+    let hole_t9 = [
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Diamonds),
+    ];
+    let board_qtjj = [
+        Card::new(Rank::Jack, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Ten, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Diamonds),
+    ];
+    let b_t9 = postflop_equity_bucket(&hole_t9, &board_qtjj);
+    let mut calls = 0usize;
+    for _ in 0..60 {
+        let (act, tr) = overbet_villain.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &fold_heavy,
+                legal_actions: &LEGAL_SHOVE,
+                bucket: b_t9,
+                round: 3,
+                to_call: 7700,
+                pot: 13700,
+                hole: Some(&hole_t9),
+                board: Some(&board_qtjj),
+                active_opponents: 1,
+                table_bb: 300,
+                my_chips: 8700,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            !tr.guard_reasons
+                .iter()
+                .any(|&r| r == "SHOVE_DEFENSE_FOLD" || r == "POST_BARREL_FOLD"),
+            "Paired turn hand (bucket {b_t9}) vs overbet bluffer must not force-fold (reasons: {:?})",
+            tr.guard_reasons
+        );
+        if act == CALL_CHECK {
+            calls += 1;
+        }
+    }
+    assert!(
+        calls >= 35,
+        "Turn hand vs overbet bluffer must bluff-catch predominantly (got {calls}/60)"
+    );
+
+    /* 2. Strong flush draw + 2 overcards on 3-flush Turn facing 25% pot odds vs overbet bluffer must call */
+    let hole_kj = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Jack, Suit::Spades),
+    ];
+    let board_monotone_turn = [
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Three, Suit::Spades),
+        Card::new(Rank::Ten, Suit::Diamonds),
+    ];
+    let b_kj = postflop_equity_bucket(&hole_kj, &board_monotone_turn);
+    let (act_kj, tr_kj) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.10, 0.85, 0.05, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_kj,
+            round: 3,
+            to_call: 1500,
+            pot: 4500,
+            hole: Some(&hole_kj),
+            board: Some(&board_monotone_turn),
+            active_opponents: 1,
+            table_bb: 150,
+            my_chips: 7900,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_ne!(
+        act_kj, FOLD,
+        "Turn flush draw + 2 overcards facing 25% pot odds must not fold (reasons: {:?})",
+        tr_kj.guard_reasons
+    );
+
+    /* 3. Clean SRP Turn (8 BB pot) with middle pair (bucket 36) checked to us allows betting instead of 95% CHECK cap */
+    let hole_8x = [
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Diamonds),
+    ];
+    let board_clean_turn = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Spades),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Diamonds),
+    ];
+    let b_8x = postflop_equity_bucket(&hole_8x, &board_clean_turn);
+    let bet_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.10, 0.45, 0.35, 0.0];
+    let mut bets = 0usize;
+    for _ in 0..60 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &bet_heavy,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_8x,
+                round: 3,
+                pot: 1600,
+                hole: Some(&hole_8x),
+                board: Some(&board_clean_turn),
+                active_opponents: 1,
+                table_bb: 200,
+                my_chips: 9000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            bets += 1;
+        }
+    }
+    assert!(
+        bets >= 40,
+        "Clean 8 BB SRP Turn middle pair (bucket {b_8x}) must be free to bet (got {bets}/60)"
     );
 }

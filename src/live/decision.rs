@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use super::protocol::{ActionMapRequest, ActionTranslationBlend, map_action_index};
 use crate::cfr::abstraction::{
     BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
-    BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
-    postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
+    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, postflop_equity_bucket,
+    preflop_bucket, preflop_strength_tier,
 };
 use crate::cfr::fallback::{FallbackRequest, StrategyLookupIndex, get_holdem_fallback_strategy};
 use crate::cfr::opponent_model::{
@@ -540,7 +540,8 @@ fn apply_live_street_action_guards(
 ) {
     if s.round == ROUND_RIVER
         && s.to_call == 0
-        && s.bucket < BUCKET_TRIPS_MIN
+        && s.bucket < BUCKET_TWO_PAIR_MIN
+        && (s.my_player == 1 || s.bucket < BUCKET_TOP_PAIR_MIN)
         && *chosen_idx >= RAISE_MIN as usize
     {
         let turn_hist = s.history[2].as_slice();
@@ -563,8 +564,10 @@ fn apply_live_street_action_guards(
     if s.round == ROUND_FLOP
         && s.to_call == 0
         && s.my_player == 1
-        && (*chosen_idx == RAISE_MIN as usize || *chosen_idx == RAISE_THIRD_POT as usize)
+        && *chosen_idx >= RAISE_MIN as usize
+        && *chosen_idx < ALL_IN as usize
         && s.bucket < BUCKET_TOP_PAIR_MIN
+        && !(22..BUCKET_WEAK_PAIR_MIN).contains(&s.bucket)
         && tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
     {
         let pf_hist = s.history[0].as_slice();

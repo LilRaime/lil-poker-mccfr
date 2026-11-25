@@ -61,7 +61,15 @@ impl OpponentTracker {
                 && !ctx.is_passive_station
                 && !ctx.is_sticky_caller
                 && ctx.bucket <= 6;
+            let allow_clean_hu_turn_barrel = ctx.round == ROUND_TURN
+                && ctx.active_opponents == 1
+                && !ctx.is_passive_station
+                && !ctx.is_sticky_caller
+                && !ctx.is_three_flush
+                && !ctx.is_four_board_danger;
             let air_pot_cap = if allow_clean_hu_river_stab {
+                ctx.bb * 16
+            } else if allow_clean_hu_turn_barrel {
                 ctx.bb * 14
             } else if ctx.bucket < BUCKET_WEAK_DRAW_MIN {
                 ctx.bb * 8
@@ -79,14 +87,21 @@ impl OpponentTracker {
                     probs[c_i] = (probs[c_i] + shifted).max(0.95);
                 }
             }
-        } else if ctx.pot >= ctx.bb * 5
-            && (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
+        } else if (BUCKET_WEAK_PAIR_MIN..=38).contains(&ctx.bucket)
             && !(ctx.is_passive_station && ctx.bucket >= 35 && !ctx.is_three_flush)
-            && (ctx.round == ROUND_TURN
-                || ctx.bucket <= 33
-                || ctx.is_paired_board
-                || ctx.is_three_flush
-                || ctx.is_four_board_danger)
+            && ((ctx.round == ROUND_RIVER
+                && ctx.pot >= ctx.bb * 5
+                && (ctx.bucket <= 33
+                    || ctx.is_paired_board
+                    || ctx.is_three_flush
+                    || ctx.is_four_board_danger))
+                || (ctx.round == ROUND_TURN
+                    && (ctx.pot >= ctx.bb * 12
+                        || (ctx.bucket <= 33 && ctx.pot >= ctx.bb * 8)
+                        || (ctx.pot >= ctx.bb * 5
+                            && (ctx.is_paired_board
+                                || ctx.is_three_flush
+                                || ctx.is_four_board_danger)))))
         {
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
@@ -105,6 +120,8 @@ impl OpponentTracker {
             return;
         }
         if (ctx.bucket < BUCKET_STRONG_DRAW_MIN || ctx.bucket == BUCKET_WEAK_PAIR_MIN)
+            && !(ctx.has_turn_one_card_fd
+                && (ctx.pot_odds <= 0.28 || (ctx.is_overbet_bluffer && ctx.pot_odds <= 0.34)))
             && self.is_guard_enabled("POST_AIR_GUTSHOT_GUARD")
         {
             let overpriced_air = (ctx.round == ROUND_TURN
@@ -115,8 +132,9 @@ impl OpponentTracker {
                             || ctx.bucket == BUCKET_WEAK_PAIR_MIN))))
                 || (ctx.round == ROUND_RIVER
                     && ctx.to_call >= ctx.bb * 2
-                    && ctx.pot_odds >= 0.18
-                    && (ctx.bucket < BUCKET_WEAK_DRAW_MIN || ctx.bucket == BUCKET_WEAK_PAIR_MIN));
+                    && ((ctx.pot_odds >= 0.18
+                        && (ctx.bucket <= 6 || ctx.bucket == BUCKET_WEAK_PAIR_MIN))
+                        || (ctx.pot_odds >= 0.28 && ctx.bucket < BUCKET_WEAK_DRAW_MIN)));
             if overpriced_air && force_action(probs, ctx.legal_actions, FOLD) {
                 reasons.push("POST_AIR_GUTSHOT_GUARD");
                 return;
@@ -125,14 +143,19 @@ impl OpponentTracker {
         if ctx.round == ROUND_TURN
             && ctx.to_call >= ctx.bb * 2
             && (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
+            && !(ctx.is_overbet_bluffer && ctx.bucket >= 22 && ctx.pot_odds <= 0.36)
             && self.is_guard_enabled("TURN_DRAW_ODDS_FOLD")
         {
             let max_turn_draw_odds = if ctx.bucket >= 26 {
                 0.40
             } else if ctx.bucket >= 24 {
-                0.31
+                0.32
+            } else if ctx.bucket >= 22 {
+                if ctx.is_overbet_bluffer { 0.36 } else { 0.30 }
             } else if ctx.bucket >= 19 {
-                0.22
+                if ctx.is_overbet_bluffer { 0.32 } else { 0.26 }
+            } else if ctx.is_overbet_bluffer {
+                0.25
             } else {
                 0.19
             };
@@ -183,7 +206,9 @@ impl OpponentTracker {
                     && ctx.pot_odds >= 0.23));
         let is_turn_structural_weak_jam = ctx.round == ROUND_TURN
             && ((ctx.is_three_flush && ctx.bucket < BUCKET_TOP_PAIR_MIN)
-                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.25));
+                || ((ctx.bucket <= 30 || (!ctx.is_overbet_bluffer && ctx.bucket <= 33))
+                    && ctx.to_call >= ctx.bb * 10
+                    && ctx.pot_odds >= 0.25));
         let is_turn_one_pair_jam = is_turn_structural_weak_jam
             || (ctx.round == ROUND_TURN
                 && !ctx.is_overbet_bluffer
@@ -375,7 +400,9 @@ impl OpponentTracker {
             && ctx.to_call >= ctx.bb * 5
             && ctx.pot_odds >= 0.28
             && ((ctx.bucket <= 30 && !ctx.is_overbet_bluffer)
-                || (ctx.bucket <= 33 && ctx.to_call >= ctx.bb * 10 && ctx.pot_odds >= 0.30)
+                || ((ctx.bucket <= 30 || (!ctx.is_overbet_bluffer && ctx.bucket <= 33))
+                    && ctx.to_call >= ctx.bb * 10
+                    && ctx.pot_odds >= 0.30)
                 || (ctx.is_three_flush
                     && ctx.bucket < BUCKET_TOP_PAIR_MIN
                     && ctx.to_call >= ctx.bb * 6
@@ -440,7 +467,7 @@ impl OpponentTracker {
         let min_bluff_catch_bucket = if is_priced_in_river_catch {
             29
         } else if ctx.round == ROUND_TURN && ctx.to_call >= ctx.bb * 10 {
-            34
+            32
         } else {
             29
         };
@@ -461,7 +488,7 @@ impl OpponentTracker {
         ) && probs[f_i] > 0.35
         {
             reasons.push("OVERBET_BLUFF_CATCH");
-            let s = probs[f_i] * 0.65;
+            let s = probs[f_i] * 0.75;
             probs[f_i] -= s;
             probs[c_i] += s;
         }

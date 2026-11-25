@@ -1507,3 +1507,78 @@ fn test_preflop_hu_minraise_defense_zero_limps_and_linear_3bet() {
         );
     }
 }
+
+#[test]
+fn test_tight_bb_fold_to_steal_opens_sb_and_short_commit_no_flat() {
+    let mut rng = SmallRng::seed_from_u64(20_261_125);
+
+    /* 1. Aggressive postflop opponent who over-folds BB (<= 42% BB VPIP) must not trigger SB hyper-aggressor folds */
+    let mut tracker = OpponentTracker::new();
+    for i in 0..10 {
+        let defends_bb = i < 3;
+        tracker.record_preflop_positional(false, defends_bb, false);
+        tracker.record_action_street(if defends_bb { CALL_CHECK } else { FOLD }, 1, true);
+        tracker.record_action_street_detailed(RAISE_HALF_POT, 2, false, 750, 500);
+        tracker.end_hand();
+    }
+    let limp_heavy = [0.0, 0.90, 0.10, 0.0, 0.0, 0.0];
+    let hole_98o = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Clubs),
+    ];
+    let b_98o = preflop_bucket(hole_98o[0], hole_98o[1]).0;
+    let mut raises = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &limp_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_98o,
+                round: 1,
+                to_call: 100,
+                pot: 300,
+                hole: Some(&hole_98o),
+                active_opponents: 1,
+                table_bb: 200,
+                my_chips: 6000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act >= RAISE_MIN {
+            raises += 1;
+        }
+    }
+    assert!(
+        raises >= 50,
+        "SB 98o vs tight-folding BB (30% BB VPIP) must open-raise (got {raises}/80)"
+    );
+
+    /* 2. Short-stack (~19 BB) K7s facing 10 BB 3-bet (55% of remaining stack) must fold instead of dead-money flat-calling */
+    let hole_k7s = [
+        Card::new(Rank::King, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Spades),
+    ];
+    let b_k7s = preflop_bucket(hole_k7s[0], hole_k7s[1]).0;
+    let call_heavy = [0.05, 0.90, 0.0, 0.0, 0.0, 0.05];
+    let (act_k7s, _) = OpponentTracker::new().select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: b_k7s,
+            round: 1,
+            to_call: 3000,
+            pot: 4500,
+            hole: Some(&hole_k7s),
+            active_opponents: 1,
+            table_bb: 300,
+            my_chips: 5380,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_ne!(
+        act_k7s, CALL_CHECK,
+        "Short-stack K7s facing 55%-stack 3-bet must shove or fold, never flat-call"
+    );
+}

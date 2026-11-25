@@ -595,6 +595,7 @@ fn test_flop_oop_donk_suppresses_min_and_third_pot() {
     for probs in [
         vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
         vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     ] {
         let mut strategy_map = HashMap::new();
         strategy_map.insert(key.clone(), probs);

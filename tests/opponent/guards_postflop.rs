@@ -1333,3 +1333,50 @@ fn test_flop_floats_overbet_bluff_catch_and_polarized_sizing() {
         "3-bet pot Flop Overpair must bet frequently instead of checking back (got {qq_cbets}/80)"
     );
 }
+
+#[test]
+fn test_flop_tpwk_vs_overbet_bluffer_caps_raise_and_3bet_jam() {
+    let overbet_villain = make_overbet_bluffer();
+    let mut rng = SmallRng::seed_from_u64(20_261_125);
+    let hole_72s = [
+        Card::new(Rank::Two, Suit::Hearts),
+        Card::new(Rank::Seven, Suit::Hearts),
+    ];
+    let board_743 = [
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Clubs),
+        Card::new(Rank::Seven, Suit::Spades),
+    ];
+    let b_72s = postflop_equity_bucket(&hole_72s, &board_743);
+    assert_eq!(b_72s, 44);
+
+    let raise_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.15, 0.25, 0.25, 0.20];
+    for (to_call, pot, my_chips, label) in [
+        (750, 1250, 9175, "flop overbet check-raise"),
+        (2850, 7350, 7125, "flop 3-bet 4-bet jam"),
+    ] {
+        for _ in 0..40 {
+            let (act, _) = overbet_villain.select_action_traced(
+                &PolicyRequest {
+                    raw_probs: &raise_heavy,
+                    legal_actions: &LEGAL_FULL,
+                    bucket: b_72s,
+                    round: 2,
+                    to_call,
+                    pot,
+                    hole: Some(&hole_72s),
+                    board: Some(&board_743),
+                    active_opponents: 1,
+                    table_bb: 100,
+                    my_chips,
+                    ..Default::default()
+                },
+                &mut rng,
+            );
+            assert!(
+                act < RAISE_MIN,
+                "Dry TPWK (bucket {b_72s}) facing {label} must cap raises/jams (got {act})"
+            );
+        }
+    }
+}
