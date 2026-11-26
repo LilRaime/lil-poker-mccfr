@@ -16,10 +16,22 @@ use crate::game::config::{
 impl OpponentTracker {
     /** Checks if opponent predominantly checks and calls without raising */
     pub fn is_passive_station(&self) -> bool {
-        self.exploit_enabled
-            && self.total_actions() >= 8
+        if !self.exploit_enabled {
+            return false;
+        }
+        let overall_station = self.total_actions() >= 8
             && self.raise_ratio() < 0.12
-            && (self.call_ratio() > 0.50 || self.fold_ratio() < 0.22)
+            && (self.call_ratio() > 0.50 || self.fold_ratio() < 0.22);
+        let post_total: u64 = self.flop_actions.iter().sum::<u64>()
+            + self.turn_actions.iter().sum::<u64>()
+            + self.river_actions.iter().sum::<u64>();
+        let postflop_station = self.total_hands >= 8
+            && post_total >= 10
+            && self.vpip_ratio() >= 0.65
+            && self.pfr_ratio() <= 0.30
+            && self.postflop_raise_rate() < 0.15
+            && self.fold_ratio() < 0.30;
+        overall_station || postflop_station
     }
 
     /** Shift passive check/min-bet weight directly into geometric value sizing (`RAISE_HALF_POT` / `RAISE_THIRD_POT`)

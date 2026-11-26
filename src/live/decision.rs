@@ -464,8 +464,8 @@ fn resolve_raw_strategy_probs<V: AsRef<[f64]> + Sync>(
     tracker: &OpponentTracker,
     sp: LiveSubgameParams<'_, V>,
 ) -> ([f64; HOLDEM_NUM_ACTIONS], bool) {
-    /* 1. Real-time Subgame Search (Turn & River, or Flop for HU single-raised+ pots >= 4 BB) */
-    let flop_trigger_pot = (s.bb * 4).max(1);
+    /* 1. Real-time Subgame Search (Turn & River, or large 3-bet/multi-bet Flop pots >= 8 BB) */
+    let flop_trigger_pot = (s.bb * 8).max(1);
     let use_subgame = sp.subgame_search
         && s.active_opponents == 1
         && (s.round >= ROUND_TURN || (s.round == ROUND_FLOP && s.pot >= flop_trigger_pot));

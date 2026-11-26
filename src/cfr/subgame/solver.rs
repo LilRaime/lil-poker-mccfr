@@ -363,9 +363,21 @@ impl SubgameSolver {
             &board_only_deck,
             ctx,
         );
-        ctx.last_opp_reach =
-            Some(reach_dist.to_cached_reach(req.round, 1 - req.my_player, req.board));
-        ctx.last_hero_reach = Some(hero_reach.to_cached_reach(req.round, req.my_player, req.board));
+        let cur_round_act_len = history
+            .actions_in_round((req.round.saturating_sub(1)) as usize)
+            .len();
+        ctx.last_opp_reach = Some(reach_dist.to_cached_reach_at_action(
+            req.round,
+            1 - req.my_player,
+            req.board,
+            cur_round_act_len,
+        ));
+        ctx.last_hero_reach = Some(hero_reach.to_cached_reach_at_action(
+            req.round,
+            req.my_player,
+            req.board,
+            cur_round_act_len,
+        ));
 
         let root_hash = if req.round == ROUND_RIVER {
             let root_ext = postflop_extended_bucket(&req.hole, req.board) as u8;

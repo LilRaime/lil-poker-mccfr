@@ -146,19 +146,36 @@ impl OpponentTracker {
                 && !ctx.is_sticky_caller
                 && !ctx.is_passive_station
                 && !ctx.is_three_flush
-                && (ctx.my_chips == 0 || ctx.my_chips > ctx.pot * 2);
+                && (ctx.my_chips == 0 || ctx.my_chips > ctx.pot);
             let air_cap_blocked = if clean_hu_3bet_cbet {
                 pb.as_u8() < PostflopBucket::STRONG_OVERCARDS_MIN
             } else {
                 pb.is_air_or_weak_draw()
             };
+            let compact_hu_3bet_mid_pair = clean_hu_3bet_cbet
+                && ctx.pot >= ctx.bb * 10
+                && pb.in_range(34, PostflopBucket::DRY_MID_OR_UNDERPAIR_MAX);
             let should_cap_flop = (air_cap_blocked && ctx.pot >= ctx.bb * 8)
-                || (pb.in_range(
-                    BUCKET_WEAK_PAIR_MIN as u8,
-                    PostflopBucket::DRY_MID_OR_UNDERPAIR_MAX,
-                ) && ctx.pot >= ctx.bb * 10)
+                || (!compact_hu_3bet_mid_pair
+                    && pb.in_range(
+                        BUCKET_WEAK_PAIR_MIN as u8,
+                        PostflopBucket::DRY_MID_OR_UNDERPAIR_MAX,
+                    )
+                    && ctx.pot >= ctx.bb * 10)
                 || (ctx.is_sticky_caller && pb.is_high_card());
-            if should_cap_flop {
+            if compact_hu_3bet_mid_pair {
+                let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
+                    a == RAISE_HALF_POT || a == ALL_IN
+                });
+                if oversized > 0.0
+                    && let Some(t_i) = first_action_idx(
+                        ctx.legal_actions,
+                        &[RAISE_MIN, RAISE_THIRD_POT, CALL_CHECK],
+                    )
+                {
+                    probs[t_i] += oversized;
+                }
+            } else if should_cap_flop {
                 let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
                 if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                     let floor = if ctx.is_sticky_caller && ctx.pot < ctx.bb * 8 {

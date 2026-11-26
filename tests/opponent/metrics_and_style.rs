@@ -549,4 +549,21 @@ fn test_zero_cost_guard_set_postflop_bucket_and_archetype_parsing() {
         Some(OpponentArchetype::SelfPlay)
     );
     assert!("callng_station".parse::<OpponentArchetype>().is_err());
+
+    /* Loose-passive postflop opponent with moderate preflop raises triggers is_passive_station() */
+    let mut post_station = OpponentTracker::new();
+    for i in 0..10 {
+        if i < 2 {
+            post_station.record_action_street_detailed(RAISE_MIN, 1, false, 200, 150);
+        } else {
+            post_station.record_action_street_detailed(CALL_CHECK, 1, true, 100, 200);
+        }
+        post_station.record_action_street_detailed(CALL_CHECK, 2, false, 0, 400);
+        post_station.record_action_street_detailed(CALL_CHECK, 3, true, 200, 400);
+        post_station.end_hand();
+    }
+    assert!(
+        post_station.is_passive_station(),
+        "High-VPIP loose-passive postflop opponent must trigger is_passive_station() despite occasional preflop raises"
+    );
 }

@@ -31,6 +31,7 @@ pub struct CachedStreetReach {
     pub target_player: usize,
     pub board_prefix: [Card; 5],
     pub board_len: usize,
+    pub round_actions_len: Option<usize>,
     pub weights: Box<[f64; NUM_HOLE_COMBOS]>,
 }
 
@@ -422,6 +423,28 @@ impl OpponentReachDistribution {
         target_player: usize,
         board: &[Card],
     ) -> CachedStreetReach {
+        self.to_cached_reach_inner(round, target_player, board, None)
+    }
+
+    /** Export normalized weights tagged with the current street action count so cross-street
+     * carryover invalidates cleanly if closing actions occur after caching. */
+    pub fn to_cached_reach_at_action(
+        &self,
+        round: u8,
+        target_player: usize,
+        board: &[Card],
+        round_actions_len: usize,
+    ) -> CachedStreetReach {
+        self.to_cached_reach_inner(round, target_player, board, Some(round_actions_len))
+    }
+
+    fn to_cached_reach_inner(
+        &self,
+        round: u8,
+        target_player: usize,
+        board: &[Card],
+        round_actions_len: Option<usize>,
+    ) -> CachedStreetReach {
         let mut weights = Box::new([1e-5f64; NUM_HOLE_COMBOS]);
         let inv = if self.total_weight > 1e-12 {
             1.0 / self.total_weight
@@ -441,12 +464,13 @@ impl OpponentReachDistribution {
             target_player,
             board_prefix,
             board_len,
+            round_actions_len,
             weights,
         }
     }
 
     /** Build posterior reach distribution carrying forward earlier-street weights (`Flop -> Turn -> River`)
-     * when `prior_reach` matches the same hand and board prefix. */
+     * when `prior_reach` matches the same hand and board prefix without stale prior-street actions. */
     pub fn build_with_prior<
         H: crate::cfr::abstraction::HistoryActions + ?Sized,
         V: AsRef<[f64]>,
@@ -459,8 +483,13 @@ impl OpponentReachDistribution {
         let Some(prev) = prior_reach else {
             return Self::build_with_strategy(req, history, strategy_map);
         };
+        let prev_round_stale = prev.round >= ROUND_FLOP
+            && prev.round_actions_len.is_some_and(|saved| {
+                history.actions_in_round((prev.round - 1) as usize).len() != saved
+            });
         let rem_len = req.remaining_deck.len();
         if rem_len < 2
+            || prev_round_stale
             || prev.round >= req.round
             || Some(prev.target_player) != req.target_player
             || prev.board_len < 3

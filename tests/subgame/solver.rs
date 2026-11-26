@@ -429,7 +429,7 @@ fn test_subgame_street_profile_node_locking_and_carryover() {
 
 #[test]
 fn test_subgame_multi_policy_continuation_leaves_and_srp_flop() {
-    assert_eq!(SUBGAME_FLOP_TRIGGER_POT, BIG_BLIND * 4);
+    assert_eq!(SUBGAME_FLOP_TRIGGER_POT, BIG_BLIND * 8);
 
     let board_flop = [
         Card::new(Rank::Nine, Suit::Spades),

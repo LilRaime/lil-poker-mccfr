@@ -568,4 +568,35 @@ fn test_combo_index_bijection_and_cross_street_carryover() {
         turn_dist.effective_combos(),
         rem_turn.len() * (rem_turn.len() - 1) / 2
     );
+
+    /* Tagged cache invalidates and recomputes when prior street action count grows after caching */
+    let cached_flop_tagged = flop_dist.to_cached_reach_at_action(2, 0, &flop, 0);
+    let fresh_turn_dist = OpponentReachDistribution::build(
+        &ReachRequest {
+            remaining_deck: &rem_turn,
+            board: &turn,
+            round: 3,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &hist,
+    );
+    let invalidated_turn_dist = OpponentReachDistribution::build_with_prior(
+        &ReachRequest {
+            remaining_deck: &rem_turn,
+            board: &turn,
+            round: 3,
+            target_player: Some(0),
+            active_player: Some(1),
+            ..Default::default()
+        },
+        &hist,
+        no_map,
+        Some(&cached_flop_tagged),
+    );
+    assert!(
+        (invalidated_turn_dist.total_weight - fresh_turn_dist.total_weight).abs() < 1e-9,
+        "Stale action-tagged flop cache must invalidate and match fresh full build"
+    );
 }

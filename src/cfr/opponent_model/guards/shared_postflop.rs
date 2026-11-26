@@ -3,10 +3,66 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::guard_id::{GuardId, GuardSet};
 use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
-use crate::cfr::abstraction::{BUCKET_STRAIGHT_MIN, BUCKET_WEAK_PAIR_MIN, PostflopBucket};
+use crate::cfr::abstraction::{
+    BUCKET_FLUSH_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MIN, BUCKET_TRIPS_MIN,
+    BUCKET_WEAK_PAIR_MIN, PostflopBucket,
+};
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
 };
+use crate::game::holdem::Card;
+
+/** Returns true when the board contains at least 3 distinct ranks strictly above hero's highest hole card. */
+#[inline]
+pub(in crate::cfr::opponent_model) fn has_three_plus_overcards(
+    hole: Option<&[Card; 2]>,
+    board: Option<&[Card]>,
+) -> bool {
+    let (Some(h), Some(b)) = (hole, board) else {
+        return false;
+    };
+    let max_hole = (h[0].rank as usize).max(h[1].rank as usize);
+    let mut over_mask = 0u16;
+    for c in b {
+        let r = c.rank as usize;
+        if r > max_hole {
+            over_mask |= 1u16 << r;
+        }
+    }
+    over_mask.count_ones() >= 3
+}
+
+/** Returns true when hero holds an unpaired single pair (non-pocket) on an unpaired board with `>= 2` overcards. */
+#[inline]
+pub(in crate::cfr::opponent_model) fn is_unpaired_third_or_worse_pair(
+    hole: Option<&[Card; 2]>,
+    board: Option<&[Card]>,
+    is_paired_board: bool,
+) -> bool {
+    if is_paired_board {
+        return false;
+    }
+    let (Some(h), Some(b)) = (hole, board) else {
+        return false;
+    };
+    if h[0].rank == h[1].rank {
+        return false;
+    }
+    let mut board_mask = 0u16;
+    for c in b {
+        board_mask |= 1u16 << (c.rank as usize);
+    }
+    let r0 = h[0].rank as usize;
+    let r1 = h[1].rank as usize;
+    let hit0 = (board_mask & (1u16 << r0)) != 0;
+    let hit1 = (board_mask & (1u16 << r1)) != 0;
+    if hit0 == hit1 {
+        return false;
+    }
+    let pair_rank = if hit0 { r0 } else { r1 };
+    let over_mask = board_mask >> (pair_rank + 1);
+    over_mask.count_ones() >= 2
+}
 
 /** Overpriced turn air / weak-draw call condition shared by subgame and blueprint guards. */
 #[inline]
@@ -65,6 +121,36 @@ pub(in crate::cfr::opponent_model) fn apply_shared_turn_river_free_pot_control(
         return;
     }
     let pb = ctx.post_bucket;
+    if ctx.is_four_flush_board && ctx.bucket <= BUCKET_SECOND_NUT_FLUSH {
+        let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
+            a == RAISE_HALF_POT || a == ALL_IN || (a >= RAISE_MIN && ctx.bucket < BUCKET_FLUSH_MIN)
+        });
+        if oversized > 0.0 {
+            let target = if ctx.bucket >= BUCKET_FLUSH_MIN {
+                first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK])
+            } else {
+                action_idx(ctx.legal_actions, CALL_CHECK)
+            };
+            if let Some(t_i) = target {
+                probs[t_i] += oversized;
+            }
+        }
+    }
+    if ctx.round == ROUND_TURN
+        && ctx.is_three_flush
+        && ctx.bucket >= BUCKET_WEAK_PAIR_MIN
+        && ctx.bucket < BUCKET_TRIPS_MIN
+    {
+        let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
+            a == RAISE_HALF_POT || a == ALL_IN
+        });
+        if oversized > 0.0
+            && let Some(t_i) =
+                first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK])
+        {
+            probs[t_i] += oversized;
+        }
+    }
     if ctx.is_four_board_danger && ctx.bucket < BUCKET_STRAIGHT_MIN {
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
         if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
@@ -86,6 +172,7 @@ pub(in crate::cfr::opponent_model) fn apply_shared_turn_river_free_pot_control(
             && pb.is_pure_rag_air();
         let allow_clean_hu_turn_barrel = ctx.round == ROUND_TURN
             && ctx.active_opponents == 1
+            && !pb.is_high_card()
             && !ctx.is_passive_station
             && !ctx.is_sticky_caller
             && !ctx.is_three_flush
@@ -93,7 +180,7 @@ pub(in crate::cfr::opponent_model) fn apply_shared_turn_river_free_pot_control(
         let air_pot_cap = if allow_clean_hu_river_stab {
             ctx.bb * 16
         } else if allow_clean_hu_turn_barrel {
-            ctx.bb * 14
+            ctx.bb * 10
         } else if pb.is_high_card() {
             ctx.bb * 8
         } else {

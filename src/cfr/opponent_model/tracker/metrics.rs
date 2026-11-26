@@ -221,10 +221,15 @@ impl OpponentTracker {
         } else if self.is_overbet_bluffer() {
             let confirmed_maniac = self.smoothed_raise_ratio() >= 0.45
                 || (self.showdown_hands >= 2 && self.showdown_bluff_rate() >= 0.35);
-            if confirmed_maniac {
-                Some((1.5 + self.postflop_overbet_ratio() * 1.3).clamp(1.7, 2.6))
+            let raw_mult = if confirmed_maniac {
+                (1.5 + self.postflop_overbet_ratio() * 1.3).clamp(1.7, 2.6)
             } else {
-                Some((1.2 + self.postflop_overbet_ratio() * 0.7).clamp(1.3, 1.8))
+                (1.2 + self.postflop_overbet_ratio() * 0.7).clamp(1.3, 1.8)
+            };
+            if self.showdown_hands == 0 {
+                Some(raw_mult.min(1.65))
+            } else {
+                Some(raw_mult)
             }
         } else if self.total_actions() >= 12
             && self.smoothed_raise_ratio() > 0.40

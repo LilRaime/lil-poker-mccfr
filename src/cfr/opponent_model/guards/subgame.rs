@@ -8,7 +8,8 @@ use super::helpers::{
 };
 use super::shared_postflop::{
     apply_shared_turn_draw_odds_fold, apply_shared_turn_river_free_pot_control,
-    is_turn_commit_underpair_fold, is_turn_overpriced_air, is_turn_paired_or_flush_underpair_fold,
+    has_three_plus_overcards, is_turn_commit_underpair_fold, is_turn_overpriced_air,
+    is_turn_paired_or_flush_underpair_fold, is_unpaired_third_or_worse_pair,
 };
 use crate::cfr::abstraction::{
     BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MAX,
@@ -194,12 +195,19 @@ impl OpponentTracker {
             && (ctx.bucket < BUCKET_SECOND_NUT_FLUSH
                 || (ctx.bucket == BUCKET_SECOND_NUT_FLUSH
                     && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.25)));
+        let cap_paired_three_flush_non_nut = ctx.round >= ROUND_TURN
+            && ctx.is_paired_board
+            && ctx.is_three_flush
+            && (ctx.bucket <= PostflopBucket::GOOD_TWO_CARD_FLUSH as usize
+                || (ctx.bucket == BUCKET_SECOND_NUT_FLUSH
+                    && (ctx.to_call >= ctx.bb * 4 || ctx.pot_odds >= 0.24)));
         if !cap_one_pair
             && !cap_four_board_non_straight
             && !cap_three_flush_non_flush
             && !cap_dangerous_river_non_nut
             && !cap_deep_bottom_two_pair
             && !cap_four_flush_non_nut
+            && !cap_paired_three_flush_non_nut
         {
             return;
         }
@@ -245,7 +253,12 @@ impl OpponentTracker {
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
-        if probs[c_i] <= 0.35 {
+        let (check_thresh, keep_floor, shift_frac) = if is_river_nut {
+            (0.20, 0.08, 0.88)
+        } else {
+            (0.35, 0.15, 0.75)
+        };
+        if probs[c_i] <= check_thresh {
             return;
         }
         let target_idx = if ctx.is_four_straight_board {
@@ -254,7 +267,7 @@ impl OpponentTracker {
             first_action_idx(ctx.legal_actions, &[RAISE_HALF_POT, RAISE_THIRD_POT])
         };
         if let Some(t_i) = target_idx {
-            let shift = (probs[c_i] - 0.15).max(0.0) * 0.75;
+            let shift = (probs[c_i] - keep_floor).max(0.0) * shift_frac;
             if shift > 0.0 {
                 reasons.insert(GuardId::PostNutValueFloor);
                 probs[c_i] -= shift;
@@ -319,6 +332,11 @@ impl OpponentTracker {
             && ctx.pot_odds >= 0.24
             && ((pb.as_u8() <= PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX
                 && !ctx.is_overbet_bluffer)
+                || (ctx.is_three_flush
+                    && ctx.bucket < BUCKET_TOP_PAIR_MIN
+                    && !ctx.is_overbet_bluffer
+                    && ctx.to_call >= ctx.bb * 5
+                    && ctx.pot_odds >= 0.25)
                 || (ctx.is_tight_passive_postflop && ctx.bucket <= BUCKET_TOP_PAIR_MIN)
                 || (ctx.is_tight_passive_postflop
                     && ctx.is_paired_board
@@ -326,23 +344,39 @@ impl OpponentTracker {
                     && pb.as_u8() <= PostflopBucket::VULNERABLE_TOP_PAIR_MAX
                     && ctx.to_call >= ctx.bb * 10));
         let fold_turn_barrel = ctx.round == ROUND_TURN
-            && ctx.to_call >= ctx.bb * 5
-            && ctx.pot_odds >= 0.28
-            && ((pb.as_u8() <= PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX
-                && !ctx.is_overbet_bluffer)
-                || ((pb.as_u8() <= PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX
-                    || (!ctx.is_overbet_bluffer
-                        && pb.as_u8() <= PostflopBucket::BOTTOM_PAIR_REDRAW))
-                    && ctx.to_call >= ctx.bb * 10
-                    && ctx.pot_odds >= 0.30)
-                || (ctx.is_three_flush
-                    && ctx.bucket < BUCKET_TOP_PAIR_MIN
-                    && ctx.to_call >= ctx.bb * 6
-                    && ctx.pot_odds >= 0.30)
-                || (pb.as_u8() <= PostflopBucket::CLEAN_MID_PAIR_MIN
+            && ((ctx.to_call >= ctx.bb * 5
+                && ctx.pot_odds >= 0.28
+                && ((pb.as_u8() <= PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX
+                    && !ctx.is_overbet_bluffer)
+                    || ((pb.as_u8() <= PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX
+                        || (!ctx.is_overbet_bluffer
+                            && pb.as_u8() <= PostflopBucket::BOTTOM_PAIR_REDRAW))
+                        && ctx.to_call >= ctx.bb * 10
+                        && ctx.pot_odds >= 0.30)
+                    || (ctx.is_three_flush
+                        && ctx.bucket < BUCKET_TOP_PAIR_MIN
+                        && ctx.to_call >= ctx.bb * 6
+                        && ctx.pot_odds >= 0.30)
+                    || (pb.as_u8() <= PostflopBucket::CLEAN_MID_PAIR_MIN
+                        && !ctx.is_overbet_bluffer
+                        && ctx.to_call >= ctx.bb * 6
+                        && ctx.pot_odds >= 0.36)
+                    || (pb.is_bare_weak_underpair()
+                        && has_three_plus_overcards(ctx.hole, ctx.board)
+                        && ctx.my_chips > 0
+                        && ctx.to_call * 5 >= ctx.my_chips * 2)))
+                || (!pb.has_pair_redraw()
+                    && is_unpaired_third_or_worse_pair(ctx.hole, ctx.board, ctx.is_paired_board)
                     && !ctx.is_overbet_bluffer
-                    && ctx.to_call >= ctx.bb * 6
-                    && ctx.pot_odds >= 0.36));
+                    && !ctx.is_known_maniac
+                    && ctx.to_call >= ctx.bb * 5
+                    && ctx.pot_odds >= 0.25)
+                || (ctx.is_paired_board
+                    && ctx.is_three_flush
+                    && pb.as_u8() == 41
+                    && !ctx.is_overbet_bluffer
+                    && ctx.to_call >= ctx.bb * 4
+                    && ctx.pot_odds >= 0.24));
         let fold_turn_low_pfr_barrel = ctx.round == ROUND_TURN
             && ctx.is_low_pfr_aggressor
             && pb.as_u8() <= 36
@@ -394,13 +428,14 @@ impl OpponentTracker {
         let min_bluff_catch_bucket = if is_priced_in_river_catch {
             PostflopBucket::THREE_FLUSH_BOTTOM_PAIR as usize
         } else if ctx.round == ROUND_TURN
-            && ctx.to_call >= ctx.bb * 28
-            && ctx.pot_odds >= 0.36
             && !pb.has_pair_redraw()
+            && ((ctx.to_call >= ctx.bb * 28 && ctx.pot_odds >= 0.36)
+                || has_three_plus_overcards(ctx.hole, ctx.board)
+                || (ctx.my_chips > 0 && ctx.to_call * 5 >= ctx.my_chips * 2))
         {
             BUCKET_TOP_PAIR_MIN
-        } else if ctx.round == ROUND_TURN && ctx.to_call >= ctx.bb * 10 {
-            32
+        } else if ctx.round == ROUND_TURN && !pb.has_pair_redraw() && ctx.to_call >= ctx.bb * 8 {
+            34
         } else {
             PostflopBucket::THREE_FLUSH_BOTTOM_PAIR as usize
         };

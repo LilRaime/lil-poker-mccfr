@@ -3,8 +3,8 @@ use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
 use super::guard_id::{GuardId, GuardSet};
 use crate::cfr::abstraction::{
-    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
-    PostflopBucket,
+    BUCKET_FLUSH_MIN, BUCKET_HIGH_CARD_MAX, BUCKET_SECOND_NUT_FLUSH, BUCKET_TRIPS_MIN,
+    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, PostflopBucket,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
@@ -112,7 +112,11 @@ pub(super) fn apply_overbet_allin_cap(
         && ctx.bucket < BUCKET_TWO_PAIR_MIN
         && rem_after_call >= ctx.bb * 25
         && rem_after_call > (pot_after_call * 3) / 2;
-    if !is_extreme_overbet && !is_deep_one_pair_jam_vs_bet {
+    let is_four_flush_non_nut_jam = ctx.round >= ROUND_TURN
+        && ctx.is_four_flush_board
+        && ctx.bucket <= BUCKET_SECOND_NUT_FLUSH
+        && rem_after_call > pot_after_call;
+    if !is_extreme_overbet && !is_deep_one_pair_jam_vs_bet && !is_four_flush_non_nut_jam {
         return;
     }
     let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) else {
@@ -125,7 +129,13 @@ pub(super) fn apply_overbet_allin_cap(
     reasons.insert(GuardId::PostOverbetAllinCap);
     probs[ai_i] = 0.0;
     let target_idx = if ctx.to_call == 0 {
-        if ctx.bucket < BUCKET_TRIPS_MIN
+        if ctx.is_four_flush_board {
+            if ctx.bucket >= BUCKET_FLUSH_MIN {
+                first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK])
+            } else {
+                action_idx(ctx.legal_actions, CALL_CHECK)
+            }
+        } else if ctx.bucket < BUCKET_TRIPS_MIN
             && (ctx.is_paired_board || ctx.is_three_flush || ctx.is_four_board_danger)
         {
             first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, CALL_CHECK])

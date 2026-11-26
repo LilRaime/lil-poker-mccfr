@@ -1650,4 +1650,117 @@ fn test_subgame_weak_pair_no_turn_overbet_4straight_cap_and_river_value() {
         val_bets >= 35,
         "River genuine two-pair (bucket {b_t8}) must fire thin value frequently instead of check-back (got {val_bets}/80)"
     );
+
+    /* 4. Paired 3-flush river: non-nut flush (Ten-high, bucket 81) facing bet caps reraises/all-in */
+    let hole_td4d = [
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Diamonds),
+    ];
+    let board_paired_3d = [
+        Card::new(Rank::Six, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Hearts),
+        Card::new(Rank::Queen, Suit::Diamonds),
+        Card::new(Rank::Five, Suit::Diamonds),
+        Card::new(Rank::Three, Suit::Diamonds),
+    ];
+    let b_td4d = postflop_equity_bucket(&hole_td4d, &board_paired_3d);
+    assert_eq!(b_td4d, 81);
+    let reraise_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.15, 0.25, 0.25, 0.20];
+    for _ in 0..40 {
+        let (act, tr) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &reraise_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_td4d,
+                round: 4,
+                to_call: 749,
+                pot: 1997,
+                hole: Some(&hole_td4d),
+                board: Some(&board_paired_3d),
+                table_bb: 150,
+                my_chips: 6172,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act < RAISE_MIN,
+            "Non-nut flush on paired 3-flush river facing lead must call/fold, not raise (got {act}, reasons: {:?})",
+            tr.guard_reasons
+        );
+    }
+
+    /* 5. Four-flush river (to_call == 0): 2nd-nut flush caps >2x pot ALL_IN open jam */
+    let hole_qc_as = [
+        Card::new(Rank::Queen, Suit::Clubs),
+        Card::new(Rank::Ace, Suit::Spades),
+    ];
+    let board_4c = [
+        Card::new(Rank::Ace, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Clubs),
+    ];
+    let b_4c = postflop_equity_bucket(&hole_qc_as, &board_4c);
+    let open_jam_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.10, 0.05, 0.15, 0.0, 0.70];
+    for _ in 0..40 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &open_jam_heavy,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_4c,
+                round: 4,
+                to_call: 0,
+                pot: 3328,
+                hole: Some(&hole_qc_as),
+                board: Some(&board_4c),
+                table_bb: 100,
+                my_chips: 7750,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert_ne!(
+            act, ALL_IN,
+            "2nd-nut flush on 4-flush river must not open-jam >2x pot ALL_IN"
+        );
+    }
+
+    /* 6. Turn committing 1.5x overbet with bare low underpair under 4 overcards folds even vs overbet bluffer */
+    let hole_22 = [
+        Card::new(Rank::Two, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+    ];
+    let board_46jq = [
+        Card::new(Rank::Four, Suit::Hearts),
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Queen, Suit::Clubs),
+    ];
+    let b_22 = postflop_equity_bucket(&hole_22, &board_46jq);
+    let (act_22, tr_22) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.10, 0.90, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_FULL,
+            bucket: b_22,
+            round: 3,
+            to_call: 1200,
+            pot: 2000,
+            hole: Some(&hole_22),
+            board: Some(&board_46jq),
+            table_bb: 150,
+            my_chips: 2125,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_22, FOLD,
+        "Bare underpair 22 under 4 overcards facing 56% stack turn overbet must fold (reasons: {:?})",
+        tr_22.guard_reasons
+    );
 }

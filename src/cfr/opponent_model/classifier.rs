@@ -58,18 +58,18 @@ impl OpponentTracker {
         let is_overbet_bluffer = self.is_overbet_bluffer();
         let is_known_maniac = self.total_actions() >= 10
             && (self.total_hands < 6 || sm_pfr >= 0.26)
-            && ((sm_raise > 0.46 && sm_vpip >= 0.58)
+            && ((sm_raise > 0.42 && sm_vpip >= 0.52)
                 || (sm_vpip > 0.65 && sm_raise > 0.38)
-                || (sm_pfr > 0.52 && sm_raise > 0.32)
+                || (sm_pfr > 0.48 && sm_raise > 0.32)
                 || (sm_vpip > 0.80 && sm_raise > 0.28));
         let is_extreme_shove_bot = self.total_hands >= 8
             && (self.total_hands < 6 || sm_pfr >= 0.26)
             && sm_raise > 0.42
             && sm_vpip > 0.68;
         let is_hyper_aggressor = self.total_hands >= 12
-            && (self.bb_total_hands < 5 || self.bb_vpip_ratio() >= 0.48)
-            && ((self.raise_ratio() > 0.55 && self.vpip_ratio() >= 0.55)
-                || (self.pfr_ratio() > 0.58 && self.raise_ratio() > 0.38));
+            && (self.bb_total_hands < 5 || self.bb_vpip_ratio() >= 0.45)
+            && ((self.raise_ratio() > 0.48 && self.vpip_ratio() >= 0.50)
+                || (self.pfr_ratio() > 0.52 && self.raise_ratio() > 0.36));
         let is_tight_passive_bb = (self.total_hands >= 8
             && ((sm_vpip < 0.30 && sm_pfr < 0.18)
                 || (self.vpip_ratio() < 0.28 && self.pfr_ratio() < 0.18)))

@@ -129,10 +129,11 @@ impl OpponentTracker {
             let allow_hu_3bet_overcard_cbet = req.round == ROUND_FLOP
                 && req.active_opponents == 1
                 && !is_sticky_or_station
-                && eff_chips > req.pot * 2
+                && eff_chips > req.pot
                 && req.pot >= bb * 8
-                && pb.as_u8() >= PostflopBucket::STRONG_OVERCARDS_MIN
-                && pb.is_air_or_weak_draw()
+                && ((pb.as_u8() >= PostflopBucket::STRONG_OVERCARDS_MIN
+                    && pb.is_air_or_weak_draw())
+                    || pb.in_range(34, PostflopBucket::DRY_MID_OR_UNDERPAIR_MAX))
                 && *chosen <= RAISE_THIRD_POT;
             if req.to_call == 0
                 && *chosen >= RAISE_MIN
