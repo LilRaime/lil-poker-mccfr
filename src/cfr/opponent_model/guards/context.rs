@@ -3,8 +3,8 @@ use super::super::tracker::OpponentTracker;
 use super::helpers::{is_three_straight_board, river_nut_blocker_allowed};
 use crate::cfr::abstraction::{
     BUCKET_NUT_FLUSH, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN, BUCKET_WEAK_PAIR_MIN,
-    detect_board_texture, detect_river_nut_blocker, is_dangerous_board, is_four_flush_board,
-    is_four_straight_board, preflop_strength_tier,
+    PostflopBucket, detect_board_texture, detect_river_nut_blocker, is_dangerous_board,
+    is_four_flush_board, is_four_straight_board, preflop_strength_tier,
 };
 use crate::game::config::{ALL_IN, NUM_SUITS, RAISE_MIN, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN};
 use crate::game::holdem::{Card, Rank};
@@ -29,6 +29,7 @@ pub(in crate::cfr::opponent_model) struct GuardInput<'a> {
 pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
     pub legal_actions: &'a [u8],
     pub bucket: usize,
+    pub post_bucket: PostflopBucket,
     pub round: u8,
     pub to_call: i32,
     pub pot: i32,
@@ -53,7 +54,9 @@ pub(in crate::cfr::opponent_model) struct GuardContext<'a> {
     pub is_extreme_shove_bot: bool,
     pub is_hyper_aggressor: bool,
     pub is_tight_passive_bb: bool,
+    pub is_ultra_sticky_bb: bool,
     pub is_tight_passive_postflop: bool,
+    pub is_low_pfr_aggressor: bool,
     pub is_frequent_sb_limper: bool,
     pub is_paired_board: bool,
     pub is_four_flush_board: bool,
@@ -83,36 +86,7 @@ impl<'a> GuardContext<'a> {
                 .iter()
                 .any(|&a| (RAISE_MIN..=ALL_IN).contains(&a));
 
-        let sm_raise = tracker.smoothed_raise_ratio();
-        let sm_pfr = tracker.smoothed_pfr();
-        let sm_vpip = tracker.smoothed_vpip();
-        let sm_fold = tracker.smoothed_fold_ratio();
-
-        let is_passive_station = tracker.is_passive_station();
-        let is_sticky_caller = is_passive_station
-            || (tracker.flop_cbet_faced >= 4 && tracker.smoothed_flop_fold_to_cbet() < 0.28)
-            || (tracker.turn_cbet_faced + tracker.river_bet_faced >= 4
-                && tracker.turn_fold_to_cbet_ratio() < 0.30)
-            || (tracker.total_actions() >= 15 && sm_fold < 0.14 && sm_raise <= 0.22);
-        let is_overbet_bluffer = tracker.is_overbet_bluffer();
-        let is_known_maniac = tracker.total_actions() >= 10
-            && ((sm_raise > 0.46 && sm_vpip >= 0.58)
-                || (sm_vpip > 0.65 && sm_raise > 0.38)
-                || (sm_pfr > 0.52 && sm_raise > 0.32)
-                || (sm_vpip > 0.80 && sm_raise > 0.28));
-        let is_extreme_shove_bot = tracker.total_hands >= 8 && sm_raise > 0.42 && sm_vpip > 0.68;
-        let is_hyper_aggressor = tracker.total_hands >= 12
-            && (tracker.bb_total_hands < 5 || tracker.bb_vpip_ratio() >= 0.48)
-            && ((tracker.raise_ratio() > 0.55 && tracker.vpip_ratio() >= 0.55)
-                || (tracker.pfr_ratio() > 0.58 && tracker.raise_ratio() > 0.38));
-        let is_tight_passive_bb = (tracker.total_hands >= 8
-            && ((sm_vpip < 0.30 && sm_pfr < 0.18)
-                || (tracker.vpip_ratio() < 0.28 && tracker.pfr_ratio() < 0.18)))
-            || (tracker.bb_total_hands >= 6 && tracker.bb_vpip_ratio() <= 0.42);
-        let is_tight_passive_postflop = tracker.total_hands >= 8
-            && ((sm_vpip < 0.30 && sm_pfr < 0.18)
-                || (tracker.vpip_ratio() < 0.26 && tracker.pfr_ratio() < 0.16));
-        let is_frequent_sb_limper = tracker.sb_total_hands >= 5 && tracker.sb_limp_ratio() > 0.30;
+        let profile = tracker.tactical_profile();
 
         let is_paired_board = input
             .board
@@ -123,12 +97,19 @@ impl<'a> GuardContext<'a> {
         let is_dangerous = input.board.is_some_and(is_dangerous_board);
         let is_three_straight = input.board.is_some_and(is_three_straight_board);
 
+        let post_bucket = if is_preflop {
+            PostflopBucket(0)
+        } else {
+            PostflopBucket::from_usize(input.bucket)
+        };
         let never_fold_postflop = !is_preflop
             && (input.bucket >= BUCKET_NUT_FLUSH
                 || (input.bucket == BUCKET_SECOND_NUT_FLUSH
                     && !is_four_flush
                     && input.to_call < input.pot * 2)
-                || (input.bucket == 81 && !is_four_flush && !is_paired_board));
+                || (post_bucket.as_u8() == PostflopBucket::GOOD_TWO_CARD_FLUSH
+                    && !is_four_flush
+                    && !is_paired_board));
         let allow_pot_commit_rescue = !(is_preflop
             && preflop_strength_tier(input.bucket) >= 7
             && input.to_call > input.bb * 2);
@@ -136,7 +117,7 @@ impl<'a> GuardContext<'a> {
             && input.active_opponents == 1
             && input.to_call == 0
             && input.bucket < BUCKET_WEAK_PAIR_MIN
-            && !is_passive_station
+            && !profile.is_passive_station
             && (tracker.total_actions() < 6 || tracker.fold_ratio() >= 0.30)
             && river_nut_blocker_allowed(input.pot, input.bb, input.my_chips)
             && input
@@ -166,6 +147,7 @@ impl<'a> GuardContext<'a> {
         Self {
             legal_actions: input.legal_actions,
             bucket: input.bucket,
+            post_bucket,
             round: input.round,
             to_call: input.to_call,
             pot: input.pot,
@@ -183,15 +165,17 @@ impl<'a> GuardContext<'a> {
             eff_stack_bb,
             is_short_stack,
             can_raise,
-            is_passive_station,
-            is_sticky_caller,
-            is_overbet_bluffer,
-            is_known_maniac,
-            is_extreme_shove_bot,
-            is_hyper_aggressor,
-            is_tight_passive_bb,
-            is_tight_passive_postflop,
-            is_frequent_sb_limper,
+            is_passive_station: profile.is_passive_station,
+            is_sticky_caller: profile.is_sticky_caller,
+            is_overbet_bluffer: profile.is_overbet_bluffer,
+            is_known_maniac: profile.is_known_maniac,
+            is_extreme_shove_bot: profile.is_extreme_shove_bot,
+            is_hyper_aggressor: profile.is_hyper_aggressor,
+            is_tight_passive_bb: profile.is_tight_passive_bb,
+            is_ultra_sticky_bb: profile.is_ultra_sticky_bb,
+            is_tight_passive_postflop: profile.is_tight_passive_postflop,
+            is_low_pfr_aggressor: profile.is_low_pfr_aggressor,
+            is_frequent_sb_limper: profile.is_frequent_sb_limper,
             is_paired_board,
             is_four_flush_board: is_four_flush,
             is_four_straight_board: is_four_straight,

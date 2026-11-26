@@ -2,7 +2,7 @@ use super::{
     LEGAL_FULL, LEGAL_OPEN, LEGAL_SHOVE, make_aggro_maniac, make_overbet_bluffer, make_ultra_nit,
 };
 use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
+use lil_poker_mccfr::cfr::opponent_model::{GuardId, OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
     ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
@@ -486,7 +486,7 @@ fn test_subgame_turn_and_river_one_pair_shove_folds() {
         &mut rng,
     );
     assert!(
-        act_86 != FOLD && !tr_86.guard_reasons.contains(&"SHOVE_DEFENSE_FOLD"),
+        act_86 != FOLD && !tr_86.guard_reasons.contains(GuardId::ShoveDefenseFold),
         "Dry short-SPR river 2nd pair facing 82% pot bet must not auto-fold (reasons: {:?})",
         tr_86.guard_reasons
     );
@@ -943,7 +943,7 @@ fn test_subgame_baby_vs_qhigh_four_flush_river() {
         &mut rng,
     );
     assert!(
-        !tr_qh.guard_reasons.contains(&"SHOVE_DEFENSE_FOLD"),
+        !tr_qh.guard_reasons.contains(GuardId::ShoveDefenseFold),
         "Q-high flush must not trigger SHOVE_DEFENSE_FOLD"
     );
     assert_ne!(act_qh, FOLD, "Q-high flush on 4-flush river must not fold");
@@ -1221,7 +1221,7 @@ fn test_subgame_early_overbet_river_thin_value_and_turn_two_pair_cap() {
         &mut rng,
     );
     assert!(
-        act_qj != FOLD && !tr_qj.guard_reasons.contains(&"SHOVE_DEFENSE_FOLD"),
+        act_qj != FOLD && !tr_qj.guard_reasons.contains(GuardId::ShoveDefenseFold),
         "Top pair Qc Js vs early overbet spammer must not force-fold (reasons: {:?})",
         tr_qj.guard_reasons
     );
@@ -1414,7 +1414,7 @@ fn test_turn_overbet_bluffer_draw_defense_and_srp_barrel_unlock() {
         assert!(
             !tr.guard_reasons
                 .iter()
-                .any(|&r| r == "SHOVE_DEFENSE_FOLD" || r == "POST_BARREL_FOLD"),
+                .any(|r| matches!(r, GuardId::ShoveDefenseFold | GuardId::PostBarrelFold)),
             "Paired turn hand (bucket {b_t9}) vs overbet bluffer must not force-fold (reasons: {:?})",
             tr.guard_reasons
         );
@@ -1502,5 +1502,152 @@ fn test_turn_overbet_bluffer_draw_defense_and_srp_barrel_unlock() {
     assert!(
         bets >= 40,
         "Clean 8 BB SRP Turn middle pair (bucket {b_8x}) must be free to bet (got {bets}/60)"
+    );
+}
+
+#[test]
+fn test_subgame_weak_pair_no_turn_overbet_4straight_cap_and_river_value() {
+    let overbet_villain = make_overbet_bluffer();
+    let neutral = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(20_261_126);
+
+    /* 1. 3rd-pair Js 7c on Ah 9d 6d 7h free Turn strips 1.5x overbet (RAISE_HALF_POT) and folds to 32 BB raise */
+    let hole_j7 = [
+        Card::new(Rank::Jack, Suit::Spades),
+        Card::new(Rank::Seven, Suit::Clubs),
+    ];
+    let board_a967 = [
+        Card::new(Rank::Ace, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Diamonds),
+        Card::new(Rank::Six, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Hearts),
+    ];
+    let b_j7 = postflop_equity_bucket(&hole_j7, &board_a967);
+    let overbet_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.05, 0.05, 0.75, 0.0];
+    for _ in 0..40 {
+        let (act, _) = overbet_villain.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &overbet_heavy,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_j7,
+                round: 3,
+                pot: 800,
+                hole: Some(&hole_j7),
+                board: Some(&board_a967),
+                active_opponents: 1,
+                table_bb: 150,
+                my_chips: 6800,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act < RAISE_HALF_POT,
+            "Weak 3rd pair (bucket {b_j7}) must never lead 1.5x RAISE_HALF_POT on Turn (got {act})"
+        );
+    }
+
+    let (act_raise, _) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.05, 0.95, 0.0, 0.0, 0.0, 0.0],
+            legal_actions: &LEGAL_SHOVE,
+            bucket: b_j7,
+            round: 3,
+            to_call: 4797,
+            pot: 7995,
+            hole: Some(&hole_j7),
+            board: Some(&board_a967),
+            active_opponents: 1,
+            table_bb: 150,
+            my_chips: 5451,
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_raise, FOLD,
+        "3rd pair Js 7c facing 32 BB Turn raise must fold even vs overbet bluffer"
+    );
+
+    /* 2. Bottom two pair (7s 8d, bucket 57) on 4-straight Turn Ts Jd 7d 8h facing bet caps raises */
+    let hole_87 = [
+        Card::new(Rank::Seven, Suit::Spades),
+        Card::new(Rank::Eight, Suit::Diamonds),
+    ];
+    let board_tj78 = [
+        Card::new(Rank::Ten, Suit::Spades),
+        Card::new(Rank::Jack, Suit::Diamonds),
+        Card::new(Rank::Seven, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Hearts),
+    ];
+    let b_87 = postflop_equity_bucket(&hole_87, &board_tj78);
+    let jam_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.25, 0.25, 0.0, 0.0, 0.50];
+    for _ in 0..40 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &jam_heavy,
+                legal_actions: &LEGAL_FULL,
+                bucket: b_87,
+                round: 3,
+                to_call: 2033,
+                pot: 3173,
+                hole: Some(&hole_87),
+                board: Some(&board_tj78),
+                active_opponents: 1,
+                table_bb: 400,
+                my_chips: 3598,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        assert!(
+            act < RAISE_MIN,
+            "Two pair without straight (bucket {b_87}) on 4-straight Turn must cap raises (got {act})"
+        );
+    }
+
+    /* 3. Unpaired Two Pair / Overpair on paired board (buckets 51..62) triggers RIVER_THIN_VALUE_BET */
+    let hole_t8 = [
+        Card::new(Rank::Ten, Suit::Hearts),
+        Card::new(Rank::Eight, Suit::Spades),
+    ];
+    let board_t8423 = [
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Eight, Suit::Diamonds),
+        Card::new(Rank::Four, Suit::Spades),
+        Card::new(Rank::Two, Suit::Clubs),
+        Card::new(Rank::Three, Suit::Hearts),
+    ];
+    let b_t8 = postflop_equity_bucket(&hole_t8, &board_t8423);
+    let passive_check: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.85, 0.10, 0.05, 0.0, 0.0];
+    let mut val_bets = 0usize;
+    for _ in 0..80 {
+        let (act, _) = neutral.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &passive_check,
+                legal_actions: &LEGAL_OPEN,
+                bucket: b_t8,
+                round: 4,
+                pot: 1500,
+                hole: Some(&hole_t8),
+                board: Some(&board_t8423),
+                active_opponents: 1,
+                table_bb: 150,
+                my_chips: 8000,
+                from_subgame: true,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == RAISE_THIRD_POT || act == RAISE_MIN {
+            val_bets += 1;
+        }
+    }
+    assert!(
+        val_bets >= 35,
+        "River genuine two-pair (bucket {b_t8}) must fire thin value frequently instead of check-back (got {val_bets}/80)"
     );
 }

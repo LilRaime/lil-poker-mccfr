@@ -1,6 +1,6 @@
 use lil_poker_mccfr::cfr::abstraction::{nash_open_push_max_bb, preflop_bucket};
 use lil_poker_mccfr::cfr::fallback::StrategyLookupIndex;
-use lil_poker_mccfr::cfr::opponent_model::OpponentTracker;
+use lil_poker_mccfr::cfr::opponent_model::{GuardId, OpponentTracker};
 use lil_poker_mccfr::cfr::subgame::{SubgameContext, SubgameSolver};
 use lil_poker_mccfr::game::holdem::{
     ALL_IN, CALL_CHECK, Card, FOLD, NUM_ROUNDS, RAISE_MIN, Rank, RoundHistory, Suit,
@@ -104,7 +104,7 @@ fn test_bot_value_bets_straight_in_live_game() {
     let history = [RoundHistory::new(); NUM_ROUNDS];
     let solver = SubgameSolver::new(400);
     let mut ctx = SubgameContext::new();
-    let empty_map = HashMap::new();
+    let empty_map: HashMap<String, [f64; 6]> = HashMap::new();
     let index = StrategyLookupIndex::new();
 
     let mut raise_count = 0;
@@ -624,7 +624,7 @@ fn test_flop_oop_donk_suppresses_min_and_third_pot() {
             tr.guard_reasons
         );
         assert_eq!(amt, 0);
-        assert!(tr.guard_reasons.contains(&"FLOP_OOP_MICRO_DONK_SUPPRESS"));
+        assert!(tr.guard_reasons.contains(GuardId::FlopOopMicroDonkSuppress));
     }
 }
 

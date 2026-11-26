@@ -2,8 +2,8 @@
 use super::guards::{GuardContext, action_idx, force_action, zero_and_sum};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
-    BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_DRAW_MIN, BUCKET_STRONG_FLUSH_MIN,
-    BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, preflop_strength_tier,
+    BUCKET_OVERPAIR_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRONG_FLUSH_MIN, BUCKET_TRIPS_MIN,
+    BUCKET_TWO_PAIR_MIN, PostflopBucket, preflop_strength_tier,
 };
 use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_RIVER};
 
@@ -152,12 +152,10 @@ impl OpponentTracker {
         fold_idx: Option<usize>,
         call_idx: Option<usize>,
     ) {
-        if ctx.bucket < BUCKET_STRONG_DRAW_MIN
-            || ctx.bucket == BUCKET_WEAK_PAIR_MIN
-            || ctx.bucket == 29
-        {
+        let pb = ctx.post_bucket;
+        if pb.is_air_or_weak_draw() || pb.is_crushed_or_three_flush_bottom_pair() {
             Self::apply_multiway_postflop_air(probs, ctx, extra_opps, fold_idx, call_idx);
-        } else if (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket) {
+        } else if pb.is_strong_draw() {
             Self::apply_multiway_postflop_draws(probs, ctx, extra_opps, fold_idx, call_idx);
         } else if (30..55).contains(&ctx.bucket) {
             Self::apply_multiway_postflop_one_pair(probs, ctx, fold_idx, call_idx);
@@ -251,7 +249,8 @@ impl OpponentTracker {
             }
         }
         if ctx.to_call > 0
-            && ((ctx.bucket < 44 && ctx.pot_odds >= 0.18)
+            && ((ctx.post_bucket.as_u8() <= PostflopBucket::VULNERABLE_TOP_PAIR_MAX
+                && ctx.pot_odds >= 0.18)
                 || (ctx.bucket < BUCKET_OVERPAIR_MIN
                     && ctx.pot_odds >= 0.28
                     && ctx.active_opponents >= 3))
@@ -291,11 +290,7 @@ impl OpponentTracker {
                 ctx.bucket < BUCKET_TRIPS_MIN
                     || (ctx.is_three_flush && ctx.bucket < BUCKET_STRONG_FLUSH_MIN)
             } else {
-                ctx.bucket < BUCKET_TWO_PAIR_MIN
-                    && !(ctx.bucket == 22
-                        || ctx.bucket == 23
-                        || ctx.bucket == 25
-                        || ctx.bucket == 27)
+                ctx.bucket < BUCKET_TWO_PAIR_MIN && !ctx.post_bucket.is_multiway_nut_draw()
             };
             if fold_multiway_shove {
                 force_action(probs, ctx.legal_actions, FOLD);

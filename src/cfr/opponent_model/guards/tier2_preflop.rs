@@ -1,6 +1,7 @@
 /*! Priority Tier 2A: Preflop Open/Raise Discipline & Stack-Commit Guards */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
+use super::guard_id::{GuardId, GuardSet};
 use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
 use crate::cfr::abstraction::{
     nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
@@ -11,7 +12,7 @@ impl OpponentTracker {
     pub(super) fn apply_preflop_discipline_guard(
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let pf_tier = preflop_strength_tier(ctx.bucket);
         if !Self::apply_sb_open_discipline(probs, ctx, pf_tier, reasons) {
@@ -24,7 +25,7 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         pf_tier: u8,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) -> bool {
         let is_sb_open = ctx.active_opponents == 1
             && ctx.to_call > 0
@@ -56,7 +57,7 @@ impl OpponentTracker {
             && (ctx.bucket <= 117 || matches!(ctx.bucket, 125 | 134 | 141 | 148 | 154 | 159 | 163));
 
         if ctx.to_call == 0 && pf_tier >= 6 && !allow_hu_bb_tier6_iso {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] = (probs[c_i] + shifted).max(0.95);
@@ -80,11 +81,11 @@ impl OpponentTracker {
                         || (pf_tier == 7 && ctx.bucket >= 120 && ctx.eff_stack_bb <= 25))))
             && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) < ctx.eff_stack_bb
         {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             force_action(probs, ctx.legal_actions, FOLD);
             true
         } else if is_sb_open && ctx.is_hyper_aggressor && pf_tier == 6 && ctx.eff_stack_bb > 15 {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 let limp_w = probs[c_i];
                 probs[c_i] = 0.0;
@@ -107,7 +108,7 @@ impl OpponentTracker {
             }
             true
         } else if is_sb_open && pf_tier >= 7 {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             Self::apply_sb_trash_steal_or_fold(probs, ctx, pf_tier);
             true
         } else {
@@ -137,6 +138,7 @@ impl OpponentTracker {
                 probs[r_i] += shifted;
             }
         } else if ctx.is_extreme_shove_bot
+            || (ctx.is_ultra_sticky_bb && pf_tier == 8)
             || (ctx.is_known_maniac
                 && (ctx.bucket >= 128 || (ctx.eff_stack_bb <= 25 && ctx.bucket >= 114)))
             || (pf_tier == 8
@@ -200,10 +202,10 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         pf_tier: u8,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.to_call > 0 && pf_tier >= 7 {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             let is_hu_small_open = ctx.active_opponents == 1
                 && ctx.to_call <= ctx.bb * 2
@@ -212,10 +214,10 @@ impl OpponentTracker {
                 && pf_tier == 7
                 && ctx.bucket < 135;
             let is_hu_min_open_playable_t8 = ctx.active_opponents == 1
-                && ctx.to_call <= ctx.bb
-                && ctx.pot <= ctx.bb * 3
-                && ctx.pot_odds <= 0.26
-                && matches!(ctx.bucket, 121..=123 | 128..=130 | 136 | 144);
+                && ctx.to_call * 2 <= ctx.bb * 3
+                && ctx.pot <= ctx.bb * 4
+                && ctx.pot_odds <= 0.28
+                && matches!(ctx.bucket, 121..=123 | 128..=132 | 136..=138 | 144);
             let is_offsuit_trash_vs_3bet =
                 ctx.pot >= ctx.bb * 6 && ctx.to_call >= ctx.bb * 2 && ctx.bucket >= 91;
             if is_hu_small_open {
@@ -233,10 +235,19 @@ impl OpponentTracker {
             } else if !is_offsuit_trash_vs_3bet
                 && (ctx.pot_odds <= 0.22
                     || (ctx.pot_odds <= 0.26 && pf_tier <= 7)
+                    || (ctx.active_opponents == 1 && ctx.pot_odds <= 0.28 && pf_tier == 7)
                     || is_hu_min_open_playable_t8)
             {
                 if let Some(c_i) = first_action_idx(ctx.legal_actions, &[CALL_CHECK, ALL_IN]) {
                     probs[c_i] += shifted;
+                    if (is_hu_min_open_playable_t8
+                        || (ctx.active_opponents == 1 && ctx.pot_odds <= 0.28 && pf_tier == 7))
+                        && let Some(f_i) = action_idx(ctx.legal_actions, FOLD)
+                    {
+                        let defend = probs[f_i] * 0.55;
+                        probs[f_i] -= defend;
+                        probs[c_i] += defend;
+                    }
                 }
             } else if ctx.to_call > ctx.bb / 2
                 && (pf_tier == 8 || ctx.pot_odds > 0.28 || is_offsuit_trash_vs_3bet)
@@ -249,7 +260,7 @@ impl OpponentTracker {
             && ctx.to_call < ctx.bb * 3
             && (pf_tier == 6 || (96..=99).contains(&ctx.bucket))
         {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             let is_hu_connected_tier6_defend = ctx.active_opponents == 1
                 && ctx.pot < ctx.bb * 6
@@ -264,7 +275,7 @@ impl OpponentTracker {
             if is_low_offsuit_tier6_vs_3bet
                 || (pf_tier == 6
                     && ctx.bucket >= 141
-                    && ctx.pot_odds > 0.28
+                    && ctx.pot_odds > 0.295
                     && !is_hu_connected_tier6_defend)
             {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
@@ -279,7 +290,7 @@ impl OpponentTracker {
                 }
             }
         } else if ctx.to_call >= ctx.bb * 3 && pf_tier >= 6 {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             if ctx.pot_odds > 0.28 && !ctx.is_extreme_shove_bot {
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
@@ -308,7 +319,7 @@ impl OpponentTracker {
                 && ((ctx.is_extreme_shove_bot && pf_tier <= 5)
                     || (ctx.is_known_maniac && pf_tier == 4));
             if !nash_ok && pf_tier >= 4 && !defer_to_hu_shove_defense {
-                reasons.push("PF_DISCIPLINE_GUARD");
+                reasons.insert(GuardId::PfDisciplineGuard);
                 let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
                 force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
             }
@@ -319,7 +330,7 @@ impl OpponentTracker {
             && pf_tier >= 5
             && !ctx.is_extreme_shove_bot
         {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
             force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
         }
@@ -329,7 +340,7 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         pf_tier: u8,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         Self::apply_preflop_pair_setmine_guard(probs, ctx, reasons);
         Self::apply_preflop_open_jam_cap(probs, ctx, pf_tier);
@@ -339,13 +350,13 @@ impl OpponentTracker {
     fn apply_preflop_pair_setmine_guard(
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         /* Small/mid pocket pairs (66..22) facing an open raise: forbid bloated 3-bets; set-mine */
         if !(ctx.to_call >= ctx.bb && (8..=12).contains(&ctx.bucket)) {
             return;
         }
-        reasons.push("PF_DISCIPLINE_GUARD");
+        reasons.insert(GuardId::PfDisciplineGuard);
         let mut shifted = 0.0f64;
         for (i, &a) in ctx.legal_actions.iter().enumerate() {
             if a >= RAISE_THIRD_POT {
@@ -420,7 +431,7 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         pf_tier: u8,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.eff_stack_bb > 35
             && !ctx.is_allin_call
@@ -431,7 +442,7 @@ impl OpponentTracker {
         {
             let s = probs[ai_i];
             if s > 0.0 {
-                reasons.push("PF_DISCIPLINE_GUARD");
+                reasons.insert(GuardId::PfDisciplineGuard);
                 probs[ai_i] = 0.0;
                 match (
                     action_idx(ctx.legal_actions, RAISE_THIRD_POT),
@@ -461,7 +472,7 @@ impl OpponentTracker {
             )
             && probs[c_i] > 0.0
         {
-            reasons.push("PF_DISCIPLINE_GUARD");
+            reasons.insert(GuardId::PfDisciplineGuard);
             probs[f_i] += probs[c_i];
             probs[c_i] = 0.0;
         }
@@ -496,12 +507,12 @@ impl OpponentTracker {
                             }
                         }
                         if shifted > 0.0 {
-                            reasons.push("PF_DISCIPLINE_GUARD");
+                            reasons.insert(GuardId::PfDisciplineGuard);
                             probs[ai_i] += shifted;
                         }
                     }
                 } else if ctx.pot_odds > 0.22 {
-                    reasons.push("PF_DISCIPLINE_GUARD");
+                    reasons.insert(GuardId::PfDisciplineGuard);
                     let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
                     force_fold_min(probs, ctx.legal_actions, shifted, 0.95);
                 }

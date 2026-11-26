@@ -1,13 +1,14 @@
 /*! Purified Action Sampling and Orchestration Pipeline */
 use super::exploit::ExploitRequest;
+use super::guards::{GuardId, GuardSet};
 use super::tracker::OpponentTracker;
 use crate::cfr::abstraction::{
     nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
 };
 use crate::game::config::{
-    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, ROUND_FLOP,
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, RAISE_HALF_POT, RAISE_MIN, ROUND_FLOP,
 };
-use crate::game::holdem::Card;
+use crate::game::holdem::{Card, RoundHistory};
 use rand::{Rng, RngExt};
 
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +26,8 @@ pub struct PolicyRequest<'a> {
     pub my_chips: i32,
     pub opp_chips: Option<i32>,
     pub from_subgame: bool,
+    pub my_player: Option<usize>,
+    pub history: Option<&'a [RoundHistory; 4]>,
 }
 
 impl Default for PolicyRequest<'_> {
@@ -43,6 +46,8 @@ impl Default for PolicyRequest<'_> {
             my_chips: 0,
             opp_chips: None,
             from_subgame: false,
+            my_player: None,
+            history: None,
         }
     }
 }
@@ -75,14 +80,14 @@ impl Default for ShortStackRequest<'_> {
 }
 
 /** Structured diagnostic trace of a purified action decision */
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DecisionTrace {
     pub bucket: usize,
     pub round: u8,
     pub pot_odds_bps: u16,
     pub raw_top_action: u8,
     pub final_action: u8,
-    pub guard_reasons: Vec<&'static str>,
+    pub guard_reasons: GuardSet,
 }
 
 impl OpponentTracker {
@@ -105,7 +110,7 @@ impl OpponentTracker {
         let eff_allin_threshold = (bb * 35).max(1);
         let active_opponents = req.active_opponents.max(1);
         let raw_top_action = top_legal_action(req.raw_probs, req.legal_actions);
-        let adjusted_probs = self.adjust_strategy(&ExploitRequest {
+        let adjusted_probs = self.adjust_strategy_stack(&ExploitRequest {
             blueprint_probs: req.raw_probs,
             legal_actions: req.legal_actions,
             bucket: req.bucket,
@@ -114,17 +119,16 @@ impl OpponentTracker {
             table_bb: bb,
         });
 
-        let mut probs: Vec<f64> = req
-            .legal_actions
-            .iter()
-            .map(|&a| {
-                adjusted_probs
-                    .get(a as usize)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .max(0.0)
-            })
-            .collect();
+        let mut probs_buf = [0.0f64; HOLDEM_NUM_ACTIONS];
+        let n_legal = req.legal_actions.len().min(HOLDEM_NUM_ACTIONS);
+        let probs = &mut probs_buf[..n_legal];
+        for (i, &a) in req.legal_actions.iter().take(n_legal).enumerate() {
+            probs[i] = adjusted_probs
+                .get(a as usize)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0);
+        }
 
         let total_pot = req.pot + req.to_call;
         let pot_odds = if total_pot > 0 {
@@ -132,15 +136,15 @@ impl OpponentTracker {
         } else {
             1.0
         };
-        let mut reasons: Vec<&'static str> = Vec::with_capacity(4);
+        let mut reasons = GuardSet::EMPTY;
         let is_three_flush = has_three_flush(req.board);
         let eff_my_chips = effective_remaining_chips(req.my_chips, req.opp_chips, req.to_call);
 
         /* Priority Pipeline (Tier 1 Soft Shifts -> Tier 2 Hard Raise Caps -> Multiway -> Tier 3 Terminal Fold / Pot-Commit) */
         self.apply_preflop_and_postflop_guards(
-            &mut probs,
+            probs,
             super::guards::GuardInput {
-                legal_actions: req.legal_actions,
+                legal_actions: &req.legal_actions[..n_legal],
                 bucket: req.bucket,
                 round: req.round,
                 to_call: req.to_call,
@@ -158,7 +162,10 @@ impl OpponentTracker {
             &mut reasons,
         );
 
-        let chosen = purify_and_sample(&mut probs, req.legal_actions, rng);
+        let mut chosen = purify_and_sample(probs, &req.legal_actions[..n_legal], rng);
+        if req.my_player.is_some() || req.history.is_some() {
+            self.apply_post_selection_guards(req, eff_my_chips, bb, &mut chosen, &mut reasons);
+        }
 
         let trace = DecisionTrace {
             bucket: req.bucket,
@@ -172,11 +179,11 @@ impl OpponentTracker {
     }
 
     /** Unified <= 12 BB Nash Push/Fold preflop engine shared by live play and simulation.
-     * Returns `Some((action, reason_code))` when stack <= 12 BB preflop, else `None`. */
+     * Returns `Some((action, reason_id))` when stack <= 12 BB preflop, else `None`. */
     pub fn select_short_stack_preflop_action(
         &self,
         req: &ShortStackRequest<'_>,
-    ) -> Option<(u8, &'static str)> {
+    ) -> Option<(u8, GuardId)> {
         let bb = if req.table_bb > 0 {
             req.table_bb
         } else {
@@ -188,10 +195,8 @@ impl OpponentTracker {
         }
         let active_opponents = req.active_opponents.max(1);
         let pf_tier = preflop_strength_tier(req.bucket);
-        let is_maniac = self.total_actions() >= 10
-            && (self.raise_ratio() > 0.38
-                || (self.pfr_ratio() > 0.50 && self.raise_ratio() > 0.28)
-                || (self.vpip_ratio() > 0.82 && self.raise_ratio() > 0.28));
+        let profile = self.tactical_profile();
+        let is_maniac = profile.is_known_maniac || profile.is_extreme_shove_bot;
         let shove_action = if req.legal_actions.contains(&ALL_IN) {
             Some(ALL_IN)
         } else if req.legal_actions.contains(&RAISE_HALF_POT) {
@@ -301,12 +306,12 @@ fn purify_and_sample<R: Rng>(probs: &mut [f64], legal_actions: &[u8], rng: &mut 
 
     let sum: f64 = probs.iter().sum();
     if sum > 1e-12 {
-        let norm: Vec<f64> = probs.iter().map(|p| p / sum).collect();
+        let inv_sum = 1.0 / sum;
         let r: f64 = rng.random();
         let mut cum = 0.0;
         let mut picked = legal_actions.last().copied().unwrap_or(CALL_CHECK);
-        for (i, &p) in norm.iter().enumerate() {
-            cum += p;
+        for (i, &p) in probs.iter().enumerate() {
+            cum += p * inv_sum;
             if r < cum {
                 picked = legal_actions[i];
                 break;
@@ -329,57 +334,114 @@ pub fn effective_remaining_chips(my_chips: i32, opp_chips: Option<i32>, to_call:
     }
 }
 
-fn decide_short_stack_premium(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+fn decide_short_stack_premium(c: &ShortStackCtx) -> Option<(u8, GuardId)> {
     if c.call_only_allin && c.can_call {
-        Some((c.call_action, "SHORT_STACK_NASH_PUSH"))
+        Some((c.call_action, GuardId::ShortStackNashPush))
     } else if let Some(sa) = c.shove_action {
-        Some((sa, "SHORT_STACK_NASH_PUSH"))
+        Some((sa, GuardId::ShortStackNashPush))
     } else if c.can_call {
-        Some((c.call_action, "SHORT_STACK_NASH_PUSH"))
+        Some((c.call_action, GuardId::ShortStackNashPush))
     } else {
         None
     }
 }
 
-fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+fn multiway_max_open_tier(active_opponents: usize, to_call: i32, bb: i32) -> u8 {
+    let approx_pos: u8 = if to_call <= bb / 2 {
+        4
+    } else {
+        match active_opponents {
+            5.. => 0,
+            4 => 1,
+            3 => 2,
+            _ => 3,
+        }
+    };
+    super::multiway::max_open_tier_6max(approx_pos)
+}
+
+fn decide_short_stack_mid_tier(c: &ShortStackCtx) -> Option<(u8, GuardId)> {
+    let is_multiway_unopened =
+        c.active_opponents >= 2 && c.to_call > 0 && c.to_call <= c.bb && c.pot <= c.bb * 2;
     if c.to_call == 0 {
         if c.bucket <= 26
             && let Some(sa) = c.shove_action
         {
-            return Some((sa, "SHORT_STACK_BB_ISO_PUSH"));
+            return Some((sa, GuardId::ShortStackBbIsoPush));
         }
         if c.has_call_check {
-            return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+            return Some((CALL_CHECK, GuardId::ShortStackBbFreeCheck));
+        }
+    } else if is_multiway_unopened {
+        if c.pf_tier <= multiway_max_open_tier(c.active_opponents, c.to_call, c.bb)
+            && c.my_chips <= c.max_open_push_bb * c.bb
+            && let Some(sa) = c.shove_action
+        {
+            return Some((sa, GuardId::ShortStackNashPush));
+        }
+        if c.can_fold {
+            return Some((FOLD, GuardId::ShortStackFold));
         }
     } else if c.to_call <= c.bb / 2 && c.pot <= c.bb * 2 && c.my_chips <= c.max_open_push_bb * c.bb
     {
         if let Some(sa) = c.shove_action {
-            return Some((sa, "SHORT_STACK_NASH_PUSH"));
+            return Some((sa, GuardId::ShortStackNashPush));
         }
     } else if c.to_call <= c.bb && c.pot <= c.bb * 4 {
         if (c.bucket <= 26 || (c.pf_tier == 4 && c.my_chips <= c.bb * 7))
             && let Some(sa) = c.shove_action
         {
-            return Some((sa, "SHORT_STACK_BB_3BET_SHOVE"));
+            return Some((sa, GuardId::ShortStackBb3BetShove));
+        }
+        if c.can_call
+            && (c.active_opponents == 1 || (c.pot >= c.bb * 3 && c.to_call * 4 <= c.my_chips))
+        {
+            return Some((c.call_action, GuardId::ShortStackBbFlatCall));
+        }
+        if c.can_fold {
+            return Some((FOLD, GuardId::ShortStackFold));
+        }
+    } else if if c.active_opponents == 1 {
+        c.pot_odds <= 0.33
+            || c.my_chips <= c.bb * 2
+            || (c.to_call <= c.max_call_bb * c.bb && (c.pf_tier <= 5 || c.is_maniac))
+    } else {
+        c.my_chips <= c.bb * 2
+            || (c.pot_odds <= 0.33 && c.to_call * 3 < c.my_chips)
+            || (c.to_call <= c.max_call_bb * c.bb && c.pf_tier <= 4)
+    } {
+        if c.active_opponents >= 2
+            && c.to_call * 2 >= c.my_chips
+            && !c.call_only_allin
+            && let Some(sa) = c.shove_action
+        {
+            return Some((sa, GuardId::ShortStackNashPush));
         }
         if c.can_call {
-            return Some((c.call_action, "SHORT_STACK_BB_FLAT_CALL"));
-        }
-    } else if c.pot_odds <= 0.33
-        || c.my_chips <= c.bb * 2
-        || (c.to_call <= c.max_call_bb * c.bb && (c.pf_tier <= 5 || c.is_maniac))
-    {
-        if c.can_call {
-            return Some((c.call_action, "SHORT_STACK_PRICED_IN_CALL"));
+            return Some((c.call_action, GuardId::ShortStackPricedInCall));
         }
     } else if c.can_fold {
-        return Some((FOLD, "SHORT_STACK_FOLD"));
+        return Some((FOLD, GuardId::ShortStackFold));
     }
     None
 }
 
-fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> {
+fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, GuardId)> {
     let is_hu_sb_open = c.active_opponents == 1 && c.to_call <= c.bb / 2 && c.pot <= c.bb * 2;
+    let is_multiway_unopened =
+        c.active_opponents >= 2 && c.to_call > 0 && c.to_call <= c.bb && c.pot <= c.bb * 2;
+    if is_multiway_unopened {
+        if c.pf_tier <= multiway_max_open_tier(c.active_opponents, c.to_call, c.bb)
+            && c.my_chips <= c.max_open_push_bb * c.bb
+            && let Some(sa) = c.shove_action
+        {
+            return Some((sa, GuardId::ShortStackNashPush));
+        }
+        if c.can_fold {
+            return Some((FOLD, GuardId::ShortStackFold));
+        }
+        return None;
+    }
     if c.to_call > 0
         && c.to_call <= c.bb / 2
         && c.pot <= c.bb * 2
@@ -388,29 +450,35 @@ fn decide_short_stack_low_tier(c: &ShortStackCtx) -> Option<(u8, &'static str)> 
             || (c.active_opponents == 1 && c.my_chips <= c.bb * 3 && c.bucket != 158))
     {
         if let Some(sa) = c.shove_action {
-            return Some((sa, "SHORT_STACK_NASH_PUSH"));
+            return Some((sa, GuardId::ShortStackNashPush));
         }
     } else if c.to_call > 0
-        && ((!is_hu_sb_open && c.pot_odds <= 0.28 && c.pf_tier <= 6)
+        && ((!is_hu_sb_open
+            && c.pot_odds <= 0.28
+            && c.pf_tier <= 6
+            && (c.active_opponents == 1 || (c.pot > c.bb * 2 && c.to_call * 4 <= c.my_chips)))
             || (c.active_opponents == 1
                 && !is_hu_sb_open
                 && c.to_call <= c.bb
                 && c.pot <= c.bb * 3
                 && c.pot_odds <= 0.28
                 && (c.pf_tier <= 7 || (c.my_chips <= c.bb * 7 && c.bucket < 135)))
-            || (!is_hu_sb_open && c.pot_odds <= 0.22 && (c.pf_tier <= 6 || c.to_call <= c.bb * 2))
+            || (!is_hu_sb_open
+                && c.pot_odds <= 0.22
+                && (c.pf_tier <= 6 || c.to_call <= c.bb * 2)
+                && (c.active_opponents == 1 || (c.pot > c.bb * 2 && c.to_call * 4 <= c.my_chips)))
             || c.my_chips <= c.bb * 2
             || (c.is_maniac && c.to_call <= c.max_call_bb * c.bb && c.pf_tier <= 6))
     {
         if c.can_call {
-            return Some((c.call_action, "SHORT_STACK_PRICED_IN_CALL"));
+            return Some((c.call_action, GuardId::ShortStackPricedInCall));
         }
     } else if c.to_call == 0 && c.has_call_check {
-        return Some((CALL_CHECK, "SHORT_STACK_BB_FREE_CHECK"));
+        return Some((CALL_CHECK, GuardId::ShortStackBbFreeCheck));
     } else if is_hu_sb_open && c.bucket < 91 && c.pf_tier <= 7 && !c.is_maniac {
         return None;
     } else if c.can_fold {
-        return Some((FOLD, "SHORT_STACK_FOLD"));
+        return Some((FOLD, GuardId::ShortStackFold));
     }
     None
 }

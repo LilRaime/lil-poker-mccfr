@@ -5,6 +5,7 @@
  */
 
 use clap::Parser;
+use lil_poker_mccfr::sim::OpponentArchetype;
 use lil_poker_mccfr::sim::holdem::{HoldemBenchmarkConfig, run_holdem_benchmark};
 use lil_poker_mccfr::sim::leduc::{
     load_strategy, run_episodes_log_mode, run_human_mode, run_watch_mode,
@@ -42,8 +43,8 @@ struct Args {
     player: String,
 
     /** Opponent archetype: `random`, `tag`, `calling_station`, `maniac`, `rock`, `self` */
-    #[arg(long, alias = "opp-archetype", default_value = "random")]
-    opponent: String,
+    #[arg(long, alias = "opp-archetype", value_enum, default_value_t = OpponentArchetype::Random)]
+    opponent: OpponentArchetype,
 
     /** Optional strategy JSON file for opponent (e.g. for model-vs-model benchmarks) */
     #[arg(long)]
@@ -76,7 +77,7 @@ fn main() {
             delay_ms: args.delay,
             enable_subgame_search: args.subgame_search,
             player_arg: &args.player,
-            opp_archetype: &args.opponent,
+            opp_archetype: args.opponent,
             opp_strategy_path: args.opponent_strategy.as_deref(),
             duplicate_mode: args.duplicate,
             ..Default::default()

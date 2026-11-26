@@ -7,12 +7,13 @@ use super::super::engine::{SimHandConfig, simulate_holdem_hand_traced};
 use super::super::strategy::{HoldemStrategy, load_holdem_strategy};
 use super::{HoldemBenchmarkResult, deal_cards_prefix};
 use crate::cfr::fallback::StrategyLookupIndex;
-use crate::cfr::opponent_model::OpponentTracker;
+use crate::cfr::opponent_model::{GuardSet, OpponentTracker};
 use crate::cfr::subgame::SubgameSolver;
 use crate::game::config::{
     BIG_BLIND, BIG_BLIND_F64, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_PLAYERS,
 };
 use crate::game::holdem::TexasHoldemGame;
+use crate::sim::opponents::OpponentArchetype;
 use crate::sim::stats::SimStats;
 
 const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
@@ -23,11 +24,11 @@ pub struct BlindScheduleConfig<'a> {
     pub total_deals: u64,
     pub hands_per_level: u64,
     pub enable_subgame_search: bool,
-    pub opp_archetype: &'a str,
+    pub opp_archetype: OpponentArchetype,
     pub opp_strategy_path: Option<&'a str>,
     pub exploit_factor: f64,
     pub seed: Option<u64>,
-    pub disabled_guards: &'a [String],
+    pub disabled_guards: GuardSet,
     pub quiet: bool,
 }
 
@@ -38,11 +39,11 @@ impl Default for BlindScheduleConfig<'_> {
             total_deals: 50,
             hands_per_level: 20,
             enable_subgame_search: false,
-            opp_archetype: "tag",
+            opp_archetype: OpponentArchetype::Tag,
             opp_strategy_path: None,
             exploit_factor: 0.70,
             seed: None,
-            disabled_guards: &[],
+            disabled_guards: GuardSet::EMPTY,
             quiet: false,
         }
     }
@@ -89,7 +90,7 @@ fn load_blind_schedule_strategies(
     let strategy = load_holdem_strategy(cfg.strategy_path);
     let opp_strategy = if let Some(path) = cfg.opp_strategy_path {
         load_holdem_strategy(path)
-    } else if cfg.opp_archetype.eq_ignore_ascii_case("self") {
+    } else if cfg.opp_archetype.is_self_play() {
         strategy.clone()
     } else {
         None
@@ -128,7 +129,7 @@ pub fn run_holdem_blind_schedule_benchmark(cfg: &BlindScheduleConfig<'_>) -> Hol
 
     let mut opp_tracker = OpponentTracker::new();
     opp_tracker.set_exploit_factor(cfg.exploit_factor);
-    opp_tracker.set_disabled_guards(cfg.disabled_guards.to_vec());
+    opp_tracker.set_disabled_guard_set(cfg.disabled_guards);
 
     let mut total_stats = SimStats::default();
     let mut duplicate_stats = SimStats::default();
@@ -144,7 +145,7 @@ pub fn run_holdem_blind_schedule_benchmark(cfg: &BlindScheduleConfig<'_>) -> Hol
         if match_offset == 0 {
             opp_tracker = OpponentTracker::new();
             opp_tracker.set_exploit_factor(cfg.exploit_factor);
-            opp_tracker.set_disabled_guards(cfg.disabled_guards.to_vec());
+            opp_tracker.set_disabled_guard_set(cfg.disabled_guards);
             match_bb_net = 0.0;
             last_lvl_idx = None;
         }
@@ -243,7 +244,7 @@ fn summarize_blind_schedule_result(
         println!("============================================================");
         println!(
             "Opponent : {} | Deals : {} ({} hands, {} matches)",
-            cfg.opp_archetype.to_uppercase(),
+            cfg.opp_archetype.banner_name(),
             s.total_deals,
             s.total_deals * 2,
             s.total_matches

@@ -19,6 +19,7 @@ impl OpponentTracker {
         scale(&mut self.pfr_hands);
         scale(&mut self.fold_count);
         scale(&mut self.call_count);
+        scale(&mut self.check_count);
         scale(&mut self.raise_count);
         for a in &mut self.preflop_actions {
             scale(a);
@@ -30,9 +31,11 @@ impl OpponentTracker {
         for a in &mut self.turn_actions {
             scale(a);
         }
+        scale(&mut self.turn_checks);
         for a in &mut self.river_actions {
             scale(a);
         }
+        scale(&mut self.river_checks);
         scale(&mut self.flop_cbet_faced);
         scale(&mut self.flop_fold_to_cbet);
         scale(&mut self.turn_cbet_faced);
@@ -70,6 +73,7 @@ impl OpponentTracker {
 
         self.vpip_hands = self.vpip_hands.min(self.total_hands);
         self.pfr_hands = self.pfr_hands.min(self.vpip_hands);
+        self.check_count = self.check_count.min(self.call_count);
         self.postflop_overbets = self.postflop_overbets.min(self.postflop_bets_total);
         self.river_overbets = self.river_overbets.min(self.postflop_overbets);
         self.sb_vpip_hands = self.sb_vpip_hands.min(self.sb_total_hands);

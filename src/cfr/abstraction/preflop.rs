@@ -166,8 +166,12 @@ pub fn nash_open_push_max_bb(idx: usize, active_opponents: usize) -> i32 {
         | 154
         | 159
         | 163 => 12,
-        /* 97s-92s & J3o-J2o, T5o-T2o, 96o-95o, 85o, 75o, 64o, 53o, 43o: 11 BB */
-        64..=69 | 131..=132 | 137..=140 | 143..=144 | 150 | 155 | 160 | 164 | 166 => 11,
+        /* 97s-92s: 11 BB */
+        64..=69 => 11,
+        /* J3o-J2o, T5o-T4o, 96o: 8 BB */
+        131..=132 | 137..=138 | 143 => 8,
+        /* T3o-T2o, 95o, 85o, 75o, 64o, 53o, 43o: 6 BB */
+        139..=140 | 144 | 150 | 155 | 160 | 164 | 166 => 6,
         /* Suited connectors/gappers & remaining suited hands (76s, 42s, 32s): 9 BB */
         71..=90 => 9,
         /* Absolute bottom offsuit trash (83o, 82o, 73o, 72o) stays 0 BB */
@@ -213,13 +217,22 @@ pub fn nash_call_shove_max_bb(idx: usize, active_opponents: usize, is_maniac: bo
                 28
             }
         }
-        4..=5 | 15 | 25 | 92 => {
+        4 | 15 | 25 | 92 => {
             if is_maniac {
                 38
             } else if active_opponents <= 1 {
                 30
             } else {
                 20
+            }
+        }
+        5 => {
+            if is_maniac {
+                34
+            } else if active_opponents <= 1 {
+                22
+            } else {
+                16
             }
         }
         6..=7 => {

@@ -5,12 +5,11 @@ use std::time::Duration;
 use rand::rngs::SmallRng;
 
 use super::strategy::{HoldemStrategy, find_strategy_or_fallback};
-use crate::cfr::abstraction::{
-    BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, postflop_equity_bucket,
-    preflop_bucket,
-};
+use crate::cfr::abstraction::{postflop_equity_bucket, preflop_bucket};
 use crate::cfr::fallback::{FallbackRequest, StrategyLookupIndex, get_holdem_fallback_strategy};
-use crate::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
+use crate::cfr::opponent_model::{
+    DecisionTrace, GuardSet, OpponentTracker, PolicyRequest, ShortStackRequest,
+};
 use crate::cfr::subgame::{SubgameRequest, SubgameSolver};
 use crate::game::config::{
     BIG_BLIND, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND, STACK_SIZE,
@@ -19,14 +18,14 @@ use crate::game::config::{
 use crate::game::holdem::{
     ALL_IN, CALL_CHECK, FOLD as H_FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, TexasHoldemGame,
 };
-use crate::sim::opponents::sample_opponent_action;
+use crate::sim::opponents::{OpponentArchetype, sample_opponent_action};
 
 #[derive(Clone, Copy)]
 pub struct SimHandConfig<'a> {
     pub my_player: usize,
     pub strategy: Option<&'a HoldemStrategy>,
     pub strategy_index: Option<&'a StrategyLookupIndex>,
-    pub opp_archetype: &'a str,
+    pub opp_archetype: OpponentArchetype,
     pub opp_strategy: Option<&'a HoldemStrategy>,
     pub subgame_solver: Option<&'a SubgameSolver>,
     pub enable_subgame_search: bool,
@@ -41,7 +40,7 @@ impl Default for SimHandConfig<'_> {
             my_player: 0,
             strategy: None,
             strategy_index: None,
-            opp_archetype: "random",
+            opp_archetype: OpponentArchetype::Random,
             opp_strategy: None,
             subgame_solver: None,
             enable_subgame_search: false,
@@ -68,7 +67,7 @@ pub fn simulate_holdem_hand_traced(
     cfg: &SimHandConfig<'_>,
     opp_tracker: &mut OpponentTracker,
     rng: &mut SmallRng,
-) -> (f64, Vec<&'static str>) {
+) -> (f64, GuardSet) {
     if cfg.show_logs {
         println!("\n--- {} ---", cfg.label);
     }
@@ -80,7 +79,7 @@ pub fn simulate_holdem_hand_traced(
         step_count: 0,
         cumulative_reward: 0.0f64,
         prev_my_contrib: game.contributions[cfg.my_player],
-        hand_guard_reasons: Vec::new(),
+        hand_guard_reasons: GuardSet::EMPTY,
         subgame_ctx: crate::cfr::subgame::SubgameContext::new(),
     };
     let mut pf_state = OppPreflopTrackerState {
@@ -113,7 +112,7 @@ struct SimLoopState {
     step_count: usize,
     cumulative_reward: f64,
     prev_my_contrib: i32,
-    hand_guard_reasons: Vec<&'static str>,
+    hand_guard_reasons: GuardSet,
     subgame_ctx: crate::cfr::subgame::SubgameContext,
 }
 
@@ -198,21 +197,9 @@ fn step_bot_turn(
         used_subgame,
     };
 
-    let (mut act, mut trace) =
+    let (act, trace) =
         select_bot_sim_action(game, cfg.my_player, &raw_probs, &turn, opp_tracker, rng);
-    apply_sim_post_selection_guards(
-        game,
-        cfg.my_player,
-        &turn,
-        opp_tracker,
-        &mut act,
-        &mut trace.guard_reasons,
-    );
-    for r in trace.guard_reasons {
-        if !state.hand_guard_reasons.contains(&r) {
-            state.hand_guard_reasons.push(r);
-        }
-    }
+    state.hand_guard_reasons |= trace.guard_reasons;
 
     let act_name = sim_action_name(act);
     *game = game.apply_action(act);
@@ -386,13 +373,13 @@ fn select_bot_sim_action(
             ((turn.to_call as f64 / total_p as f64).clamp(0.0, 1.0) * 1000.0).round() as u16;
         (
             short_act,
-            crate::cfr::opponent_model::DecisionTrace {
+            DecisionTrace {
                 bucket: turn.current_bucket,
                 round: ROUND_PREFLOP,
                 pot_odds_bps: po_bps,
                 raw_top_action: short_act,
                 final_action: short_act,
-                guard_reasons: vec![short_reason],
+                guard_reasons: GuardSet::from_id(short_reason),
             },
         )
     } else {
@@ -408,75 +395,12 @@ fn select_bot_sim_action(
                 board: Some(&game.board),
                 my_chips: turn.cur_my_chips,
                 from_subgame: turn.used_subgame,
+                my_player: Some(my_player),
+                history: Some(&game.history),
                 ..Default::default()
             },
             rng,
         )
-    }
-}
-
-fn apply_sim_post_selection_guards(
-    game: &TexasHoldemGame,
-    my_player: usize,
-    turn: &SimBotTurn<'_>,
-    opp_tracker: &OpponentTracker,
-    act: &mut u8,
-    reasons: &mut Vec<&'static str>,
-) {
-    /* Live-parity post-selection guardrails */
-    if game.round == ROUND_RIVER
-        && turn.to_call == 0
-        && turn.current_bucket < BUCKET_TRIPS_MIN
-        && *act >= RAISE_MIN
-    {
-        let turn_hist = game.history[2].as_slice();
-        let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
-        let opp_was_last_turn_raiser = turn_hist
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|&(_, &a)| a >= RAISE_MIN)
-            .is_some_and(|(idx, _)| {
-                let is_oop_action = idx % 2 == 0;
-                (my_player == 1 && !is_oop_action) || (my_player == 0 && is_oop_action)
-            });
-        if turn_raises >= 2 || (my_player == 1 && opp_was_last_turn_raiser) {
-            *act = CALL_CHECK;
-            reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
-        }
-    }
-    if game.round == ROUND_FLOP
-        && turn.to_call == 0
-        && my_player == 1
-        && *act == RAISE_MIN
-        && turn.current_bucket < BUCKET_TOP_PAIR_MIN
-        && opp_tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
-    {
-        let pf_hist = game.history[0].as_slice();
-        let pf_raises = pf_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
-        let opp_was_pf_aggressor =
-            pf_raises == 1 && pf_hist.first().copied().unwrap_or(0) >= RAISE_MIN;
-        if opp_was_pf_aggressor {
-            *act = CALL_CHECK;
-            reasons.push("FLOP_OOP_MICRO_DONK_SUPPRESS");
-        }
-    }
-    if turn.to_call > 0 && *act == H_FOLD && turn.legal.contains(&CALL_CHECK) {
-        let new_pot = (turn.pot + turn.to_call).max(1);
-        let is_postflop_micro_commit = game.round >= ROUND_FLOP
-            && (turn.to_call * 8 <= new_pot
-                || (turn.to_call * 6 <= new_pot && turn.current_bucket >= BUCKET_STRONG_DRAW_MIN)
-                || (turn.cur_my_chips > 0
-                    && turn.cur_my_chips <= BIG_BLIND
-                    && turn.pot >= BIG_BLIND * 4));
-        let is_preflop_priced_in = game.round == ROUND_PREFLOP
-            && (turn.to_call <= BIG_BLIND * 2
-                || crate::cfr::abstraction::preflop_strength_tier(turn.current_bucket) <= 6)
-            && turn.to_call * 6 <= new_pot;
-        if is_postflop_micro_commit || is_preflop_priced_in {
-            *act = CALL_CHECK;
-            reasons.push("POT_COMMIT_DECISION_RESCUE");
-        }
     }
 }
 
@@ -492,11 +416,11 @@ fn step_opponent_turn(
     if legal.is_empty() {
         return false;
     }
-    let facing_cbet = game.round == ROUND_FLOP && game.raises_this_round > 0;
     let prev_opp_contrib = game.contributions[cp];
     let opp_to_call_before = (game.contributions[1 - cp] - prev_opp_contrib).max(0);
     let prev_pot = game.contributions[0] + game.contributions[1];
     let round_before = game.round;
+    let facing_bet = round_before >= ROUND_FLOP && opp_to_call_before > 0;
     let prior_pf_raises = if round_before == ROUND_PREFLOP {
         game.history[0].iter().filter(|&&a| a >= RAISE_MIN).count()
     } else {
@@ -504,9 +428,7 @@ fn step_opponent_turn(
     };
     let effective_opp_strategy = if cfg.opp_strategy.is_some() {
         cfg.opp_strategy
-    } else if cfg.opp_archetype.eq_ignore_ascii_case("self")
-        || cfg.opp_archetype.eq_ignore_ascii_case("model")
-    {
+    } else if cfg.opp_archetype.is_self_play() {
         cfg.strategy
     } else {
         None
@@ -527,7 +449,7 @@ fn step_opponent_turn(
     }
     *game = game.apply_action(act);
     let bet_added = (game.contributions[cp] - prev_opp_contrib).max(0);
-    opp_tracker.record_action_street_detailed(act, round_before, facing_cbet, bet_added, prev_pot);
+    opp_tracker.record_action_street_detailed(act, round_before, facing_bet, bet_added, prev_pot);
     true
 }
 

@@ -5,10 +5,59 @@
  *   - Full Best Response Exploitability (NashConv) calculation
  */
 
+use std::str::FromStr;
+
 use clap::Parser;
+use lil_poker_mccfr::cfr::opponent_model::GuardSet;
+use lil_poker_mccfr::sim::OpponentArchetype;
 use lil_poker_mccfr::sim::leduc::{
     compute_exploitability, display_sample_strategy, load_strategy, simulate_vs_random,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvalTarget {
+    Archetype(OpponentArchetype),
+    Gauntlet,
+    Multiway,
+    Ablate,
+    Elo,
+}
+
+impl EvalTarget {
+    const fn banner_name(self) -> &'static str {
+        match self {
+            Self::Archetype(arch) => arch.banner_name(),
+            Self::Gauntlet => "GAUNTLET",
+            Self::Multiway => "MULTIWAY",
+            Self::Ablate => "ABLATE",
+            Self::Elo => "ELO",
+        }
+    }
+}
+
+impl FromStr for EvalTarget {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("gauntlet") || trimmed.eq_ignore_ascii_case("all") {
+            Ok(Self::Gauntlet)
+        } else if trimmed.eq_ignore_ascii_case("multiway") || trimmed.eq_ignore_ascii_case("6max") {
+            Ok(Self::Multiway)
+        } else if trimmed.eq_ignore_ascii_case("ablate") || trimmed.eq_ignore_ascii_case("ablation")
+        {
+            Ok(Self::Ablate)
+        } else if trimmed.eq_ignore_ascii_case("elo") {
+            Ok(Self::Elo)
+        } else {
+            OpponentArchetype::from_str(trimmed).map(Self::Archetype)
+        }
+    }
+}
+
+fn parse_eval_target(raw: &str) -> Result<EvalTarget, String> {
+    EvalTarget::from_str(raw)
+}
 
 /* CLI Arguments */
 #[derive(Parser, Debug)]
@@ -26,9 +75,9 @@ struct Args {
     #[arg(short = 'n', long)]
     hands: Option<u64>,
 
-    /** Opponent archetype for Hold'em: tag, fish, maniac, rock, self, random */
-    #[arg(short = 'o', long, default_value = "tag")]
-    opponent: String,
+    /** Opponent target: tag, fish, maniac, rock, self, random, gauntlet, 6max, ablate, elo */
+    #[arg(short = 'o', long, default_value = "tag", value_parser = parse_eval_target)]
+    opponent: EvalTarget,
 
     /** Optional second strategy file for A/B testing */
     #[arg(long)]
@@ -98,20 +147,25 @@ fn resolve_holdem_strategy_path(arg: Option<String>) -> String {
     })
 }
 
-fn parse_disabled_guards(raw: Option<&str>) -> Vec<String> {
-    raw.unwrap_or("")
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+fn parse_disabled_guards(raw: Option<&str>) -> GuardSet {
+    let Some(spec) = raw else {
+        return GuardSet::EMPTY;
+    };
+    match GuardSet::from_disable_spec(spec) {
+        Ok(set) => set,
+        Err(err) => {
+            eprintln!("[evaluate] Invalid --disable-guard value: {err}");
+            std::process::exit(2);
+        }
+    }
 }
 
-fn print_holdem_banner(args: &Args, strategy_path: &str, hands: u64, disabled_guards: &[String]) {
+fn print_holdem_banner(args: &Args, strategy_path: &str, hands: u64, disabled_guards: GuardSet) {
     println!("============================================================");
     println!("     ♠️  lil-poker-mccfr: Texas Hold'em Evaluation Harness  ♥️   ");
     println!("============================================================");
     println!("Strategy Model        : {strategy_path}");
-    println!("Opponent Archetype    : {}", args.opponent.to_uppercase());
+    println!("Opponent Archetype    : {}", args.opponent.banner_name());
     if let Some(ref opp_strat) = args.opp_strategy {
         println!("Opponent Strategy     : {opp_strat}");
     }
@@ -152,18 +206,20 @@ fn run_blind_schedule_mode(
     args: &Args,
     strategy_path: &str,
     hands: u64,
-    disabled_guards: &[String],
+    disabled_guards: GuardSet,
 ) {
-    if !(args.opponent.eq_ignore_ascii_case("gauntlet")
-        || args.opponent.eq_ignore_ascii_case("all"))
-    {
+    if args.opponent != EvalTarget::Gauntlet {
+        let opp_archetype = match args.opponent {
+            EvalTarget::Archetype(a) => a,
+            _ => OpponentArchetype::Tag,
+        };
         let _ = lil_poker_mccfr::sim::run_holdem_blind_schedule_benchmark(
             &lil_poker_mccfr::sim::BlindScheduleConfig {
                 strategy_path,
                 total_deals: hands,
                 hands_per_level: args.level_hands,
                 enable_subgame_search: args.subgame,
-                opp_archetype: &args.opponent,
+                opp_archetype,
                 opp_strategy_path: args.opp_strategy.as_deref(),
                 exploit_factor: args.exploit_factor,
                 seed: args.seed,
@@ -174,22 +230,13 @@ fn run_blind_schedule_mode(
         return;
     }
 
-    let archetypes = [
-        "tag",
-        "calling_station",
-        "maniac",
-        "shove_bot",
-        "trapper",
-        "rock",
-        "overbet_aggro",
-        "self",
-    ];
+    let archetypes = OpponentArchetype::GAUNTLET_ROSTER;
     let mut total_bb100 = 0.0;
     println!(
         "=== Rising-BB Blind Schedule Gauntlet ({} hands/level) ===",
         args.level_hands.max(2)
     );
-    for (idx, arch) in archetypes.iter().enumerate() {
+    for (idx, &arch) in archetypes.iter().enumerate() {
         let s = args
             .seed
             .or(Some(2026))
@@ -211,7 +258,7 @@ fn run_blind_schedule_mode(
         total_bb100 += res.win_rate_bb100;
         println!(
             "  {:<18} | {:>+8.2} bb/100 | CI [{:>+7.2}, {:>+7.2}] | SB {:>+7.2} | BB {:>+7.2}",
-            arch.to_uppercase(),
+            arch.banner_name(),
             res.win_rate_bb100,
             res.ci_95_bb100.0,
             res.ci_95_bb100.1,
@@ -261,7 +308,7 @@ fn run_multiway_mode(args: &Args, strategy_path: &str, hands: u64) {
     }
 }
 
-fn run_gauntlet_mode(args: &Args, strategy_path: &str, hands: u64, disabled_guards: &[String]) {
+fn run_gauntlet_mode(args: &Args, strategy_path: &str, hands: u64, disabled_guards: GuardSet) {
     if args.stack_sweep {
         let mut rows = Vec::new();
         for &bb in &[15u32, 30, 100] {
@@ -310,8 +357,12 @@ fn run_standard_holdem_mode(
     args: &Args,
     strategy_path: &str,
     hands: u64,
-    disabled_guards: &[String],
+    disabled_guards: GuardSet,
 ) {
+    let opp_archetype = match args.opponent {
+        EvalTarget::Archetype(arch) => arch,
+        _ => OpponentArchetype::Tag,
+    };
     if args.stack_sweep {
         let mut rows = Vec::new();
         for &bb in &[15u32, 30, 100] {
@@ -322,7 +373,7 @@ fn run_standard_holdem_mode(
                     strategy_path,
                     total_episodes: hands,
                     enable_subgame_search: args.subgame,
-                    opp_archetype: &args.opponent,
+                    opp_archetype,
                     opp_strategy_path: args.opp_strategy.as_deref(),
                     duplicate_mode: args.duplicate,
                     exploit_factor: args.exploit_factor,
@@ -336,7 +387,7 @@ fn run_standard_holdem_mode(
         }
         println!(
             "\n=== Stack Sweep Summary (vs {}) ===",
-            args.opponent.to_uppercase()
+            opp_archetype.banner_name()
         );
         for (bb, r) in rows {
             println!(
@@ -351,10 +402,11 @@ fn run_standard_holdem_mode(
         }
     } else {
         let chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-        let eff_opponent = if args.opp_strategy.is_some() && args.opponent == "tag" {
-            "model"
+        let eff_opponent = if args.opp_strategy.is_some() && opp_archetype == OpponentArchetype::Tag
+        {
+            OpponentArchetype::SelfPlay
         } else {
-            args.opponent.as_str()
+            opp_archetype
         };
         let _res = lil_poker_mccfr::sim::run_holdem_benchmark(
             &lil_poker_mccfr::sim::HoldemBenchmarkConfig {
@@ -399,44 +451,47 @@ fn run_holdem_evaluation(args: Args) {
     let strategy_path = resolve_holdem_strategy_path(args.strategy.clone());
     let hands = args.hands.unwrap_or(5000);
     let disabled_guards = parse_disabled_guards(args.disable_guard.as_deref());
-    print_holdem_banner(&args, &strategy_path, hands, &disabled_guards);
+    print_holdem_banner(&args, &strategy_path, hands, disabled_guards);
 
     if args.blind_schedule {
-        run_blind_schedule_mode(&args, &strategy_path, hands, &disabled_guards);
-    } else if args.opponent.eq_ignore_ascii_case("elo") {
-        let model_paths = discover_elo_models(&args.elo_dir, args.elo_models.as_deref());
-        let chips = (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
-        let _ = lil_poker_mccfr::sim::run_holdem_elo_tournament(
-            &lil_poker_mccfr::sim::EloTournamentConfig {
-                model_paths: &model_paths,
-                deals_per_pair: hands,
-                enable_subgame_search: args.subgame,
-                exploit_factor: args.exploit_factor,
-                base_seed: args.seed,
-                stack_size: chips,
-                quiet: false,
-            },
-        );
-    } else if args.opponent.eq_ignore_ascii_case("ablate")
-        || args.opponent.eq_ignore_ascii_case("ablation")
-    {
-        lil_poker_mccfr::sim::run_holdem_ablation_benchmark(
-            &strategy_path,
-            hands,
-            args.subgame,
-            args.exploit_factor,
-            args.seed,
-        );
-    } else if args.opponent.eq_ignore_ascii_case("multiway")
-        || args.opponent.eq_ignore_ascii_case("6max")
-    {
-        run_multiway_mode(&args, &strategy_path, hands);
-    } else if args.opponent.eq_ignore_ascii_case("gauntlet")
-        || args.opponent.eq_ignore_ascii_case("all")
-    {
-        run_gauntlet_mode(&args, &strategy_path, hands, &disabled_guards);
+        run_blind_schedule_mode(&args, &strategy_path, hands, disabled_guards);
     } else {
-        run_standard_holdem_mode(&args, &strategy_path, hands, &disabled_guards);
+        match args.opponent {
+            EvalTarget::Elo => {
+                let model_paths = discover_elo_models(&args.elo_dir, args.elo_models.as_deref());
+                let chips =
+                    (args.stack_bb.max(2) as i32) * lil_poker_mccfr::game::config::BIG_BLIND;
+                let _ = lil_poker_mccfr::sim::run_holdem_elo_tournament(
+                    &lil_poker_mccfr::sim::EloTournamentConfig {
+                        model_paths: &model_paths,
+                        deals_per_pair: hands,
+                        enable_subgame_search: args.subgame,
+                        exploit_factor: args.exploit_factor,
+                        base_seed: args.seed,
+                        stack_size: chips,
+                        quiet: false,
+                    },
+                );
+            }
+            EvalTarget::Ablate => {
+                lil_poker_mccfr::sim::run_holdem_ablation_benchmark(
+                    &strategy_path,
+                    hands,
+                    args.subgame,
+                    args.exploit_factor,
+                    args.seed,
+                );
+            }
+            EvalTarget::Multiway => {
+                run_multiway_mode(&args, &strategy_path, hands);
+            }
+            EvalTarget::Gauntlet => {
+                run_gauntlet_mode(&args, &strategy_path, hands, disabled_guards);
+            }
+            EvalTarget::Archetype(_) => {
+                run_standard_holdem_mode(&args, &strategy_path, hands, disabled_guards);
+            }
+        }
     }
 }
 

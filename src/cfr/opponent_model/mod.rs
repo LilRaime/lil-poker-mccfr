@@ -9,5 +9,6 @@ pub mod tracker;
 
 pub use classifier::*;
 pub use exploit::ExploitRequest;
+pub use guards::{GuardId, GuardSet, GuardSetIter};
 pub use policy::{DecisionTrace, PolicyRequest, ShortStackRequest, effective_remaining_chips};
 pub use tracker::*;

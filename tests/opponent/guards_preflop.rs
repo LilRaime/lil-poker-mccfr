@@ -1,6 +1,8 @@
 use super::{LEGAL_BB, LEGAL_FULL, LEGAL_SHOVE, make_shove_maniac, make_ultra_nit};
 use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
-use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest, ShortStackRequest};
+use lil_poker_mccfr::cfr::opponent_model::{
+    GuardId, OpponentTracker, PolicyRequest, ShortStackRequest,
+};
 use lil_poker_mccfr::game::config::{BIG_BLIND, HOLDEM_NUM_ACTIONS, SMALL_BLIND};
 use lil_poker_mccfr::game::holdem::{
     ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
@@ -1142,7 +1144,7 @@ fn test_small_pocket_pair_no_bloated_3bet_and_no_jam() {
         if act == RAISE_MIN {
             raise_min_count += 1;
         }
-        if trace.guard_reasons.contains(&"PF_DISCIPLINE_GUARD") {
+        if trace.guard_reasons.contains(GuardId::PfDisciplineGuard) {
             trace_has_guard = true;
         }
     }
@@ -1580,5 +1582,140 @@ fn test_tight_bb_fold_to_steal_opens_sb_and_short_commit_no_flat() {
     assert_ne!(
         act_k7s, CALL_CHECK,
         "Short-stack K7s facing 55%-stack 3-bet must shove or fold, never flat-call"
+    );
+}
+
+#[test]
+fn test_6max_short_stack_no_open_limp_and_64o_99_nash_bounds() {
+    let tracker = OpponentTracker::new();
+    let mut rng = SmallRng::seed_from_u64(20_261_126);
+
+    /* 1. 6-max <= 12 BB unopened UTG/MP must push or fold cleanly (never open-limp CALL_CHECK) */
+    let hole_54c = [
+        Card::new(Rank::Five, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Clubs),
+    ];
+    let b_54c = preflop_bucket(hole_54c[0], hole_54c[1]).0;
+    let (act_mp, reason_mp) = tracker
+        .select_short_stack_preflop_action(&ShortStackRequest {
+            bucket: b_54c,
+            to_call: 6000,
+            pot: 9000,
+            active_opponents: 4,
+            table_bb: 6000,
+            my_chips: 43915,
+            legal_actions: &LEGAL_FULL,
+            ..Default::default()
+        })
+        .expect("short-stack engine handles 7.3 BB 6-max unopened MP");
+    assert_eq!(
+        act_mp, FOLD,
+        "54s at 7.3 BB MP 6-max must FOLD instead of open-limping (got {act_mp}: {reason_mp})"
+    );
+
+    /* 2. 6-max <= 12 BB facing 3-way 3-bet for 56% of stack must FOLD rather than dead-money flat-call */
+    let hole_t8d = [
+        Card::new(Rank::Ten, Suit::Diamonds),
+        Card::new(Rank::Eight, Suit::Diamonds),
+    ];
+    let b_t8d = preflop_bucket(hole_t8d[0], hole_t8d[1]).0;
+    let (act_3bet, reason_3bet) = tracker
+        .select_short_stack_preflop_action(&ShortStackRequest {
+            bucket: b_t8d,
+            to_call: 18000,
+            pot: 57000,
+            active_opponents: 2,
+            table_bb: 6000,
+            my_chips: 31915,
+            legal_actions: &LEGAL_SHOVE,
+            ..Default::default()
+        })
+        .expect("short-stack engine handles 3-way commit spot");
+    assert_eq!(
+        act_3bet, FOLD,
+        "T8s facing 56%-stack multiway 3-bet must FOLD (got {act_3bet}: {reason_3bet})"
+    );
+
+    /* 3. Calibrated Nash push (64o @ 7.5 BB SB) and non-maniac 99 shove-call (27.4 BB) both FOLD */
+    let b_64o = preflop_bucket(
+        Card::new(Rank::Six, Suit::Clubs),
+        Card::new(Rank::Four, Suit::Spades),
+    )
+    .0;
+    let short_sb_act = tracker.select_short_stack_preflop_action(&ShortStackRequest {
+        bucket: b_64o,
+        to_call: 300,
+        pot: 900,
+        active_opponents: 1,
+        table_bb: 600,
+        my_chips: 4512,
+        legal_actions: &LEGAL_FULL,
+        ..Default::default()
+    });
+    assert_ne!(
+        short_sb_act.map(|x| x.0),
+        Some(ALL_IN),
+        "64o at 7.5 BB SB must NOT open-shove ALL_IN in calibrated Nash push table"
+    );
+
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let b_99 = preflop_bucket(hole_99[0], hole_99[1]).0;
+    let (act_99, _) = tracker.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &[0.10, 0.85, 0.0, 0.0, 0.0, 0.05],
+            legal_actions: &LEGAL_SHOVE,
+            bucket: b_99,
+            round: 1,
+            to_call: 8223,
+            pot: 11477,
+            hole: Some(&hole_99),
+            active_opponents: 1,
+            table_bb: 300,
+            my_chips: 8223,
+            opp_chips: Some(0),
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_99, FOLD,
+        "99 vs non-maniac 35 BB limp-reshove (27.4 BB to call) must fold"
+    );
+
+    /* 4. HU BB facing 2.15x open defends playable Tier 8 (Q4o) frequently instead of 98% fold */
+    let hole_q4o = [
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Four, Suit::Hearts),
+    ];
+    let b_q4o = preflop_bucket(hole_q4o[0], hole_q4o[1]).0;
+    let fold_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.85, 0.15, 0.0, 0.0, 0.0, 0.0];
+    let mut q4o_calls = 0usize;
+    for _ in 0..80 {
+        let (act, _) = tracker.select_action_traced(
+            &PolicyRequest {
+                raw_probs: &fold_heavy,
+                legal_actions: &LEGAL_BB,
+                bucket: b_q4o,
+                round: 1,
+                to_call: 172,
+                pot: 472,
+                hole: Some(&hole_q4o),
+                active_opponents: 1,
+                table_bb: 150,
+                my_chips: 10000,
+                ..Default::default()
+            },
+            &mut rng,
+        );
+        if act == CALL_CHECK {
+            q4o_calls += 1;
+        }
+    }
+    assert!(
+        q4o_calls >= 35,
+        "Q4o in HU BB vs 2.15x open must defend regularly (got {q4o_calls}/80)"
     );
 }

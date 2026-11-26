@@ -1,8 +1,16 @@
-use super::{LEGAL_FULL, make_passive_station};
-use lil_poker_mccfr::cfr::opponent_model::{ExploitRequest, OpponentStyle, OpponentTracker};
-use lil_poker_mccfr::game::holdem::{
-    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
+use super::{LEGAL_FULL, LEGAL_OPEN, make_passive_station};
+use lil_poker_mccfr::cfr::abstraction::PostflopBucket;
+use lil_poker_mccfr::cfr::opponent_model::{
+    ExploitRequest, GuardId, GuardSet, OpponentStyle, OpponentTracker, PolicyRequest,
 };
+use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
+use lil_poker_mccfr::game::holdem::{
+    ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, RoundHistory,
+    Suit,
+};
+use lil_poker_mccfr::sim::OpponentArchetype;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 #[test]
 fn test_opponent_tracker_advanced_metrics() {
@@ -428,4 +436,117 @@ fn test_showdown_thin_value_pair_not_counted_as_bluff_and_street_profile() {
     assert!(tracker.flop_cbet_made <= tracker.flop_cbet_opps);
     assert!(tracker.turn_barrel_made <= tracker.turn_barrel_opps);
     assert!(tracker.showdown_overbet_value_hands <= tracker.showdown_overbet_hands);
+}
+
+#[test]
+fn test_check_tracking_tactical_profile_and_unified_post_selection() {
+    /* 1. Verify postflop check counters, genuine call separation, and AFq */
+    let mut tracker = OpponentTracker::new();
+    for _ in 0..4 {
+        tracker.record_action_street_detailed(CALL_CHECK, 1, true, 150, 300);
+        tracker.record_action_street_detailed(CALL_CHECK, 2, false, 0, 400);
+        tracker.record_action_street_detailed(CALL_CHECK, 3, false, 0, 400);
+        tracker.record_action_street_detailed(CALL_CHECK, 4, false, 0, 400);
+        tracker.end_hand();
+    }
+    assert_eq!(tracker.check_count, 12);
+    assert_eq!(tracker.flop_checks, 4);
+    assert_eq!(tracker.turn_checks, 4);
+    assert_eq!(tracker.river_checks, 4);
+    assert_eq!(tracker.genuine_call_count(), 4);
+    assert!((tracker.check_ratio() - 0.75).abs() < 1e-6);
+    assert!(tracker.afq_ratio() < 1e-6);
+    assert!(tracker.postflop_afq() < 1e-6);
+
+    tracker.apply_session_decay(0.50);
+    assert!(tracker.check_count <= tracker.call_count);
+
+    /* 2. Verify TacticalProfile unifies behavioral classification */
+    let mut station = make_passive_station();
+    for _ in 0..8 {
+        station.record_preflop_positional(false, true, false);
+    }
+    let profile = station.tactical_profile();
+    assert!(profile.is_passive_station);
+    assert!(profile.is_sticky_caller);
+    assert!(profile.is_ultra_sticky_bb);
+
+    /* 3. Verify unified post-selection guards run directly inside select_action_traced */
+    let mut rng = SmallRng::seed_from_u64(20_261_126);
+    let mut hist = [RoundHistory::new(); 4];
+    hist[0].push(RAISE_MIN);
+    hist[0].push(CALL_CHECK);
+    let donk_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.0, 0.15, 0.45, 0.25, 0.15, 0.0];
+    let (act, tr) = OpponentTracker::new().select_action_traced(
+        &PolicyRequest {
+            raw_probs: &donk_heavy,
+            legal_actions: &LEGAL_OPEN,
+            bucket: 32,
+            round: 2,
+            to_call: 0,
+            pot: 600,
+            my_player: Some(1),
+            history: Some(&hist),
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(act, CALL_CHECK);
+    assert!(tr.guard_reasons.contains(GuardId::FlopOopMicroDonkSuppress));
+}
+
+#[test]
+fn test_zero_cost_guard_set_postflop_bucket_and_archetype_parsing() {
+    for id in GuardId::ALL {
+        let parsed: GuardId = id.as_str().parse().expect("valid canonical GuardId");
+        assert_eq!(parsed, id);
+    }
+
+    let mut mask = GuardSet::EMPTY;
+    assert!(mask.is_empty());
+    mask.insert(GuardId::ShoveDefenseFold);
+    mask.insert(GuardId::PostBarrelFold);
+    assert_eq!(mask.len(), 2);
+    assert!(mask.contains(GuardId::ShoveDefenseFold));
+    assert!(!mask.contains(GuardId::PfButtonSteal));
+    let collected: Vec<GuardId> = mask.into_iter().collect();
+    assert_eq!(
+        collected,
+        vec![GuardId::ShoveDefenseFold, GuardId::PostBarrelFold]
+    );
+
+    let parsed_spec = GuardSet::from_disable_spec("shove_defense_fold, POST_BARREL_FOLD")
+        .expect("comma-separated guard spec parses");
+    assert_eq!(parsed_spec, mask);
+    assert!(GuardSet::from_disable_spec("UNKNOWN_GUARD").is_err());
+
+    let mut tracker = OpponentTracker::new();
+    tracker.set_disabled_guards(["SHOVE_DEFENSE_FOLD"]);
+    assert!(!tracker.is_guard_enabled(GuardId::ShoveDefenseFold));
+    assert!(tracker.is_guard_enabled(GuardId::PostBarrelFold));
+    tracker.set_disabled_guards(["ALL"]);
+    assert!(!tracker.is_guard_enabled(GuardId::PfDisciplineGuard));
+
+    assert!(PostflopBucket(33).has_pair_redraw());
+    assert!(PostflopBucket(38).has_pair_redraw());
+    assert!(!PostflopBucket(33).is_bare_weak_or_mid_pair());
+    assert!(PostflopBucket(32).is_bare_weak_or_mid_pair());
+    assert!(PostflopBucket(36).is_clean_mid_pair());
+    assert!(PostflopBucket(73).is_board_chop_or_idiot_straight());
+    assert!(PostflopBucket(25).is_multiway_nut_draw());
+    assert!(!PostflopBucket(24).is_multiway_nut_draw());
+
+    assert_eq!(
+        "fish".parse::<OpponentArchetype>().ok(),
+        Some(OpponentArchetype::CallingStation)
+    );
+    assert_eq!(
+        "nit".parse::<OpponentArchetype>().ok(),
+        Some(OpponentArchetype::Rock)
+    );
+    assert_eq!(
+        "model".parse::<OpponentArchetype>().ok(),
+        Some(OpponentArchetype::SelfPlay)
+    );
+    assert!("callng_station".parse::<OpponentArchetype>().is_err());
 }

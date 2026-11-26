@@ -11,12 +11,13 @@ use super::telemetry::{
 };
 use super::{HoldemBenchmarkResult, deal_cards_prefix};
 use crate::cfr::fallback::StrategyLookupIndex;
-use crate::cfr::opponent_model::OpponentTracker;
+use crate::cfr::opponent_model::{GuardId, GuardSet, OpponentTracker};
 use crate::cfr::subgame::SubgameSolver;
 use crate::game::config::{
     BIG_BLIND, BIG_BLIND_F64, NUM_COMMUNITY_CARDS, NUM_HOLE_CARDS, NUM_PLAYERS, STACK_SIZE,
 };
 use crate::game::holdem::TexasHoldemGame;
+use crate::sim::opponents::OpponentArchetype;
 use crate::sim::stats::SimStats;
 
 const CARDS_PER_DEAL: usize = NUM_PLAYERS * NUM_HOLE_CARDS + NUM_COMMUNITY_CARDS;
@@ -28,13 +29,13 @@ pub struct HoldemBenchmarkConfig<'a> {
     pub delay_ms: u64,
     pub enable_subgame_search: bool,
     pub player_arg: &'a str,
-    pub opp_archetype: &'a str,
+    pub opp_archetype: OpponentArchetype,
     pub opp_strategy_path: Option<&'a str>,
     pub duplicate_mode: bool,
     pub exploit_factor: f64,
     pub quiet: bool,
     pub seed: Option<u64>,
-    pub disabled_guards: &'a [String],
+    pub disabled_guards: GuardSet,
     pub stack_size: i32,
 }
 
@@ -46,13 +47,13 @@ impl Default for HoldemBenchmarkConfig<'_> {
             delay_ms: 0,
             enable_subgame_search: false,
             player_arg: "0",
-            opp_archetype: "tag",
+            opp_archetype: OpponentArchetype::Tag,
             opp_strategy_path: None,
             duplicate_mode: true,
             exploit_factor: 0.70,
             quiet: false,
             seed: None,
-            disabled_guards: &[],
+            disabled_guards: GuardSet::EMPTY,
             stack_size: STACK_SIZE,
         }
     }
@@ -83,12 +84,12 @@ fn load_strategies_and_log(
                 eprintln!(
                     "[holdem] WARNING: Strategy file '{}' not found or invalid JSON — opponent falls back to '{}' archetype.",
                     path,
-                    cfg.opp_archetype.to_uppercase()
+                    cfg.opp_archetype.banner_name()
                 );
             }
         }
         loaded
-    } else if cfg.opp_archetype.eq_ignore_ascii_case("self") {
+    } else if cfg.opp_archetype.is_self_play() {
         strategy.clone()
     } else {
         None
@@ -97,12 +98,12 @@ fn load_strategies_and_log(
     if !cfg.quiet {
         if let (Some(_), Some(opp_path)) = (&opp_strategy, cfg.opp_strategy_path) {
             println!("\nA/B BENCHMARK: '{}' vs '{}'", cfg.strategy_path, opp_path);
-        } else if cfg.opp_archetype.eq_ignore_ascii_case("self") {
+        } else if cfg.opp_archetype.is_self_play() {
             println!("\nSELF-PLAY BENCHMARK: '{}' vs Self", cfg.strategy_path);
         } else {
             println!(
                 "[holdem] Opponent archetype: '{}'",
-                cfg.opp_archetype.to_uppercase()
+                cfg.opp_archetype.banner_name()
             );
         }
         if cfg.duplicate_mode {
@@ -129,7 +130,7 @@ fn summarize_duplicate_result(
     total_stats: &SimStats,
     opp_strategy: &Option<HoldemStrategy>,
     opp_strategy_path: Option<&str>,
-    opp_archetype: &str,
+    opp_archetype: OpponentArchetype,
     quiet: bool,
 ) -> HoldemBenchmarkResult {
     let bb_val = BIG_BLIND_F64;
@@ -148,10 +149,10 @@ fn summarize_duplicate_result(
         println!("============================================================");
         if let (Some(_), Some(opp_path)) = (opp_strategy, opp_strategy_path) {
             println!("A/B Matchup           : Bot vs '{opp_path}'");
-        } else if opp_archetype.eq_ignore_ascii_case("self") {
+        } else if opp_archetype.is_self_play() {
             println!("A/B Matchup           : Self-Play (Bot vs Self)");
         } else {
-            println!("Opponent Archetype    : {}", opp_archetype.to_uppercase());
+            println!("Opponent Archetype    : {}", opp_archetype.banner_name());
         }
         println!("Total Duplicate Deals : {}", duplicate_stats.hands);
         println!("Total Matches Played  : {}", total_stats.hands);
@@ -204,7 +205,7 @@ fn summarize_duplicate_result(
 
 fn summarize_standard_result(
     total_stats: &SimStats,
-    opp_archetype: &str,
+    opp_archetype: OpponentArchetype,
     quiet: bool,
 ) -> HoldemBenchmarkResult {
     let bb_val = BIG_BLIND_F64;
@@ -221,7 +222,7 @@ fn summarize_standard_result(
         println!("\n============================================================");
         println!("        ♠️  Texas Hold'em: Bot Simulation Summary  ♥️        ");
         println!("============================================================");
-        println!("Opponent Archetype  : {}", opp_archetype.to_uppercase());
+        println!("Opponent Archetype  : {}", opp_archetype.banner_name());
         println!("Total Hands Played  : {}", total_stats.hands);
         println!(
             "Total Net Profit    : {:+.1} chips",
@@ -266,7 +267,7 @@ struct BenchmarkLoopState<'a> {
     total_stats: &'a mut SimStats,
     pos_stats: &'a mut [SimStats; 2],
     duplicate_stats: &'a mut SimStats,
-    guard_telemetry: &'a mut HashMap<String, (u64, f64)>,
+    guard_telemetry: &'a mut HashMap<GuardId, (u64, f64)>,
 }
 
 fn run_duplicate_deals(
@@ -377,7 +378,7 @@ pub fn run_holdem_benchmark_preloaded(
     };
     let mut opp_tracker = OpponentTracker::new();
     opp_tracker.set_exploit_factor(cfg.exploit_factor);
-    opp_tracker.set_disabled_guards(cfg.disabled_guards.to_vec());
+    opp_tracker.set_disabled_guard_set(cfg.disabled_guards);
     let subgame_solver = SubgameSolver::default();
 
     let base_hand_cfg = SimHandConfig {
@@ -396,7 +397,7 @@ pub fn run_holdem_benchmark_preloaded(
     let mut total_stats = SimStats::default();
     let mut pos_stats = [SimStats::default(), SimStats::default()];
     let mut duplicate_stats = SimStats::default();
-    let mut guard_telemetry: HashMap<String, (u64, f64)> = HashMap::new();
+    let mut guard_telemetry: HashMap<GuardId, (u64, f64)> = HashMap::new();
     let mut loop_state = BenchmarkLoopState {
         opp_tracker: &mut opp_tracker,
         rng: &mut rng,

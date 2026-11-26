@@ -1,6 +1,6 @@
 use super::{LEGAL_FULL, LEGAL_OPEN, LEGAL_SHOVE, make_overbet_bluffer, make_passive_station};
 use lil_poker_mccfr::cfr::abstraction::{detect_river_nut_blocker, postflop_equity_bucket};
-use lil_poker_mccfr::cfr::opponent_model::{OpponentTracker, PolicyRequest};
+use lil_poker_mccfr::cfr::opponent_model::{GuardId, OpponentTracker, PolicyRequest};
 use lil_poker_mccfr::game::config::HOLDEM_NUM_ACTIONS;
 use lil_poker_mccfr::game::holdem::{
     ALL_IN, CALL_CHECK, Card, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, Rank, Suit,
@@ -486,10 +486,10 @@ fn test_priority_tier_ordering_and_decision_trace_reasons() {
         "Priority Tier 2 cap must override Tier 1 passive-station boost, got {act}"
     );
     assert!(
-        trace.guard_reasons.contains(&"PASSIVE_STATION_BOOST")
+        trace.guard_reasons.contains(GuardId::PassiveStationBoost)
             && trace
                 .guard_reasons
-                .contains(&"POST_PAIRED_FLUSH_STRAIGHT_CAP"),
+                .contains(GuardId::PostPairedFlushStraightCap),
         "DecisionTrace must record both Tier 1 and Tier 2 reasons: {:?}",
         trace.guard_reasons
     );
@@ -657,11 +657,14 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
             &mut rng,
         );
         assert!(
-            !trace_turn.guard_reasons.iter().any(|&r| {
-                r == "SHOVE_DEFENSE_FOLD"
-                    || r == "TURN_DRAW_ODDS_FOLD"
-                    || r == "POST_BARREL_FOLD"
-                    || r == "RANGE_EQUITY_SHOVE_FOLD"
+            !trace_turn.guard_reasons.iter().any(|r| {
+                matches!(
+                    r,
+                    GuardId::ShoveDefenseFold
+                        | GuardId::TurnDrawOddsFold
+                        | GuardId::PostBarrelFold
+                        | GuardId::RangeEquityShoveFold
+                )
             }),
             "Pair + NFD (bucket 26) triggered fold guard on 3-flush Turn (reasons: {:?})",
             trace_turn.guard_reasons
@@ -709,7 +712,7 @@ fn test_pair_plus_nfd_turn_no_fold_and_low_spr_river_nut_blocker() {
         if act_river >= RAISE_MIN {
             blocker_bluffs += 1;
         }
-        if tr.guard_reasons.contains(&"RIVER_NUT_BLOCKER_BLUFF") {
+        if tr.guard_reasons.contains(GuardId::RiverNutBlockerBluff) {
             fired_reason = true;
         }
     }
@@ -1379,4 +1382,94 @@ fn test_flop_tpwk_vs_overbet_bluffer_caps_raise_and_3bet_jam() {
             );
         }
     }
+}
+
+#[test]
+fn test_flop_43bb_overbet_shove_underpair_fold_and_low_pfr_not_maniac() {
+    let overbet_villain = make_overbet_bluffer();
+    let mut rng = SmallRng::seed_from_u64(20_261_126);
+
+    /* 1. Underpair 99 on Kh Tc 5s facing 42.8 BB flop shove vs overbet_bluffer must fold */
+    let hole_99 = [
+        Card::new(Rank::Nine, Suit::Spades),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let board_kt5 = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Ten, Suit::Clubs),
+        Card::new(Rank::Five, Suit::Spades),
+    ];
+    let b_99 = postflop_equity_bucket(&hole_99, &board_kt5);
+    let call_heavy: [f64; HOLDEM_NUM_ACTIONS] = [0.10, 0.90, 0.0, 0.0, 0.0, 0.0];
+    let (act_99, tr_99) = overbet_villain.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: b_99,
+            round: 2,
+            to_call: 6424,
+            pot: 9076,
+            hole: Some(&hole_99),
+            board: Some(&board_kt5),
+            active_opponents: 1,
+            table_bb: 150,
+            my_chips: 6424,
+            opp_chips: Some(0),
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_99, FOLD,
+        "Underpair 99 on Kh Tc 5s facing 42.8 BB flop jam must fold even vs overbet bluffer (reasons: {:?})",
+        tr_99.guard_reasons
+    );
+
+    /* 2. High-VPIP / low-PFR loose-passive 3-bettor must NOT qualify as maniac and turns down 25 BB 3rd-pair jam */
+    let mut low_pfr_station = OpponentTracker::new();
+    for i in 0..14 {
+        if i < 2 {
+            low_pfr_station.record_action_street_detailed(RAISE_HALF_POT, 1, false, 1300, 550);
+            low_pfr_station.record_action_street_detailed(RAISE_THIRD_POT, 2, false, 2250, 2900);
+            low_pfr_station.record_action_street_detailed(ALL_IN, 3, false, 5116, 7400);
+        } else {
+            low_pfr_station.record_action_street_detailed(CALL_CHECK, 1, false, 300, 450);
+            low_pfr_station.record_action_street_detailed(CALL_CHECK, 2, false, 400, 600);
+        }
+        low_pfr_station.end_hand();
+    }
+    let hole_k9s = [
+        Card::new(Rank::King, Suit::Hearts),
+        Card::new(Rank::Nine, Suit::Hearts),
+    ];
+    let board_q29a = [
+        Card::new(Rank::Queen, Suit::Spades),
+        Card::new(Rank::Two, Suit::Diamonds),
+        Card::new(Rank::Nine, Suit::Clubs),
+        Card::new(Rank::Ace, Suit::Diamonds),
+    ];
+    let b_k9s = postflop_equity_bucket(&hole_k9s, &board_q29a);
+    let (act_k9s, _) = low_pfr_station.select_action_traced(
+        &PolicyRequest {
+            raw_probs: &call_heavy,
+            legal_actions: &LEGAL_SHOVE,
+            bucket: b_k9s,
+            round: 3,
+            to_call: 5116,
+            pot: 12516,
+            hole: Some(&hole_k9s),
+            board: Some(&board_q29a),
+            active_opponents: 1,
+            table_bb: 200,
+            my_chips: 5116,
+            opp_chips: Some(0),
+            from_subgame: true,
+            ..Default::default()
+        },
+        &mut rng,
+    );
+    assert_eq!(
+        act_k9s, FOLD,
+        "3rd-pair K9s on Q-2-9-A facing 25.6 BB turn shove from 14%-PFR 3-bettor must fold"
+    );
 }

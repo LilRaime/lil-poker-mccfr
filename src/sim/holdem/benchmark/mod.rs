@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use rand::RngExt;
 use rand::rngs::SmallRng;
 
+use crate::cfr::opponent_model::GuardId;
 use crate::game::config::NUM_CARDS_DECK;
 use crate::game::holdem::{ALL_52_CARDS, Card};
 
@@ -42,7 +43,7 @@ pub struct HoldemBenchmarkResult {
     pub tie_pct: f64,
     pub sb_win_rate_bb100: f64,
     pub bb_win_rate_bb100: f64,
-    pub guard_telemetry: HashMap<String, (u64, f64)>,
+    pub guard_telemetry: HashMap<GuardId, (u64, f64)>,
 }
 
 pub(super) fn deal_cards_prefix(rng: &mut SmallRng, cards_needed: usize) -> [Card; NUM_CARDS_DECK] {

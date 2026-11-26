@@ -1,7 +1,4 @@
 /*! Live Client HTTP/WebSocket Transport and Strategy Loader */
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,60 +8,22 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use crate::game::config::HOLDEM_NUM_ACTIONS;
 use crate::game::holdem::Card;
 use crate::live::protocol::{GuestResponse, JoinRoomPayload};
+use crate::sim::holdem::{HoldemStrategy, load_holdem_strategy};
 
 pub(super) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/** Load live strategy table from .bin/.bincode or .json file */
-pub fn load_live_strategy(path: &str) -> HashMap<String, Vec<f64>> {
+/** Load live strategy table from `.bin`/`.bincode` or `.json` file into compact fixed-array storage */
+pub fn load_live_strategy(path: &str) -> HoldemStrategy {
     if std::path::Path::new(path).exists() {
         println!("Loading strategy model from {path}...");
-        if let Ok(file) = File::open(path) {
-            let mut reader = BufReader::new(file);
-            if std::path::Path::new(path)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("bin") || e.eq_ignore_ascii_case("bincode"))
-            {
-                if let Ok(raw_f32) = bincode::deserialize_from::<
-                    _,
-                    HashMap<String, [f32; HOLDEM_NUM_ACTIONS]>,
-                >(&mut reader)
-                {
-                    let mut map = HashMap::new();
-                    for (k, v) in raw_f32 {
-                        map.insert(k, v.iter().map(|&x| x as f64).collect());
-                    }
-                    return map;
-                }
-                if let Ok(file_retry) = File::open(path) {
-                    let reader_retry = BufReader::new(file_retry);
-                    if let Ok(raw) =
-                        bincode::deserialize_from::<_, HashMap<String, Vec<f64>>>(reader_retry)
-                    {
-                        return raw;
-                    }
-                }
-            } else if let Ok(raw) = serde_json::from_reader::<_, HashMap<String, Vec<f64>>>(reader)
-            {
-                let mut map = HashMap::new();
-                for (k, v) in raw {
-                    if v.len() >= 6 {
-                        map.insert(k, v);
-                    } else if v.len() == 4 {
-                        /* Map legacy 4-action entries [fold, call, raise_min, raise_half_pot] */
-                        map.insert(k, vec![v[0], v[1], v[2], 0.0, v[3], 0.0]);
-                    } else {
-                        map.insert(k, v);
-                    }
-                }
-                return map;
-            }
+        if let Some(map) = load_holdem_strategy(path) {
+            return map;
         }
     }
     println!("WARNING: Strategy file {path} not found! Using random play.");
-    HashMap::new()
+    HoldemStrategy::new()
 }
 
 pub(super) async fn open_ws_stream(

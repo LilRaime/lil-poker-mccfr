@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
@@ -20,6 +18,8 @@ use crate::game::holdem::{
     RoundHistory, evaluate_7cards,
 };
 use crate::live::{LiveDecisionRequest, decide_action_traced};
+use crate::sim::holdem::HoldemStrategy;
+use crate::sim::opponents::OpponentArchetype;
 use crate::sim::stats::SimStats;
 
 const NUM_SEATS: usize = 6;
@@ -49,8 +49,8 @@ impl Default for MultiwayBenchmarkConfig<'_> {
 }
 
 struct MultiwayResources<'a> {
-    opp_roster: &'a [&'a str; 5],
-    strategy: &'a HashMap<String, Vec<f64>>,
+    opp_roster: &'a [OpponentArchetype; 5],
+    strategy: &'a HoldemStrategy,
     strategy_index: &'a StrategyLookupIndex,
     subgame_solver: &'a SubgameSolver,
     enable_subgame_search: bool,
@@ -97,7 +97,13 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
     let subgame_solver = SubgameSolver::default();
     let mut rng = SmallRng::seed_from_u64(cfg.seed.unwrap_or(2026));
 
-    let opp_roster = ["tag", "calling_station", "maniac", "shove_bot", "rock"];
+    let opp_roster = [
+        OpponentArchetype::Tag,
+        OpponentArchetype::CallingStation,
+        OpponentArchetype::Maniac,
+        OpponentArchetype::ShoveBot,
+        OpponentArchetype::Rock,
+    ];
     let mut trackers: Vec<OpponentTracker> = (0..opp_roster.len())
         .map(|_| {
             let mut t = OpponentTracker::new();
@@ -177,7 +183,11 @@ pub fn run_holdem_multiway_benchmark(cfg: &MultiwayBenchmarkConfig<'_>) -> f64 {
     bb100
 }
 
-fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut SmallRng) -> u8 {
+fn decide_archetype_action(
+    arch: OpponentArchetype,
+    spot: &ArchetypeSpot<'_>,
+    rng: &mut SmallRng,
+) -> u8 {
     let (idx, _) = preflop_bucket(spot.hole[0], spot.hole[1]);
     let tier = preflop_strength_tier(idx);
     let bucket = if spot.round == ROUND_PREFLOP {
@@ -192,7 +202,7 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
     };
 
     match arch {
-        "calling_station" => {
+        OpponentArchetype::CallingStation => {
             if spot.to_call == 0
                 || (spot.round == ROUND_PREFLOP
                     && (tier <= 6 || (tier == 7 && spot.to_call <= BIG_BLIND * 4)))
@@ -205,7 +215,7 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
                 H_FOLD
             }
         }
-        "maniac" => {
+        OpponentArchetype::Maniac => {
             if spot.raises_this_round < MAX_RAISES_PER_ROUND && rng.random_bool(0.45) {
                 RAISE_HALF_POT
             } else if spot.to_call == 0 || bucket >= 20 || rng.random_bool(0.50) {
@@ -214,7 +224,7 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
                 H_FOLD
             }
         }
-        "shove_bot" => {
+        OpponentArchetype::ShoveBot => {
             if spot.raises_this_round < MAX_RAISES_PER_ROUND
                 && ((spot.round == ROUND_PREFLOP && tier <= 4)
                     || bucket >= 36
@@ -227,7 +237,7 @@ fn decide_archetype_action(arch: &str, spot: &ArchetypeSpot<'_>, rng: &mut Small
                 H_FOLD
             }
         }
-        "rock" => {
+        OpponentArchetype::Rock => {
             if (spot.round == ROUND_PREFLOP && tier <= 1)
                 || (spot.round >= ROUND_FLOP && bucket >= 54)
             {

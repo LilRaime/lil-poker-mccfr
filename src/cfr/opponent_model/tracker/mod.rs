@@ -2,6 +2,7 @@
 mod metrics;
 mod profile;
 
+use super::guards::{GuardId, GuardSet};
 use crate::cfr::abstraction::{
     BUCKET_OVERPAIR_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_WEAK_PAIR_MIN, postflop_equity_bucket,
     preflop_bucket, preflop_strength_tier,
@@ -19,6 +20,8 @@ pub struct OpponentTracker {
     pub pfr_hands: u64,
     pub fold_count: u64,
     pub call_count: u64,
+    #[serde(default)]
+    pub check_count: u64,
     pub raise_count: u64,
 
     /* Street-specific action counters [fold, call, raise] */
@@ -27,7 +30,11 @@ pub struct OpponentTracker {
     #[serde(default)]
     pub flop_checks: u64,
     pub turn_actions: [u64; 3],
+    #[serde(default)]
+    pub turn_checks: u64,
     pub river_actions: [u64; 3],
+    #[serde(default)]
+    pub river_checks: u64,
 
     /* Advanced situational metrics */
     pub flop_cbet_faced: u64,
@@ -104,7 +111,7 @@ pub struct OpponentTracker {
 
     /** Optional guard ablation filter (reason codes disabled for benchmarking) */
     #[serde(skip)]
-    pub disabled_guards: Vec<String>,
+    pub disabled_guards: GuardSet,
 }
 
 impl Default for OpponentTracker {
@@ -121,12 +128,15 @@ impl OpponentTracker {
             pfr_hands: 0,
             fold_count: 0,
             call_count: 0,
+            check_count: 0,
             raise_count: 0,
             preflop_actions: [0; 3],
             flop_actions: [0; 3],
             flop_checks: 0,
             turn_actions: [0; 3],
+            turn_checks: 0,
             river_actions: [0; 3],
+            river_checks: 0,
             flop_cbet_faced: 0,
             flop_fold_to_cbet: 0,
             turn_cbet_faced: 0,
@@ -172,27 +182,39 @@ impl OpponentTracker {
             hand_flop_bet_made: false,
             hand_turn_barrel_recorded: false,
             last_observed_bb: 0,
-            disabled_guards: Vec::new(),
+            disabled_guards: GuardSet::EMPTY,
         }
     }
 
-    pub fn set_disabled_guards(&mut self, guards: Vec<String>) {
-        self.disabled_guards = guards
-            .into_iter()
-            .map(|g| g.trim().to_ascii_uppercase())
-            .filter(|g| !g.is_empty())
-            .collect();
+    pub fn set_disabled_guard_set(&mut self, guards: GuardSet) {
+        self.disabled_guards = guards;
     }
 
-    pub fn is_guard_enabled(&self, reason: &str) -> bool {
-        if self.disabled_guards.is_empty() {
-            return true;
+    pub fn set_disabled_guards<I, S>(&mut self, guards: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut set = GuardSet::EMPTY;
+        for g in guards {
+            let trimmed = g.as_ref().trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.eq_ignore_ascii_case("ALL") {
+                set = GuardSet::ALL;
+                break;
+            }
+            if let Ok(id) = trimmed.parse::<GuardId>() {
+                set.insert(id);
+            }
         }
-        let upper = reason.to_ascii_uppercase();
-        !self
-            .disabled_guards
-            .iter()
-            .any(|g| g == "ALL" || g == &upper)
+        self.disabled_guards = set;
+    }
+
+    #[inline(always)]
+    pub const fn is_guard_enabled(&self, id: GuardId) -> bool {
+        !self.disabled_guards.contains(id)
     }
 
     pub fn set_exploit_enabled(&mut self, enabled: bool) {
@@ -280,6 +302,8 @@ impl OpponentTracker {
     ) {
         if action >= RAISE_MIN {
             self.hand_post_raises = self.hand_post_raises.saturating_add(1);
+        } else if action == CALL_CHECK && !facing_bet {
+            self.check_count += 1;
         }
         match round {
             ROUND_FLOP => {
@@ -310,6 +334,9 @@ impl OpponentTracker {
             }
             ROUND_TURN => {
                 self.turn_actions[act_cat] += 1;
+                if action == CALL_CHECK && !facing_bet {
+                    self.turn_checks += 1;
+                }
                 if !facing_bet && self.hand_flop_bet_made && !self.hand_turn_barrel_recorded {
                     self.turn_barrel_opps += 1;
                     self.hand_turn_barrel_recorded = true;
@@ -326,6 +353,9 @@ impl OpponentTracker {
             }
             ROUND_RIVER => {
                 self.river_actions[act_cat] += 1;
+                if action == CALL_CHECK && !facing_bet {
+                    self.river_checks += 1;
+                }
                 if facing_bet {
                     self.river_bet_faced += 1;
                     if action == FOLD {

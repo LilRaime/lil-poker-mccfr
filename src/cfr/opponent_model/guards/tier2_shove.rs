@@ -1,11 +1,12 @@
 /*! Priority Tier 2A: All-In / Heavy-Bet Shove Detection and Defense */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
+use super::guard_id::{GuardId, GuardSet};
 use super::helpers::{action_idx, first_action_idx, force_action};
 use crate::cfr::abstraction::{
-    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRAIGHT_MIN, BUCKET_STRONG_DRAW_MIN,
-    BUCKET_TOP_PAIR_MIN, BUCKET_TRIPS_MIN, BUCKET_WEAK_PAIR_MIN, calculate_range_equity,
-    nash_call_shove_max_bb, preflop_strength_tier,
+    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRAIGHT_MIN, BUCKET_TOP_PAIR_MIN,
+    BUCKET_TRIPS_MIN, PostflopBucket, calculate_range_equity, nash_call_shove_max_bb,
+    preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN,
@@ -16,14 +17,14 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
-        if ctx.is_preflop && self.is_guard_enabled("PF_DISCIPLINE_GUARD") {
+        if ctx.is_preflop && self.is_guard_enabled(GuardId::PfDisciplineGuard) {
             Self::apply_preflop_discipline_guard(probs, ctx, reasons);
         }
 
         let (is_shove_faced, is_stack_commit_draw_bet) = Self::detect_shove_faced(ctx);
-        if is_shove_faced && self.is_guard_enabled("SHOVE_DEFENSE_FOLD") {
+        if is_shove_faced && self.is_guard_enabled(GuardId::ShoveDefenseFold) {
             self.apply_shove_defense_fold(probs, ctx, is_stack_commit_draw_bet, reasons);
         }
     }
@@ -41,7 +42,9 @@ impl OpponentTracker {
                 && ctx.to_call >= ctx.bb * 5
                 && (ctx.pot_odds >= 0.28 || (ctx.round >= ROUND_TURN && ctx.pot_odds >= 0.22)))
                 || (is_stack_commit_draw_bet
-                    && (BUCKET_STRONG_DRAW_MIN..=23).contains(&ctx.bucket))
+                    && ctx
+                        .post_bucket
+                        .in_range(crate::cfr::abstraction::BUCKET_STRONG_DRAW_MIN as u8, 23))
                 || (is_substantial_bet
                     && (ctx.to_call >= ctx.eff_allin_threshold
                         || (!ctx.can_raise && ctx.to_call >= ctx.bb * 5 && ctx.pot_odds >= 0.28)
@@ -55,8 +58,8 @@ impl OpponentTracker {
                         || (ctx.round == ROUND_TURN
                             && ctx.is_three_flush
                             && ctx.is_paired_board
-                            && ctx.bucket <= 34
-                            && ctx.bucket != 33
+                            && (ctx.post_bucket.is_unpaired()
+                                || ctx.post_bucket.is_bare_weak_underpair())
                             && ctx.to_call * 2 >= ctx.bb * 7
                             && ctx.pot_odds >= 0.24)
                         || (ctx.round == ROUND_FLOP && ctx.to_call >= ctx.bb * 20))));
@@ -68,7 +71,7 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         is_stack_commit_draw_bet: bool,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.is_preflop {
             Self::apply_preflop_shove_rescue(probs, ctx);
@@ -82,12 +85,12 @@ impl OpponentTracker {
             Self::is_turn_flop_shove_trash(ctx, is_stack_commit_draw_bet)
         };
 
-        if !ctx.is_preflop && !is_trash && self.is_guard_enabled("RANGE_EQUITY_SHOVE_FOLD") {
+        if !ctx.is_preflop && !is_trash && self.is_guard_enabled(GuardId::RangeEquityShoveFold) {
             is_trash = self.is_range_equity_shove_trash(ctx, reasons);
         }
 
         if is_trash && force_action(probs, ctx.legal_actions, FOLD) {
-            reasons.push("SHOVE_DEFENSE_FOLD");
+            reasons.insert(GuardId::ShoveDefenseFold);
         }
     }
 
@@ -201,13 +204,21 @@ impl OpponentTracker {
             && !ctx.is_dangerous_board
             && !ctx.is_four_board_danger;
         let min_river_shove_bucket = if ctx.is_overbet_bluffer {
-            if ctx.pot_odds <= 0.26 { 29 } else { 34 }
+            if ctx.pot_odds <= 0.26 {
+                PostflopBucket::THREE_FLUSH_BOTTOM_PAIR as usize
+            } else {
+                34
+            }
         } else if ctx.is_known_maniac {
             BUCKET_TOP_PAIR_MIN
         } else if ctx.hole.is_some() && ctx.board.is_some() {
-            if is_dry_short_spr_river_bet { 35 } else { 44 }
+            if is_dry_short_spr_river_bet {
+                PostflopBucket::CLEAN_MID_PAIR_MIN as usize
+            } else {
+                PostflopBucket::DRY_WEAK_TOP_PAIR as usize
+            }
         } else {
-            52
+            PostflopBucket::HIGH_VULNERABLE_OVERPAIR as usize
         };
         ctx.bucket < min_river_shove_bucket
             || (ctx.to_call >= ctx.bb * 25
@@ -221,37 +232,48 @@ impl OpponentTracker {
     }
 
     fn is_turn_flop_shove_trash(ctx: &GuardContext<'_>, is_stack_commit_draw_bet: bool) -> bool {
-        let is_strong_draw = (BUCKET_STRONG_DRAW_MIN..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket);
+        let pb = ctx.post_bucket;
+        let is_strong_draw = pb.is_strong_draw();
         let draw_can_call_shove = is_strong_draw
             && if is_stack_commit_draw_bet {
-                ((22..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket) && ctx.pot_odds <= 0.34)
-                    || ((25..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket) && ctx.pot_odds <= 0.38)
+                (pb.is_nut_or_combo_draw() && ctx.pot_odds <= 0.34)
+                    || (pb.in_range(25, 27) && ctx.pot_odds <= 0.38)
             } else if ctx.round == ROUND_TURN {
-                ((24..BUCKET_WEAK_PAIR_MIN).contains(&ctx.bucket)
-                    && ctx.pot_odds <= 0.31
-                    && !ctx.is_three_flush)
-                    || ((ctx.bucket == 26 || ctx.bucket == 27) && ctx.pot_odds <= 0.40)
-                    || ((ctx.bucket == 22 || ctx.bucket == 23) && ctx.pot_odds <= 0.22)
+                (pb.is_combo_draw() && ctx.pot_odds <= 0.31 && !ctx.is_three_flush)
+                    || (pb.is_nut_combo_or_pair_nfd() && ctx.pot_odds <= 0.40)
+                    || (pb.is_bare_nut_flush_draw() && ctx.pot_odds <= 0.22)
             } else {
                 let simple_draw_odds_ok = ctx.pot_odds <= 0.30 || ctx.to_call < ctx.bb * 15;
-                let premium_draw = ctx.bucket >= 22;
+                let premium_draw = pb.as_u8() >= PostflopBucket::NUT_DRAW_MIN;
                 (!ctx.is_three_flush
                     && (premium_draw || simple_draw_odds_ok)
                     && ctx.pot_odds <= 0.35)
-                    || ((ctx.bucket == 22 || ctx.bucket == 23 || ctx.bucket >= 25)
-                        && ctx.pot_odds <= 0.35)
+                    || ((pb.is_bare_nut_flush_draw() || pb.as_u8() >= 25) && ctx.pot_odds <= 0.35)
             };
 
         if draw_can_call_shove {
             false
         } else if (ctx.is_known_maniac || ctx.is_overbet_bluffer) && !ctx.is_three_flush {
             let min_b = if ctx.is_overbet_bluffer {
-                if ctx.round == ROUND_FLOP { 30 } else { 34 }
+                if ctx.round == ROUND_FLOP {
+                    if ctx.to_call >= ctx.bb * 25 && ctx.pot_odds >= 0.36 {
+                        37
+                    } else {
+                        PostflopBucket::DRY_WEAK_BOTTOM_PAIR_MAX as usize
+                    }
+                } else if ctx.to_call >= ctx.bb * 28
+                    && ctx.pot_odds >= 0.36
+                    && !pb.has_pair_redraw()
+                {
+                    BUCKET_TOP_PAIR_MIN
+                } else {
+                    34
+                }
             } else {
-                38
+                PostflopBucket::MID_PAIR_REDRAW as usize
             };
             ctx.bucket < min_b
-                || (is_stack_commit_draw_bet && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket))
+                || (is_stack_commit_draw_bet && pb.is_non_nut_draw())
                 || (ctx.round == ROUND_TURN
                     && ctx.is_paired_board
                     && ctx.bucket < BUCKET_OVERPAIR_MIN
@@ -259,11 +281,16 @@ impl OpponentTracker {
                     && !ctx.is_overbet_bluffer)
         } else {
             (ctx.is_three_flush && ctx.bucket <= BUCKET_OVERPAIR_MIN)
-                || (ctx.round == ROUND_TURN && ctx.is_paired_board && ctx.bucket < 52)
-                || ctx.bucket < BUCKET_TOP_PAIR_MIN
-                || (is_stack_commit_draw_bet && (BUCKET_STRONG_DRAW_MIN..=21).contains(&ctx.bucket))
                 || (ctx.round == ROUND_TURN
-                    && (BUCKET_TOP_PAIR_MIN..=45).contains(&ctx.bucket)
+                    && ctx.is_paired_board
+                    && pb.as_u8() < PostflopBucket::HIGH_VULNERABLE_OVERPAIR)
+                || ctx.bucket < BUCKET_TOP_PAIR_MIN
+                || (is_stack_commit_draw_bet && pb.is_non_nut_draw())
+                || (ctx.round == ROUND_TURN
+                    && pb.in_range(
+                        BUCKET_TOP_PAIR_MIN as u8,
+                        PostflopBucket::STRONG_DRY_TOP_PAIR_MIN,
+                    )
                     && ctx.is_dangerous_board
                     && ctx.pot_odds >= 0.36)
         }
@@ -272,7 +299,7 @@ impl OpponentTracker {
     pub(super) fn is_range_equity_shove_trash(
         &self,
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) -> bool {
         let (Some(h), Some(b)) = (ctx.hole, ctx.board) else {
             return false;
@@ -292,7 +319,7 @@ impl OpponentTracker {
         let range_eq = calculate_range_equity(h, b, obs_vpip, heavy_range, ctx.active_opponents);
         let eq_margin = if ctx.round == ROUND_RIVER { 0.06 } else { 0.08 };
         if range_eq + eq_margin < ctx.pot_odds && ctx.bucket < BUCKET_TRIPS_MIN {
-            reasons.push("RANGE_EQUITY_SHOVE_FOLD");
+            reasons.insert(GuardId::RangeEquityShoveFold);
             true
         } else {
             false

@@ -1,4 +1,7 @@
 /*! Opponent Archetype Heuristics and Action Sampling */
+use std::fmt;
+use std::str::FromStr;
+
 use super::holdem::HoldemStrategy;
 use crate::cfr::abstraction::{
     BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
@@ -44,9 +47,107 @@ pub fn sample_from_probs(probs: &[f64], legal: &[u8], rng: &mut SmallRng) -> u8 
     }
 }
 
+/** Typed simulated opponent archetype shared across engine, benchmarks, and CLIs */
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, clap::ValueEnum)]
+pub enum OpponentArchetype {
+    #[default]
+    #[value(name = "tag", alias = "tight_aggressive")]
+    Tag = 0,
+    #[value(name = "calling_station", aliases = ["station", "fish", "loose_passive"])]
+    CallingStation = 1,
+    #[value(name = "maniac", aliases = ["lag", "loose_aggressive"])]
+    Maniac = 2,
+    #[value(name = "rock", aliases = ["nit", "tight_passive"])]
+    Rock = 3,
+    #[value(name = "shove_bot", aliases = ["push_bot", "allin_bot"])]
+    ShoveBot = 4,
+    #[value(name = "trapper", alias = "check_raiser")]
+    Trapper = 5,
+    #[value(name = "overbet_aggro", aliases = ["overbet", "aggro_ob"])]
+    OverbetAggro = 6,
+    #[value(name = "self", alias = "model")]
+    SelfPlay = 7,
+    #[value(name = "random")]
+    Random = 8,
+}
+
+impl OpponentArchetype {
+    pub const GAUNTLET_ROSTER: [Self; 8] = [
+        Self::Tag,
+        Self::CallingStation,
+        Self::Maniac,
+        Self::ShoveBot,
+        Self::Trapper,
+        Self::Rock,
+        Self::OverbetAggro,
+        Self::SelfPlay,
+    ];
+
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tag => "tag",
+            Self::CallingStation => "calling_station",
+            Self::Maniac => "maniac",
+            Self::Rock => "rock",
+            Self::ShoveBot => "shove_bot",
+            Self::Trapper => "trapper",
+            Self::OverbetAggro => "overbet_aggro",
+            Self::SelfPlay => "self",
+            Self::Random => "random",
+        }
+    }
+
+    #[inline]
+    pub const fn banner_name(self) -> &'static str {
+        match self {
+            Self::Tag => "TAG",
+            Self::CallingStation => "CALLING_STATION",
+            Self::Maniac => "MANIAC",
+            Self::Rock => "ROCK",
+            Self::ShoveBot => "SHOVE_BOT",
+            Self::Trapper => "TRAPPER",
+            Self::OverbetAggro => "OVERBET_AGGRO",
+            Self::SelfPlay => "SELF",
+            Self::Random => "RANDOM",
+        }
+    }
+
+    #[inline]
+    pub const fn is_self_play(self) -> bool {
+        matches!(self, Self::SelfPlay)
+    }
+}
+
+impl fmt::Display for OpponentArchetype {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for OpponentArchetype {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "tag" | "tight_aggressive" => Ok(Self::Tag),
+            "calling_station" | "station" | "fish" | "loose_passive" => Ok(Self::CallingStation),
+            "maniac" | "lag" | "loose_aggressive" => Ok(Self::Maniac),
+            "rock" | "nit" | "tight_passive" => Ok(Self::Rock),
+            "shove_bot" | "push_bot" | "allin_bot" => Ok(Self::ShoveBot),
+            "trapper" | "check_raiser" => Ok(Self::Trapper),
+            "overbet_aggro" | "overbet" | "aggro_ob" => Ok(Self::OverbetAggro),
+            "self" | "model" => Ok(Self::SelfPlay),
+            "random" => Ok(Self::Random),
+            other => Err(format!("Unknown opponent archetype: '{other}'")),
+        }
+    }
+}
+
 /** Sample an action according to opponent archetype */
 pub fn sample_opponent_action(
-    opp_archetype: &str,
+    opp_archetype: OpponentArchetype,
     opp_strategy: Option<&HoldemStrategy>,
     game: &TexasHoldemGame,
     opp_player: usize,
@@ -65,18 +166,16 @@ pub fn sample_opponent_action(
         pot: game.contributions[0] + game.contributions[1],
     };
 
-    match opp_archetype.to_lowercase().as_str() {
-        "tag" | "tight_aggressive" => sample_tag_action(&ctx, rng),
-        "calling_station" | "station" | "fish" | "loose_passive" => {
-            sample_station_action(&ctx, rng)
-        }
-        "maniac" | "lag" | "loose_aggressive" => sample_maniac_action(&ctx, rng),
-        "rock" | "nit" | "tight_passive" => sample_nit_action(&ctx, rng),
-        "shove_bot" | "push_bot" | "allin_bot" => sample_shove_bot_action(&ctx, rng),
-        "trapper" | "check_raiser" => sample_trapper_action(&ctx, rng),
-        "overbet_aggro" | "overbet" | "aggro_ob" => sample_overbet_aggro_action(&ctx, rng),
-        "self" | "model" => sample_model_action(&ctx, opp_strategy, rng),
-        _ => ctx.legal[rng.random_range(0..ctx.legal.len())],
+    match opp_archetype {
+        OpponentArchetype::Tag => sample_tag_action(&ctx, rng),
+        OpponentArchetype::CallingStation => sample_station_action(&ctx, rng),
+        OpponentArchetype::Maniac => sample_maniac_action(&ctx, rng),
+        OpponentArchetype::Rock => sample_nit_action(&ctx, rng),
+        OpponentArchetype::ShoveBot => sample_shove_bot_action(&ctx, rng),
+        OpponentArchetype::Trapper => sample_trapper_action(&ctx, rng),
+        OpponentArchetype::OverbetAggro => sample_overbet_aggro_action(&ctx, rng),
+        OpponentArchetype::SelfPlay => sample_model_action(&ctx, opp_strategy, rng),
+        OpponentArchetype::Random => ctx.legal[rng.random_range(0..ctx.legal.len())],
     }
 }
 

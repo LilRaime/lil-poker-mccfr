@@ -5,6 +5,8 @@ mod extended;
 mod high_card;
 mod pairs;
 
+use std::fmt;
+
 use crate::game::config::NUM_HOLE_CARDS;
 use crate::game::holdem::{Card, evaluate_7cards};
 
@@ -29,6 +31,242 @@ pub const BUCKET_SECOND_NUT_FLUSH: usize = 82;
 pub const BUCKET_NUT_FLUSH: usize = 83;
 pub const BUCKET_FULL_HOUSE_MIN: usize = 84;
 pub const BUCKET_MAX: usize = 87;
+
+/** Zero-cost typed postflop abstraction bucket (`0..=87`) with semantic sub-bucket predicates */
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PostflopBucket(pub u8);
+
+impl PostflopBucket {
+    pub const PURE_RAG_AIR_MAX: u8 = 6;
+    pub const STRONG_OVERCARDS_MIN: u8 = 7;
+    pub const STRONG_ACE_KING_MIN: u8 = 9;
+    pub const NON_NUT_DRAW_MAX: u8 = 21;
+    pub const NUT_DRAW_MIN: u8 = 22;
+    pub const COMBO_DRAW_MIN: u8 = 24;
+    pub const NUT_COMBO_OR_PAIR_NFD_MIN: u8 = 26;
+    pub const CRUSHED_PAIR: u8 = 28;
+    pub const THREE_FLUSH_BOTTOM_PAIR: u8 = 29;
+    pub const DRY_WEAK_BOTTOM_PAIR_MAX: u8 = 30;
+    pub const BOTTOM_PAIR_REDRAW: u8 = 33;
+    pub const CLEAN_MID_PAIR_MIN: u8 = 35;
+    pub const DRY_MID_OR_UNDERPAIR_MAX: u8 = 37;
+    pub const MID_PAIR_REDRAW: u8 = 38;
+    pub const COUNTERFEITED_TOP_PAIR: u8 = 39;
+    pub const FOUR_DANGER_TOP_PAIR: u8 = 40;
+    pub const VULNERABLE_TOP_PAIR_MAX: u8 = 43;
+    pub const DRY_WEAK_TOP_PAIR: u8 = 44;
+    pub const STRONG_DRY_TOP_PAIR_MIN: u8 = 45;
+    pub const HIGH_VULNERABLE_OVERPAIR: u8 = 52;
+    pub const VULNERABLE_TWO_PAIR_MAX: u8 = 58;
+    pub const CLEAN_TWO_PAIR_MIN: u8 = 61;
+    pub const VULNERABLE_SET_MIN: u8 = 68;
+    pub const TRIPS_OR_SET_FLUSH_REDRAW: u8 = 72;
+    pub const BOARD_CHOP_OR_IDIOT_STRAIGHT: u8 = 73;
+    pub const PAIRED_BOARD_STRAIGHT: u8 = 74;
+    pub const CLEAN_UNPAIRED_STRAIGHT_MIN: u8 = 75;
+    pub const GOOD_TWO_CARD_FLUSH: u8 = 81;
+
+    #[inline(always)]
+    pub const fn new(raw: u8) -> Self {
+        Self(if raw > BUCKET_MAX as u8 {
+            BUCKET_MAX as u8
+        } else {
+            raw
+        })
+    }
+
+    #[inline(always)]
+    pub const fn from_usize(raw: usize) -> Self {
+        Self(if raw > BUCKET_MAX {
+            BUCKET_MAX as u8
+        } else {
+            raw as u8
+        })
+    }
+
+    #[inline(always)]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+
+    #[inline(always)]
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    #[inline(always)]
+    pub const fn in_range(self, min: u8, max_inclusive: u8) -> bool {
+        self.0 >= min && self.0 <= max_inclusive
+    }
+
+    #[inline(always)]
+    pub const fn is_pure_rag_air(self) -> bool {
+        self.0 <= Self::PURE_RAG_AIR_MAX
+    }
+
+    #[inline(always)]
+    pub const fn is_high_card(self) -> bool {
+        (self.0 as usize) < BUCKET_WEAK_DRAW_MIN
+    }
+
+    #[inline(always)]
+    pub const fn is_air_or_weak_draw(self) -> bool {
+        (self.0 as usize) < BUCKET_STRONG_DRAW_MIN
+    }
+
+    #[inline(always)]
+    pub const fn is_unpaired(self) -> bool {
+        (self.0 as usize) < BUCKET_WEAK_PAIR_MIN
+    }
+
+    #[inline(always)]
+    pub const fn is_strong_draw(self) -> bool {
+        self.0 >= BUCKET_STRONG_DRAW_MIN as u8 && self.0 < BUCKET_WEAK_PAIR_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn is_non_nut_draw(self) -> bool {
+        self.0 >= BUCKET_STRONG_DRAW_MIN as u8 && self.0 <= Self::NON_NUT_DRAW_MAX
+    }
+
+    #[inline(always)]
+    pub const fn is_nut_or_combo_draw(self) -> bool {
+        self.0 >= Self::NUT_DRAW_MIN && self.0 < BUCKET_WEAK_PAIR_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn is_bare_nut_flush_draw(self) -> bool {
+        self.0 == 22 || self.0 == 23
+    }
+
+    #[inline(always)]
+    pub const fn is_combo_draw(self) -> bool {
+        self.0 >= Self::COMBO_DRAW_MIN && self.0 <= 27
+    }
+
+    #[inline(always)]
+    pub const fn is_nut_combo_or_pair_nfd(self) -> bool {
+        self.0 == 26 || self.0 == 27
+    }
+
+    #[inline(always)]
+    pub const fn is_multiway_nut_draw(self) -> bool {
+        matches!(self.0, 22 | 23 | 25 | 27)
+    }
+
+    #[inline(always)]
+    pub const fn is_crushed_pair(self) -> bool {
+        self.0 == Self::CRUSHED_PAIR
+    }
+
+    #[inline(always)]
+    pub const fn is_crushed_or_three_flush_bottom_pair(self) -> bool {
+        self.0 == Self::CRUSHED_PAIR || self.0 == Self::THREE_FLUSH_BOTTOM_PAIR
+    }
+
+    #[inline(always)]
+    pub const fn is_weak_bottom_pair(self) -> bool {
+        self.0 >= BUCKET_WEAK_PAIR_MIN as u8 && self.0 <= Self::DRY_WEAK_BOTTOM_PAIR_MAX
+    }
+
+    #[inline(always)]
+    pub const fn is_weak_or_mid_pair(self) -> bool {
+        self.0 >= BUCKET_WEAK_PAIR_MIN as u8 && self.0 < BUCKET_TOP_PAIR_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn has_pair_redraw(self) -> bool {
+        self.0 == Self::BOTTOM_PAIR_REDRAW || self.0 == Self::MID_PAIR_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn is_bare_weak_or_mid_pair(self) -> bool {
+        self.is_weak_or_mid_pair() && !self.has_pair_redraw()
+    }
+
+    #[inline(always)]
+    pub const fn is_bare_weak_underpair(self) -> bool {
+        self.0 >= BUCKET_WEAK_PAIR_MIN as u8 && self.0 <= 34 && self.0 != Self::BOTTOM_PAIR_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn is_clean_mid_pair(self) -> bool {
+        self.0 >= Self::CLEAN_MID_PAIR_MIN && self.0 <= Self::MID_PAIR_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn is_counterfeited_top_pair(self) -> bool {
+        self.0 == Self::COUNTERFEITED_TOP_PAIR
+    }
+
+    #[inline(always)]
+    pub const fn is_top_pair(self) -> bool {
+        self.0 >= BUCKET_TOP_PAIR_MIN as u8 && self.0 < BUCKET_OVERPAIR_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn is_strong_top_pair_or_overpair(self) -> bool {
+        self.0 >= Self::STRONG_DRY_TOP_PAIR_MIN && self.0 < BUCKET_TWO_PAIR_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn is_thin_value_tp_or_two_pair(self) -> bool {
+        self.0 >= Self::STRONG_DRY_TOP_PAIR_MIN && self.0 <= 63
+    }
+
+    #[inline(always)]
+    pub const fn is_vulnerable_two_pair(self) -> bool {
+        self.0 >= BUCKET_TWO_PAIR_MIN as u8 && self.0 <= Self::VULNERABLE_TWO_PAIR_MAX
+    }
+
+    #[inline(always)]
+    pub const fn is_two_pair(self) -> bool {
+        self.0 >= BUCKET_TWO_PAIR_MIN as u8 && self.0 < BUCKET_TRIPS_MIN as u8
+    }
+
+    #[inline(always)]
+    pub const fn is_trips_or_set(self) -> bool {
+        self.0 >= BUCKET_TRIPS_MIN as u8 && self.0 <= Self::TRIPS_OR_SET_FLUSH_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn is_set_or_trips_redraw(self) -> bool {
+        self.0 >= Self::VULNERABLE_SET_MIN && self.0 <= Self::TRIPS_OR_SET_FLUSH_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn has_trips_flush_redraw(self) -> bool {
+        self.0 == Self::TRIPS_OR_SET_FLUSH_REDRAW
+    }
+
+    #[inline(always)]
+    pub const fn is_board_chop_or_idiot_straight(self) -> bool {
+        self.0 == Self::BOARD_CHOP_OR_IDIOT_STRAIGHT
+    }
+
+    #[inline(always)]
+    pub const fn is_paired_board_straight(self) -> bool {
+        self.0 == Self::PAIRED_BOARD_STRAIGHT
+    }
+
+    #[inline(always)]
+    pub const fn is_non_idiot_straight(self) -> bool {
+        self.0 >= Self::PAIRED_BOARD_STRAIGHT && self.0 <= BUCKET_STRAIGHT_MAX as u8
+    }
+}
+
+impl fmt::Display for PostflopBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/** Typed wrapper over `postflop_equity_bucket` returning `PostflopBucket` */
+#[inline]
+pub fn postflop_bucket(hole: &[Card; NUM_HOLE_CARDS], board: &[Card]) -> PostflopBucket {
+    PostflopBucket::from_usize(postflop_equity_bucket(hole, board))
+}
 
 /** Fast high-resolution draw-aware and texture-aware postflop equity bucketing (`0..=87`).
  * Differentiates:

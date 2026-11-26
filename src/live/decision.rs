@@ -3,18 +3,17 @@ use std::collections::HashMap;
 
 use super::protocol::{ActionMapRequest, ActionTranslationBlend, map_action_index};
 use crate::cfr::abstraction::{
-    BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TOP_PAIR_MIN,
-    BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN, BUCKET_WEAK_PAIR_MIN, postflop_equity_bucket,
-    preflop_bucket, preflop_strength_tier,
+    BUCKET_FLUSH_MIN, postflop_equity_bucket, preflop_bucket, preflop_strength_tier,
 };
 use crate::cfr::fallback::{FallbackRequest, StrategyLookupIndex, get_holdem_fallback_strategy};
 use crate::cfr::opponent_model::{
-    DecisionTrace, OpponentTracker, PolicyRequest, ShortStackRequest, effective_remaining_chips,
+    DecisionTrace, GuardId, GuardSet, OpponentTracker, PolicyRequest, ShortStackRequest,
+    effective_remaining_chips,
 };
 use crate::cfr::subgame::{SubgameContext, SubgameRequest, SubgameSolver};
 use crate::game::config::{
-    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP,
-    ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND,
+    ALL_IN, BIG_BLIND, CALL_CHECK, FOLD, HOLDEM_NUM_ACTIONS, RAISE_HALF_POT, RAISE_MIN,
+    RAISE_THIRD_POT, ROUND_FLOP, ROUND_PREFLOP, ROUND_RIVER, ROUND_TURN, SMALL_BLIND,
 };
 use crate::game::holdem::{Card, Rank, RoundHistory, Suit};
 
@@ -68,9 +67,9 @@ impl Default for LiveDecisionRequest<'_> {
     }
 }
 
-pub fn decide_action(
+pub fn decide_action<V: AsRef<[f64]> + Sync>(
     req: &LiveDecisionRequest<'_>,
-    strategy_map: &HashMap<String, Vec<f64>>,
+    strategy_map: &HashMap<String, V>,
     tracker: &OpponentTracker,
     solver_ctx: Option<&mut SubgameContext>,
 ) -> (String, i32) {
@@ -78,9 +77,9 @@ pub fn decide_action(
     (act, amt)
 }
 
-pub fn decide_action_traced(
+pub fn decide_action_traced<V: AsRef<[f64]> + Sync>(
     req: &LiveDecisionRequest<'_>,
-    strategy_map: &HashMap<String, Vec<f64>>,
+    strategy_map: &HashMap<String, V>,
     tracker: &OpponentTracker,
     solver_ctx: Option<&mut SubgameContext>,
 ) -> (String, i32, DecisionTrace) {
@@ -145,7 +144,7 @@ pub fn decide_action_traced(
     );
 
     let mut rng = rand::rng();
-    let (chosen_u8, mut trace) = tracker.select_action_traced(
+    let (chosen_u8, trace) = tracker.select_action_traced(
         &PolicyRequest {
             raw_probs: &raw_probs,
             legal_actions: &state.legal_u8,
@@ -160,12 +159,12 @@ pub fn decide_action_traced(
             my_chips: state.eff_chips,
             opp_chips: None,
             from_subgame: use_subgame,
+            my_player: Some(state.my_player),
+            history: Some(state.history),
         },
         &mut rng,
     );
-    let mut chosen_idx = chosen_u8 as usize;
-    apply_live_post_selection_guards(&state, tracker, &mut chosen_idx, &mut trace);
-    trace.final_action = chosen_idx as u8;
+    let chosen_idx = chosen_u8 as usize;
 
     let is_wet = has_wet_suits(state.board);
     if let Some((act, amt)) = map_action_index(&ActionMapRequest {
@@ -211,8 +210,8 @@ impl LiveDecisionState<'_> {
     }
 }
 
-struct LiveSubgameParams<'a> {
-    strategy_map: &'a HashMap<String, Vec<f64>>,
+struct LiveSubgameParams<'a, V> {
+    strategy_map: &'a HashMap<String, V>,
     subgame_search: bool,
     contributions: [i32; 2],
     raises_this_round: u8,
@@ -293,7 +292,7 @@ fn try_extreme_pot_commit_rescue(
         pot_odds_bps,
         raw_top_action: CALL_CHECK,
         final_action: CALL_CHECK,
-        guard_reasons: vec!["POT_COMMIT_DECISION_RESCUE"],
+        guard_reasons: GuardSet::from_id(GuardId::PotCommitDecisionRescue),
     };
     let tok = if s.has("call") {
         "call"
@@ -332,7 +331,7 @@ fn try_short_stack_nash_decision(
         pot_odds_bps,
         raw_top_action: short_act,
         final_action: short_act,
-        guard_reasons: vec![reason],
+        guard_reasons: GuardSet::from_id(reason),
     };
     match short_act {
         ALL_IN => {
@@ -374,11 +373,19 @@ fn try_short_stack_nash_decision(
     }
 }
 
-fn lookup_blueprint_interpolated(
+#[inline]
+fn slice_to_action_array(probs: &[f64]) -> [f64; HOLDEM_NUM_ACTIONS] {
+    let mut arr = [0.0f64; HOLDEM_NUM_ACTIONS];
+    let n = probs.len().min(HOLDEM_NUM_ACTIONS);
+    arr[..n].copy_from_slice(&probs[..n]);
+    arr
+}
+
+fn lookup_blueprint_interpolated<V: AsRef<[f64]>>(
     s: &LiveDecisionState<'_>,
-    strategy_map: &HashMap<String, Vec<f64>>,
+    strategy_map: &HashMap<String, V>,
     eff_stack_bb: i32,
-) -> Option<Vec<f64>> {
+) -> Option<[f64; HOLDEM_NUM_ACTIONS]> {
     if let Some(blend) = s.active_bet_blend
         && blend.low_action != blend.high_action
         && blend.low_weight > 0.0
@@ -417,9 +424,9 @@ fn lookup_blueprint_interpolated(
 
             match (p_low, p_high) {
                 (Some(lo), Some(hi)) => {
-                    let n = lo.len().min(hi.len());
+                    let n = lo.len().min(hi.len()).min(HOLDEM_NUM_ACTIONS);
                     let w = blend.low_weight;
-                    let mut blended = vec![0.0f64; n];
+                    let mut blended = [0.0f64; HOLDEM_NUM_ACTIONS];
                     let mut sum = 0.0f64;
                     for i in 0..n {
                         let v = (w * lo[i] + (1.0 - w) * hi[i]).max(0.0);
@@ -428,14 +435,14 @@ fn lookup_blueprint_interpolated(
                     }
                     if sum > 1e-12 {
                         let inv = 1.0 / sum;
-                        for v in &mut blended {
+                        for v in &mut blended[..n] {
                             *v *= inv;
                         }
                     }
                     return Some(blended);
                 }
-                (Some(lo), None) => return Some(lo),
-                (None, Some(hi)) => return Some(hi),
+                (Some(lo), None) => return Some(slice_to_action_array(&lo)),
+                (None, Some(hi)) => return Some(slice_to_action_array(&hi)),
                 (None, None) => {}
             }
         }
@@ -449,13 +456,14 @@ fn lookup_blueprint_interpolated(
         s.history,
         eff_stack_bb,
     )
+    .map(|v| slice_to_action_array(&v))
 }
 
-fn resolve_raw_strategy_probs(
+fn resolve_raw_strategy_probs<V: AsRef<[f64]> + Sync>(
     s: &LiveDecisionState<'_>,
     tracker: &OpponentTracker,
-    sp: LiveSubgameParams<'_>,
-) -> (Vec<f64>, bool) {
+    sp: LiveSubgameParams<'_, V>,
+) -> ([f64; HOLDEM_NUM_ACTIONS], bool) {
     /* 1. Real-time Subgame Search (Turn & River, or Flop for HU single-raised+ pots >= 4 BB) */
     let flop_trigger_pot = (s.bb * 4).max(1);
     let use_subgame = sp.subgame_search
@@ -476,7 +484,7 @@ fn resolve_raw_strategy_probs(
     let raw_probs = if use_subgame {
         let default_solver = SubgameSolver::default();
         let active_solver = sp.solver.unwrap_or(&default_solver);
-        active_solver.solve_with_strategy(
+        let solved = active_solver.solve_with_strategy(
             &SubgameRequest {
                 hole: *s.hole,
                 board: s.board,
@@ -492,7 +500,8 @@ fn resolve_raw_strategy_probs(
             s.history,
             Some(sp.strategy_map),
             sp.solver_ctx,
-        )
+        );
+        slice_to_action_array(&solved)
     } else {
         /* 2. Abstract Strategy Model Lookup (single-model multi-stack & pseudo-harmonic interpolation aware) */
         let eff_stack_bb = if s.eff_chips > 0 && s.bb > 0 {
@@ -513,145 +522,13 @@ fn resolve_raw_strategy_probs(
                 table_bb: s.bb,
             };
             if let Some(idx) = sp.strategy_index {
-                idx.get_blended_fallback(&req)
+                slice_to_action_array(&idx.get_blended_fallback(&req))
             } else {
-                get_holdem_fallback_strategy(&req).to_vec()
+                get_holdem_fallback_strategy(&req)
             }
         }
     };
     (raw_probs, use_subgame)
-}
-
-fn apply_live_post_selection_guards(
-    s: &LiveDecisionState<'_>,
-    tracker: &OpponentTracker,
-    chosen_idx: &mut usize,
-    trace: &mut DecisionTrace,
-) {
-    apply_live_street_action_guards(s, tracker, chosen_idx, trace);
-    apply_live_commit_and_spr_guards(s, tracker, chosen_idx, trace);
-}
-
-fn apply_live_street_action_guards(
-    s: &LiveDecisionState<'_>,
-    tracker: &OpponentTracker,
-    chosen_idx: &mut usize,
-    trace: &mut DecisionTrace,
-) {
-    if s.round == ROUND_RIVER
-        && s.to_call == 0
-        && s.bucket < BUCKET_TWO_PAIR_MIN
-        && (s.my_player == 1 || s.bucket < BUCKET_TOP_PAIR_MIN)
-        && *chosen_idx >= RAISE_MIN as usize
-    {
-        let turn_hist = s.history[2].as_slice();
-        let turn_raises = turn_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
-        /* On Turn, OOP (my_player == 1) acts on even indices (0, 2, ...), IP (my_player == 0) on odd indices (1, 3, ...). */
-        let opp_was_last_turn_raiser = turn_hist
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|&(_, &a)| a >= RAISE_MIN)
-            .is_some_and(|(idx, _)| {
-                let is_oop_action = idx % 2 == 0;
-                (s.my_player == 1 && !is_oop_action) || (s.my_player == 0 && is_oop_action)
-            });
-        if turn_raises >= 2 || (s.my_player == 1 && opp_was_last_turn_raiser) {
-            *chosen_idx = CALL_CHECK as usize;
-            trace.guard_reasons.push("RIVER_CHECK_TO_TURN_AGGRESSOR");
-        }
-    }
-    if s.round == ROUND_FLOP
-        && s.to_call == 0
-        && s.my_player == 1
-        && *chosen_idx >= RAISE_MIN as usize
-        && *chosen_idx < ALL_IN as usize
-        && s.bucket < BUCKET_TOP_PAIR_MIN
-        && !(22..BUCKET_WEAK_PAIR_MIN).contains(&s.bucket)
-        && tracker.is_guard_enabled("FLOP_OOP_MICRO_DONK_SUPPRESS")
-    {
-        let pf_hist = s.history[0].as_slice();
-        let pf_raises = pf_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
-        let opp_was_pf_aggressor =
-            pf_raises == 1 && pf_hist.first().copied().unwrap_or(0) >= RAISE_MIN;
-        if opp_was_pf_aggressor {
-            *chosen_idx = CALL_CHECK as usize;
-            trace.guard_reasons.push("FLOP_OOP_MICRO_DONK_SUPPRESS");
-        }
-    }
-}
-
-fn apply_live_commit_and_spr_guards(
-    s: &LiveDecisionState<'_>,
-    tracker: &OpponentTracker,
-    chosen_idx: &mut usize,
-    trace: &mut DecisionTrace,
-) {
-    if s.to_call > 0 && *chosen_idx == FOLD as usize && s.legal_u8.contains(&CALL_CHECK) {
-        let new_pot = (s.pot + s.to_call).max(1);
-        let is_postflop_micro_commit = s.round >= ROUND_FLOP
-            && (s.to_call * 8 <= new_pot
-                || (s.to_call * 6 <= new_pot && s.bucket >= BUCKET_STRONG_DRAW_MIN)
-                || (s.my_chips > 0 && s.my_chips <= s.bb && s.pot >= s.bb * 4));
-        let is_preflop_priced_in = s.round == ROUND_PREFLOP
-            && (s.to_call <= s.bb * 2 || preflop_strength_tier(s.bucket) <= 6)
-            && s.to_call * 6 <= new_pot;
-        if is_postflop_micro_commit || is_preflop_priced_in {
-            *chosen_idx = CALL_CHECK as usize;
-            trace.guard_reasons.push("POT_COMMIT_DECISION_RESCUE");
-        }
-    }
-    if s.round >= ROUND_FLOP && s.eff_chips > 0 {
-        let is_four_board_pair = s.round >= ROUND_TURN
-            && matches!(
-                s.bucket,
-                BUCKET_WEAK_PAIR_MIN
-                    | BUCKET_TOP_PAIR_MIN
-                    | BUCKET_OVERPAIR_MIN
-                    | BUCKET_TWO_PAIR_MIN
-            );
-        let is_bloated_flop_weak = s.round == ROUND_FLOP
-            && ((s.bucket < BUCKET_STRONG_DRAW_MIN
-                && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8))
-                || ((BUCKET_WEAK_PAIR_MIN..=37).contains(&s.bucket) && s.pot >= s.bb * 10));
-        let is_sticky_or_station = tracker.is_passive_station()
-            || (tracker.flop_cbet_faced >= 4 && tracker.smoothed_flop_fold_to_cbet() < 0.28)
-            || (tracker.total_actions() >= 15
-                && tracker.smoothed_fold_ratio() < 0.14
-                && tracker.smoothed_raise_ratio() <= 0.22);
-        let allow_hu_3bet_overcard_cbet = s.round == ROUND_FLOP
-            && s.active_opponents == 1
-            && !is_sticky_or_station
-            && s.eff_chips > s.pot * 2
-            && s.pot >= s.bb * 8
-            && s.bucket >= 7
-            && s.bucket < BUCKET_STRONG_DRAW_MIN
-            && *chosen_idx <= RAISE_THIRD_POT as usize;
-        if s.to_call == 0
-            && *chosen_idx >= RAISE_MIN as usize
-            && !allow_hu_3bet_overcard_cbet
-            && (is_four_board_pair
-                || is_bloated_flop_weak
-                || (s.bucket < BUCKET_WEAK_DRAW_MIN
-                    && *chosen_idx >= RAISE_THIRD_POT as usize
-                    && (s.eff_chips <= s.pot * 2 || s.pot >= s.bb * 8)))
-        {
-            *chosen_idx = CALL_CHECK as usize;
-            trace.guard_reasons.push("LOW_SPR_BLUFF_SUPPRESS");
-        } else if s.to_call > s.bb
-            && (s.bucket < BUCKET_STRONG_DRAW_MIN || s.bucket == BUCKET_WEAK_PAIR_MIN)
-            && *chosen_idx == CALL_CHECK as usize
-        {
-            let remaining = s.eff_chips - s.to_call;
-            let new_pot = (s.pot + s.to_call).max(1);
-            if s.to_call * 6 > new_pot
-                && (remaining * 2 < new_pot || s.to_call * 10 >= s.eff_chips * 3)
-            {
-                *chosen_idx = FOLD as usize;
-                trace.guard_reasons.push("LOW_SPR_AIR_CALL_FOLD");
-            }
-        }
-    }
 }
 
 fn has_wet_suits(board: &[Card]) -> bool {

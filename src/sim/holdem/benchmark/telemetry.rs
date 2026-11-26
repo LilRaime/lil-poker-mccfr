@@ -1,27 +1,27 @@
 use std::collections::HashMap;
 
-use crate::cfr::opponent_model::{OpponentStyle, OpponentTracker};
+use crate::cfr::opponent_model::{GuardId, GuardSet, OpponentStyle, OpponentTracker};
 use crate::game::config::BIG_BLIND_F64;
 use crate::sim::stats::SimStats;
 
 pub(super) fn record_guard_reasons(
-    telemetry: &mut HashMap<String, (u64, f64)>,
-    reasons: Vec<&'static str>,
+    telemetry: &mut HashMap<GuardId, (u64, f64)>,
+    reasons: GuardSet,
     ret: f64,
 ) {
     for r in reasons {
-        let entry = telemetry.entry(r.to_string()).or_insert((0, 0.0));
+        let entry = telemetry.entry(r).or_insert((0, 0.0));
         entry.0 += 1;
         entry.1 += ret;
     }
 }
 
-pub(super) fn print_guard_telemetry(telemetry: &HashMap<String, (u64, f64)>, total_hands: u64) {
-    let mut rows: Vec<(&String, u64, f64)> = telemetry
+pub(super) fn print_guard_telemetry(telemetry: &HashMap<GuardId, (u64, f64)>, total_hands: u64) {
+    let mut rows: Vec<(GuardId, u64, f64)> = telemetry
         .iter()
-        .map(|(k, &(cnt, net))| (k, cnt, net))
+        .map(|(&k, &(cnt, net))| (k, cnt, net))
         .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
 
     println!("\n--- Guard Trigger Telemetry ---");
     println!(
@@ -32,7 +32,13 @@ pub(super) fn print_guard_telemetry(telemetry: &HashMap<String, (u64, f64)>, tot
     for (reason, cnt, net) in rows {
         let pct = (cnt as f64 / total_hands.max(1) as f64) * 100.0;
         let avg_bb100 = ((net / cnt.max(1) as f64) / BIG_BLIND_F64) * 100.0;
-        println!("{reason:<32} | {cnt:>9} | {pct:>7.1}% | {avg_bb100:>+13.2} bb");
+        println!(
+            "{:<32} | {:>9} | {:>7.1}% | {:>+13.2} bb",
+            reason.as_str(),
+            cnt,
+            pct,
+            avg_bb100
+        );
     }
 }
 

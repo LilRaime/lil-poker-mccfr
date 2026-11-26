@@ -6,7 +6,10 @@
  * - Tier 3 (`station::apply_postflop_barrel_and_pot_commitment_guards`): Terminal barrel folds & pot-commitment rescue
  */
 mod context;
+mod guard_id;
 mod helpers;
+mod post_selection;
+mod shared_postflop;
 mod subgame;
 mod tier1_boosts;
 mod tier2_caps;
@@ -16,14 +19,18 @@ mod tier2_shove;
 use super::tracker::OpponentTracker;
 use crate::game::config::ROUND_TURN;
 pub(super) use context::{GuardContext, GuardInput};
+pub use guard_id::{GuardId, GuardSet, GuardSetIter};
 pub(super) use helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
+pub(super) use shared_postflop::{
+    is_turn_commit_underpair_fold, is_turn_paired_or_flush_underpair_fold,
+};
 
 impl OpponentTracker {
     pub(super) fn apply_preflop_and_postflop_guards(
         &self,
         probs: &mut [f64],
         input: GuardInput<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let ctx = GuardContext::new(self, input);
 
@@ -45,7 +52,7 @@ impl OpponentTracker {
         /* Multi-Way Table Adaptation (3 to 6 players active) — runs BEFORE Tier 3 so terminal
          * pot-commitment rescues cannot be overwritten by multi-way folds */
         if ctx.active_opponents >= 2 {
-            reasons.push("MULTIWAY_ADAPT");
+            reasons.insert(GuardId::MultiwayAdapt);
             Self::apply_multiway_adaptation(probs, &ctx);
         }
 

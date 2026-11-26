@@ -1,10 +1,12 @@
 /*! Priority Tier 1: Soft Value / Sizing Shifts, Button Steals & River Nut Blocker Bluffs */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
+use super::guard_id::{GuardId, GuardSet};
 use super::helpers::{action_idx, first_action_idx, shift_action_to};
 use crate::cfr::abstraction::{
     BUCKET_FLUSH_MIN, BUCKET_OVERPAIR_MIN, BUCKET_STRONG_DRAW_MIN, BUCKET_TRIPS_MIN,
-    BoardFlushTexture, detect_board_texture, nash_open_push_max_bb, preflop_strength_tier,
+    BoardFlushTexture, PostflopBucket, detect_board_texture, nash_open_push_max_bb,
+    preflop_strength_tier,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_FLOP, ROUND_RIVER,
@@ -16,10 +18,10 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
-        if ctx.is_passive_station && self.is_guard_enabled("PASSIVE_STATION_BOOST") {
-            reasons.push("PASSIVE_STATION_BOOST");
+        if ctx.is_passive_station && self.is_guard_enabled(GuardId::PassiveStationBoost) {
+            reasons.insert(GuardId::PassiveStationBoost);
             Self::apply_passive_station_boost(probs, ctx);
         }
 
@@ -37,7 +39,7 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.to_call > 0
             && ctx.allow_pot_commit_rescue
@@ -45,10 +47,10 @@ impl OpponentTracker {
                 || (ctx.pot_odds <= 0.15
                     && (ctx.is_preflop || ctx.bucket >= BUCKET_STRONG_DRAW_MIN))
                 || ctx.never_fold_postflop)
-            && self.is_guard_enabled("POT_COMMIT_EARLY")
+            && self.is_guard_enabled(GuardId::PotCommitEarly)
             && shift_action_to(probs, ctx.legal_actions, FOLD, &[CALL_CHECK, ALL_IN]) > 0.0
         {
-            reasons.push("POT_COMMIT_EARLY");
+            reasons.insert(GuardId::PotCommitEarly);
         }
     }
 
@@ -56,7 +58,7 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if !ctx.is_preflop {
             return;
@@ -80,10 +82,10 @@ impl OpponentTracker {
             && pf_tier_now <= 5
             && ctx.bucket >= 4
             && nash_open_push_max_bb(ctx.bucket, ctx.active_opponents) + 2 >= ctx.eff_stack_bb
-            && self.is_guard_enabled("PF_BUTTON_STEAL")
+            && self.is_guard_enabled(GuardId::PfButtonSteal)
         {
             if let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) {
-                reasons.push("PF_BUTTON_STEAL");
+                reasons.insert(GuardId::PfButtonSteal);
                 let mut shifted = 0.0f64;
                 for (i, &a) in ctx.legal_actions.iter().enumerate() {
                     if a == CALL_CHECK || (RAISE_MIN..ALL_IN).contains(&a) {
@@ -100,16 +102,16 @@ impl OpponentTracker {
             && ctx.is_hyper_aggressor
             && pf_tier_now == 1
             && ctx.bucket <= 1
-            && self.is_guard_enabled("PF_SB_AGGRESSOR_TRAP")
+            && self.is_guard_enabled(GuardId::PfSbAggressorTrap)
         {
             Self::apply_sb_aggressor_limp_trap(probs, ctx, reasons);
         } else {
-            if self.is_guard_enabled("PF_BUTTON_STEAL") {
+            if self.is_guard_enabled(GuardId::PfButtonSteal) {
                 Self::compact_hu_sb_open_sizing(probs, ctx);
             }
             if ctx.to_call <= steal_max_call
                 && pf_tier_now <= max_steal_tier
-                && self.is_guard_enabled("PF_BUTTON_STEAL")
+                && self.is_guard_enabled(GuardId::PfButtonSteal)
             {
                 self.apply_sb_button_steal_shift(probs, ctx, pf_tier_now, reasons);
             } else if ctx.active_opponents == 1
@@ -118,7 +120,7 @@ impl OpponentTracker {
                 && (10..=20).contains(&ctx.eff_stack_bb)
                 && (pf_tier_now <= 2
                     || (pf_tier_now == 3 && (ctx.is_hyper_aggressor || ctx.eff_stack_bb <= 16)))
-                && self.is_guard_enabled("PF_BUTTON_STEAL")
+                && self.is_guard_enabled(GuardId::PfButtonSteal)
             {
                 Self::apply_short_3bet_resteal_shove(probs, ctx, reasons);
             } else if ctx.active_opponents == 1
@@ -127,7 +129,7 @@ impl OpponentTracker {
                 && self.faced_3bet_count >= 3
                 && self.fold_to_3bet_ratio() > 0.60
                 && (2..=4).contains(&pf_tier_now)
-                && self.is_guard_enabled("PF_BUTTON_STEAL")
+                && self.is_guard_enabled(GuardId::PfButtonSteal)
             {
                 Self::apply_fold_to_3bet_exploit(probs, ctx, reasons);
             } else if ctx.active_opponents == 1
@@ -142,7 +144,7 @@ impl OpponentTracker {
                         && self.sb_pfr_ratio() >= 0.68
                         && pf_tier_now == 4
                         && ctx.bucket <= 55))
-                && self.is_guard_enabled("PF_BUTTON_STEAL")
+                && self.is_guard_enabled(GuardId::PfButtonSteal)
             {
                 self.apply_hu_linear_bb_3bet(probs, ctx, reasons);
             }
@@ -175,12 +177,12 @@ impl OpponentTracker {
     fn apply_sb_aggressor_limp_trap(
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
-        reasons.push("PF_SB_AGGRESSOR_TRAP");
+        reasons.insert(GuardId::PfSbAggressorTrap);
         let mut shifted = 0.0f64;
         for (i, &a) in ctx.legal_actions.iter().enumerate() {
             if a >= RAISE_MIN {
@@ -199,7 +201,7 @@ impl OpponentTracker {
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
         pf_tier_now: u8,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let fold_idx = action_idx(ctx.legal_actions, FOLD);
         let call_idx = action_idx(ctx.legal_actions, CALL_CHECK);
@@ -223,7 +225,7 @@ impl OpponentTracker {
         {
             return;
         }
-        reasons.push("PF_BUTTON_STEAL");
+        reasons.insert(GuardId::PfButtonSteal);
         if let Some(f_i) = fold_idx
             && probs[f_i] > 0.05
         {
@@ -287,7 +289,7 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let is_low_spr_strong = ctx.my_chips > 0
             && ctx.pot > 0
@@ -303,7 +305,7 @@ impl OpponentTracker {
             || ctx.to_call != 0
             || ctx.is_four_board_danger
             || (!is_low_spr_strong && !is_3bet_pot_flop_overpair_plus)
-            || !self.is_guard_enabled("POST_NUT_VALUE_FLOOR")
+            || !self.is_guard_enabled(GuardId::PostNutValueFloor)
         {
             return;
         }
@@ -320,7 +322,7 @@ impl OpponentTracker {
             ) {
                 let shift = (probs[c_i] - 0.10).max(0.0) * 0.85;
                 if shift > 0.0 {
-                    reasons.push("POST_NUT_VALUE_FLOOR");
+                    reasons.insert(GuardId::PostNutValueFloor);
                     probs[c_i] -= shift;
                     probs[t_i] += shift;
                 }
@@ -330,7 +332,7 @@ impl OpponentTracker {
         {
             let shift = (probs[c_i] - 0.15).max(0.0) * 0.75;
             if shift > 0.0 {
-                reasons.push("POST_NUT_VALUE_FLOOR");
+                reasons.insert(GuardId::PostNutValueFloor);
                 probs[c_i] -= shift;
                 probs[t_i] += shift;
             }
@@ -340,12 +342,12 @@ impl OpponentTracker {
     fn apply_short_3bet_resteal_shove(
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let Some(ai_i) = action_idx(ctx.legal_actions, ALL_IN) else {
             return;
         };
-        reasons.push("PF_BUTTON_STEAL");
+        reasons.insert(GuardId::PfButtonSteal);
         let mut shifted = 0.0f64;
         for (i, &a) in ctx.legal_actions.iter().enumerate() {
             if a == RAISE_MIN || a == RAISE_THIRD_POT {
@@ -364,12 +366,12 @@ impl OpponentTracker {
     fn apply_fold_to_3bet_exploit(
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_MIN, RAISE_THIRD_POT]) else {
             return;
         };
-        reasons.push("PF_BUTTON_STEAL");
+        reasons.insert(GuardId::PfButtonSteal);
         let mut shifted = 0.0f64;
         if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
             let s = probs[c_i] * 0.30;
@@ -388,15 +390,15 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
-        if !ctx.has_river_nut_blocker || !self.is_guard_enabled("RIVER_NUT_BLOCKER_BLUFF") {
+        if !ctx.has_river_nut_blocker || !self.is_guard_enabled(GuardId::RiverNutBlockerBluff) {
             return;
         }
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
             return;
         };
-        reasons.push("RIVER_NUT_BLOCKER_BLUFF");
+        reasons.insert(GuardId::RiverNutBlockerBluff);
         probs[r_i] = (probs[r_i] * 1.65).max(0.25);
         if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
             probs[c_i] *= 0.65;
@@ -410,12 +412,12 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.round != ROUND_FLOP
             || ctx.to_call != 0
-            || !(68..=72).contains(&ctx.bucket)
-            || !self.is_guard_enabled("FLOP_WET_SET_VALUE")
+            || !ctx.post_bucket.is_set_or_trips_redraw()
+            || !self.is_guard_enabled(GuardId::FlopWetSetValue)
         {
             return;
         }
@@ -437,18 +439,18 @@ impl OpponentTracker {
         let shift = probs[c_i] * 0.65;
         match (tp_idx, hp_idx) {
             (Some(t_i), Some(h_i)) => {
-                reasons.push("FLOP_WET_SET_VALUE");
+                reasons.insert(GuardId::FlopWetSetValue);
                 probs[c_i] -= shift;
                 probs[t_i] += shift * 0.50;
                 probs[h_i] += shift * 0.50;
             }
             (Some(t_i), None) => {
-                reasons.push("FLOP_WET_SET_VALUE");
+                reasons.insert(GuardId::FlopWetSetValue);
                 probs[c_i] -= shift;
                 probs[t_i] += shift;
             }
             (None, Some(h_i)) => {
-                reasons.push("FLOP_WET_SET_VALUE");
+                reasons.insert(GuardId::FlopWetSetValue);
                 probs[c_i] -= shift;
                 probs[h_i] += shift;
             }
@@ -460,7 +462,7 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         let Some(r_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) else {
             return;
@@ -475,7 +477,7 @@ impl OpponentTracker {
         };
         let shift = probs[c_i] * shift_frac;
         if shift > 0.01 {
-            reasons.push("PF_BUTTON_STEAL");
+            reasons.insert(GuardId::PfButtonSteal);
             probs[c_i] -= shift;
             probs[r_i] += shift;
         }
@@ -485,20 +487,21 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
+        let pb = ctx.post_bucket;
         let is_aggro_opp = ctx.is_known_maniac || ctx.is_overbet_bluffer || ctx.is_hyper_aggressor;
         let eligible_hand = ctx.bucket >= 48
             || (ctx.bucket >= 47 && !ctx.is_paired_board)
-            || (24..=27).contains(&ctx.bucket)
-            || (is_aggro_opp && ctx.bucket >= 44);
+            || pb.is_combo_draw()
+            || (is_aggro_opp && pb.as_u8() >= PostflopBucket::DRY_WEAK_TOP_PAIR);
         if ctx.round != ROUND_FLOP
             || ctx.to_call <= 0
             || ctx.is_allin_call
             || ctx.is_three_flush
             || ctx.pot_odds > 0.34
             || !eligible_hand
-            || !self.is_guard_enabled("FLOP_VALUE_CHECK_RAISE")
+            || !self.is_guard_enabled(GuardId::FlopValueCheckRaise)
         {
             return;
         }
@@ -512,7 +515,7 @@ impl OpponentTracker {
             let shift = probs[c_i] * 0.40;
             probs[c_i] -= shift;
             probs[r_i] += shift;
-            reasons.push("FLOP_VALUE_CHECK_RAISE");
+            reasons.insert(GuardId::FlopValueCheckRaise);
         }
     }
 
@@ -520,20 +523,20 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.is_preflop
             || ctx.to_call != 0
             || ctx.is_four_board_danger
             || ctx.is_three_flush
-            || !self.is_guard_enabled("POST_POLARIZED_VALUE_SIZING")
+            || !self.is_guard_enabled(GuardId::PostPolarizedValueSizing)
         {
             return;
         }
+        let pb = ctx.post_bucket;
         if ctx.round == ROUND_FLOP
             && !ctx.is_passive_station
-            && ((22..=27).contains(&ctx.bucket)
-                || ((15..=21).contains(&ctx.bucket) && ctx.pot < ctx.bb * 8))
+            && (pb.is_nut_or_combo_draw() || (pb.is_non_nut_draw() && ctx.pot < ctx.bb * 8))
             && let Some(hp_i) =
                 first_action_idx(ctx.legal_actions, &[RAISE_HALF_POT, RAISE_THIRD_POT])
         {
@@ -554,16 +557,19 @@ impl OpponentTracker {
             }
             if shifted > 0.0 {
                 probs[hp_i] += shifted;
-                reasons.push("POST_POLARIZED_VALUE_SIZING");
+                reasons.insert(GuardId::PostPolarizedValueSizing);
             }
             return;
         }
         let turn_river_eligible = ctx.round >= ROUND_TURN
             && !(ctx.is_paired_board && ctx.bucket < BUCKET_TRIPS_MIN)
-            && (!ctx.is_dangerous_board || ctx.bucket >= 75)
-            && ctx.bucket != 73
+            && (!ctx.is_dangerous_board
+                || pb.as_u8() >= PostflopBucket::CLEAN_UNPAIRED_STRAIGHT_MIN)
+            && !pb.is_board_chop_or_idiot_straight()
             && (ctx.bucket >= BUCKET_TRIPS_MIN
-                || (!ctx.is_paired_board && !ctx.is_dangerous_board && ctx.bucket >= 61));
+                || (!ctx.is_paired_board
+                    && !ctx.is_dangerous_board
+                    && pb.as_u8() >= PostflopBucket::CLEAN_TWO_PAIR_MIN));
         if turn_river_eligible && let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT) {
             let mut shifted = 0.0f64;
             if let Some(m_i) = action_idx(ctx.legal_actions, RAISE_MIN) {
@@ -580,7 +586,7 @@ impl OpponentTracker {
             }
             if shifted > 0.0 {
                 probs[hp_i] += shifted;
-                reasons.push("POST_POLARIZED_VALUE_SIZING");
+                reasons.insert(GuardId::PostPolarizedValueSizing);
             }
         }
     }
@@ -589,31 +595,47 @@ impl OpponentTracker {
         &self,
         probs: &mut [f64],
         ctx: &GuardContext<'_>,
-        reasons: &mut Vec<&'static str>,
+        reasons: &mut GuardSet,
     ) {
         if ctx.round != ROUND_RIVER
             || ctx.to_call != 0
-            || ctx.is_paired_board
+            || ctx.is_passive_station
             || ctx.is_three_flush
             || ctx.is_four_board_danger
-            || ctx.is_dangerous_board
-            || !(35..=38).contains(&ctx.bucket)
-            || ctx.pot > ctx.bb * 16
-            || !self.is_guard_enabled("RIVER_THIN_VALUE_BET")
+            || !self.is_guard_enabled(GuardId::RiverThinValueBet)
         {
+            return;
+        }
+        let pb = ctx.post_bucket;
+        let is_clean_mid_pair = pb.is_clean_mid_pair()
+            && !ctx.is_paired_board
+            && !ctx.is_dangerous_board
+            && ctx.pot <= ctx.bb * 16;
+        let is_strong_tp_or_two_pair = pb.is_thin_value_tp_or_two_pair()
+            && (!ctx.is_paired_board || ctx.bucket >= BUCKET_OVERPAIR_MIN)
+            && (!ctx.is_dangerous_board || ctx.bucket >= BUCKET_OVERPAIR_MIN)
+            && ctx.pot <= ctx.bb * 24;
+        if !is_clean_mid_pair && !is_strong_tp_or_two_pair {
             return;
         }
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
-        let Some(r_i) = action_idx(ctx.legal_actions, RAISE_MIN) else {
+        let target_idx = if is_strong_tp_or_two_pair {
+            first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN])
+        } else {
+            action_idx(ctx.legal_actions, RAISE_MIN)
+        };
+        let Some(r_i) = target_idx else {
             return;
         };
-        if probs[c_i] > 0.50 {
-            let shift = probs[c_i] * 0.45;
+        let check_thresh = if is_strong_tp_or_two_pair { 0.45 } else { 0.50 };
+        let shift_frac = if is_strong_tp_or_two_pair { 0.50 } else { 0.45 };
+        if probs[c_i] > check_thresh {
+            let shift = probs[c_i] * shift_frac;
             probs[c_i] -= shift;
             probs[r_i] += shift;
-            reasons.push("RIVER_THIN_VALUE_BET");
+            reasons.insert(GuardId::RiverThinValueBet);
         }
     }
 }

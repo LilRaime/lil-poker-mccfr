@@ -256,7 +256,7 @@ fn test_holdem_game_short_stack_parameterization() {
 #[test]
 fn test_overbet_aggro_archetype_and_stack_aware_self_lookup() {
     use lil_poker_mccfr::cfr::abstraction::preflop_bucket;
-    use lil_poker_mccfr::sim::{HoldemStrategy, sample_opponent_action};
+    use lil_poker_mccfr::sim::{HoldemStrategy, OpponentArchetype, sample_opponent_action};
     use std::collections::HashMap;
 
     let mut rng = SmallRng::seed_from_u64(777);
@@ -268,7 +268,8 @@ fn test_overbet_aggro_archetype_and_stack_aware_self_lookup() {
     /* Overbet Aggro should produce legal actions and frequent postflop aggression when checked to */
     let mut raises = 0usize;
     for _ in 0..40 {
-        let act = sample_opponent_action("overbet_aggro", None, &game, cp, &mut rng);
+        let act =
+            sample_opponent_action(OpponentArchetype::OverbetAggro, None, &game, cp, &mut rng);
         assert!(game.legal_actions().contains(&act));
         if act >= RAISE_MIN {
             raises += 1;
@@ -301,7 +302,13 @@ fn test_overbet_aggro_archetype_and_stack_aware_self_lookup() {
     strat.insert(format!("S15|P:{pf_name}/"), [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
     strat.insert(format!("P:{pf_name}/"), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
 
-    let act_self = sample_opponent_action("self", Some(&strat), &short_game, 0, &mut rng);
+    let act_self = sample_opponent_action(
+        OpponentArchetype::SelfPlay,
+        Some(&strat),
+        &short_game,
+        0,
+        &mut rng,
+    );
     assert_eq!(
         act_self, ALL_IN,
         "15 BB `self` archetype must read S15| stack-prefixed blueprint branch"

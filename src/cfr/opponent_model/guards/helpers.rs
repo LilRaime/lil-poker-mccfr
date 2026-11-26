@@ -1,9 +1,10 @@
 /*! Shared Zero-Cost Guard Action Helpers & Cross-Tier Safety Invariants */
 use super::super::tracker::OpponentTracker;
 use super::context::GuardContext;
+use super::guard_id::{GuardId, GuardSet};
 use crate::cfr::abstraction::{
-    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_DRAW_MIN,
-    BUCKET_WEAK_PAIR_MIN,
+    BUCKET_HIGH_CARD_MAX, BUCKET_TRIPS_MIN, BUCKET_TWO_PAIR_MIN, BUCKET_WEAK_PAIR_MIN,
+    PostflopBucket,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
@@ -95,9 +96,11 @@ pub(super) fn apply_overbet_allin_cap(
     tracker: &OpponentTracker,
     probs: &mut [f64],
     ctx: &GuardContext<'_>,
-    reasons: &mut Vec<&'static str>,
+    reasons: &mut GuardSet,
 ) {
-    if ctx.my_chips <= 0 || ctx.is_allin_call || !tracker.is_guard_enabled("POST_OVERBET_ALLIN_CAP")
+    if ctx.my_chips <= 0
+        || ctx.is_allin_call
+        || !tracker.is_guard_enabled(GuardId::PostOverbetAllinCap)
     {
         return;
     }
@@ -119,7 +122,7 @@ pub(super) fn apply_overbet_allin_cap(
     if removed <= 0.0 {
         return;
     }
-    reasons.push("POST_OVERBET_ALLIN_CAP");
+    reasons.insert(GuardId::PostOverbetAllinCap);
     probs[ai_i] = 0.0;
     let target_idx = if ctx.to_call == 0 {
         if ctx.bucket < BUCKET_TRIPS_MIN
@@ -152,15 +155,16 @@ pub(super) fn apply_river_bluff_cap(
     probs: &mut [f64],
     ctx: &GuardContext<'_>,
     strip_half_and_allin_for_air: bool,
-    reasons: &mut Vec<&'static str>,
+    reasons: &mut GuardSet,
 ) {
     if ctx.round != ROUND_RIVER
         || ctx.to_call != 0
-        || !tracker.is_guard_enabled("POST_RIVER_BLUFF_CAP")
+        || !tracker.is_guard_enabled(GuardId::PostRiverBluffCap)
     {
         return;
     }
-    if ctx.bucket < BUCKET_WEAK_PAIR_MIN {
+    let pb = ctx.post_bucket;
+    if pb.is_unpaired() {
         if !strip_half_and_allin_for_air && ctx.has_river_nut_blocker {
             return;
         }
@@ -170,32 +174,35 @@ pub(super) fn apply_river_bluff_cap(
                     && !ctx.has_river_nut_blocker
                     && a >= RAISE_MIN)
                 || (ctx.is_paired_board
-                    && ctx.bucket < BUCKET_WEAK_DRAW_MIN
+                    && pb.is_high_card()
                     && !ctx.has_river_nut_blocker
                     && a == RAISE_MIN)
         });
         if shifted > 0.0 {
-            reasons.push("POST_RIVER_BLUFF_CAP");
+            reasons.insert(GuardId::PostRiverBluffCap);
             if let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) {
                 probs[c_i] += shifted;
             }
         }
-    } else if (BUCKET_WEAK_PAIR_MIN..=44).contains(&ctx.bucket)
-        || ((45..=66).contains(&ctx.bucket)
-            && (ctx.is_paired_board
-                || ctx.is_dangerous_board
-                || ctx.is_three_flush
-                || ctx.is_three_straight_board))
+    } else if pb.in_range(
+        BUCKET_WEAK_PAIR_MIN as u8,
+        PostflopBucket::DRY_WEAK_TOP_PAIR,
+    ) || (pb.in_range(PostflopBucket::STRONG_DRY_TOP_PAIR_MIN, 66)
+        && (ctx.is_paired_board
+            || ctx.is_dangerous_board
+            || ctx.is_three_flush
+            || ctx.is_three_straight_board))
     {
         let shifted = zero_and_sum(probs, ctx.legal_actions, |a| {
             a == RAISE_HALF_POT || a == ALL_IN
         });
         if shifted > 0.0 {
-            reasons.push("POST_RIVER_BLUFF_CAP");
+            reasons.insert(GuardId::PostRiverBluffCap);
             let c_idx = action_idx(ctx.legal_actions, CALL_CHECK);
             let tp_idx = action_idx(ctx.legal_actions, RAISE_THIRD_POT);
-            let favor_thin_value =
-                !strip_half_and_allin_for_air && ctx.bucket >= 45 && !ctx.is_four_board_danger;
+            let favor_thin_value = !strip_half_and_allin_for_air
+                && pb.as_u8() >= PostflopBucket::STRONG_DRY_TOP_PAIR_MIN
+                && !ctx.is_four_board_danger;
             let (call_share, bet_share) = if favor_thin_value {
                 (0.30, 0.70)
             } else {
@@ -216,15 +223,15 @@ pub(super) fn apply_pot_commit_terminal(
     tracker: &OpponentTracker,
     probs: &mut [f64],
     ctx: &GuardContext<'_>,
-    reasons: &mut Vec<&'static str>,
+    reasons: &mut GuardSet,
 ) {
     if ctx.to_call <= 0
         || !(ctx.pot_odds <= 0.12 || ctx.never_fold_postflop)
-        || !tracker.is_guard_enabled("POT_COMMIT_TERMINAL")
+        || !tracker.is_guard_enabled(GuardId::PotCommitTerminal)
     {
         return;
     }
     if shift_action_to(probs, ctx.legal_actions, FOLD, &[CALL_CHECK, ALL_IN]) > 0.0 {
-        reasons.push("POT_COMMIT_TERMINAL");
+        reasons.insert(GuardId::PotCommitTerminal);
     }
 }

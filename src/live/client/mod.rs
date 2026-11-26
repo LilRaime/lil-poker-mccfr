@@ -23,6 +23,7 @@ use crate::live::state::{
     LiveRoundTracker, LiveSnapshot, LiveTableTracker, parse_live_state_with_hint,
     process_showdown_multiway,
 };
+use crate::sim::holdem::HoldemStrategy;
 
 use commit_guards::apply_live_commit_guards;
 use fallback::choose_rejected_call_fallback;
@@ -48,7 +49,7 @@ struct LiveSession {
     hand_subgame_ctx: Option<SubgameContext>,
     subgame_solver: Arc<SubgameSolver>,
     strategy_index: Arc<StrategyLookupIndex>,
-    strategy_arc: Arc<HashMap<String, Vec<f64>>>,
+    strategy_arc: Arc<HoldemStrategy>,
 }
 
 impl LiveSession {
@@ -670,7 +671,7 @@ pub async fn run_live_bot(
 
     /* 1. Load Strategy Model (Target: <= 400MB RAM) */
     let strategy_map = load_live_strategy(strategy_path);
-    let ram_mb = (strategy_map.len() * 140) as f64 / (1024.0 * 1024.0);
+    let ram_mb = (strategy_map.len() * 104) as f64 / (1024.0 * 1024.0);
     println!(
         "Loaded strategy with {} infosets (RAM footprint: ~{:.1} MB).",
         strategy_map.len(),

@@ -7,6 +7,7 @@ use super::hu::run_holdem_benchmark_preloaded;
 use crate::cfr::fallback::StrategyLookupIndex;
 use crate::game::config::{BIG_BLIND, STACK_SIZE};
 use crate::sim::holdem::strategy::{HoldemStrategy, load_holdem_strategy};
+use crate::sim::opponents::OpponentArchetype;
 
 #[derive(Debug, Clone)]
 pub struct EloTournamentConfig<'a> {
@@ -150,7 +151,7 @@ pub fn run_holdem_elo_tournament(cfg: &EloTournamentConfig<'_>) -> Vec<EloEntry>
                     strategy_path: &models[i].path,
                     total_episodes: cfg.deals_per_pair,
                     enable_subgame_search: cfg.enable_subgame_search,
-                    opp_archetype: "self",
+                    opp_archetype: OpponentArchetype::SelfPlay,
                     opp_strategy_path: Some(&models[j].path),
                     duplicate_mode: true,
                     exploit_factor: cfg.exploit_factor,

@@ -34,6 +34,31 @@ impl OpponentTracker {
         }
     }
 
+    /** Voluntary non-check calls (`call_count` minus recorded postflop checks). */
+    pub fn genuine_call_count(&self) -> u64 {
+        self.call_count.saturating_sub(self.check_count)
+    }
+
+    /** Fraction of all tracked opponent actions that were postflop checks. */
+    pub fn check_ratio(&self) -> f64 {
+        let tot = self.total_actions();
+        if tot == 0 {
+            0.0
+        } else {
+            self.check_count as f64 / tot as f64
+        }
+    }
+
+    /** True Aggression Frequency (AFq): `raises / (folds + calls + checks + raises)`. */
+    pub fn afq_ratio(&self) -> f64 {
+        self.raise_ratio()
+    }
+
+    /** True postflop Aggression Frequency (`raises / all postflop actions incl. checks`). */
+    pub fn postflop_afq(&self) -> f64 {
+        self.postflop_raise_rate()
+    }
+
     pub fn vpip_ratio(&self) -> f64 {
         if self.total_hands == 0 && self.vpip_hands == 0 {
             0.50
