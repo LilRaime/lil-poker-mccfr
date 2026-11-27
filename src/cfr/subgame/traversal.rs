@@ -136,11 +136,11 @@ fn compute_opponent_node_lock_multipliers(
     if let Some(prof) = opp_profile {
         if to_call > 0 {
             let street_fold = match game.round {
-                ROUND_FLOP => prof.flop_fold_to_cbet.map(|f| (f / 0.42).clamp(0.55, 1.85)),
+                ROUND_FLOP => prof.flop_fold_to_cbet.map(|f| (f / 0.42).clamp(0.75, 1.35)),
                 ROUND_TURN => prof
                     .turn_fold_to_barrel
-                    .map(|f| (f / 0.40).clamp(0.55, 1.85)),
-                ROUND_RIVER => prof.river_fold_to_bet.map(|f| (f / 0.38).clamp(0.55, 1.90)),
+                    .map(|f| (f / 0.40).clamp(0.75, 1.35)),
+                ROUND_RIVER => prof.river_fold_to_bet.map(|f| (f / 0.38).clamp(0.70, 1.45)),
                 _ => None,
             };
             if let Some(sf) = street_fold {
@@ -148,7 +148,7 @@ fn compute_opponent_node_lock_multipliers(
             }
         }
         if let Some(r_rate) = prof.postflop_raise_rate {
-            let agg_m = (r_rate / 0.22).clamp(0.60, 1.65);
+            let agg_m = (r_rate / 0.22).clamp(0.75, 1.30);
             raise_m = if opp_prior_bias.is_some() {
                 (raise_m + agg_m) * 0.5
             } else {
@@ -156,7 +156,7 @@ fn compute_opponent_node_lock_multipliers(
             };
         }
         if prof.overbet_freq.is_some_and(|f| f >= 0.35) {
-            raise_m = raise_m.clamp(1.35, 1.80);
+            raise_m = raise_m.clamp(1.15, 1.35);
         }
         if game.round == ROUND_RIVER
             && postflop_bucket.is_some_and(|b| b < BUCKET_WEAK_PAIR_MIN)
@@ -176,7 +176,10 @@ fn apply_opponent_node_lock(
     ctx: &TraversalCtx,
     legal: &[u8],
 ) {
-    if cur_p == ctx.my_player || (ctx.opp_prior_bias.is_none() && ctx.opp_profile.is_none()) {
+    if cur_p == ctx.my_player
+        || cur_p == ctx.updating_player
+        || (ctx.opp_prior_bias.is_none() && ctx.opp_profile.is_none())
+    {
         return;
     }
     let opp = 1 - cur_p;
@@ -197,20 +200,23 @@ fn apply_opponent_node_lock(
         return;
     }
 
+    let mut shifted_fold = false;
     if to_call > 0 && legal.contains(&FOLD) && legal.contains(&CALL_CHECK) {
-        if fold_m > 1.10 && postflop_bucket.is_none_or(|b| b < BUCKET_TWO_PAIR_MIN) {
-            let shift_frac = ((fold_m - 1.0) * 0.45).clamp(0.0, 0.55);
+        if fold_m > 1.10 && postflop_bucket.is_none_or(|b| b < BUCKET_TOP_PAIR_MIN) {
+            let shift_frac = ((fold_m - 1.0) * 0.25).clamp(0.0, 0.28);
             let shifted = strategy[CALL_CHECK as usize] * shift_frac;
             strategy[CALL_CHECK as usize] -= shifted;
             strategy[FOLD as usize] += shifted;
+            shifted_fold = true;
         } else if fold_m < 0.90 {
-            let shift_frac = ((1.0 - fold_m) * 0.60).clamp(0.0, 0.45);
+            let shift_frac = ((1.0 - fold_m) * 0.35).clamp(0.0, 0.28);
             let shifted = strategy[FOLD as usize] * shift_frac;
             strategy[FOLD as usize] -= shifted;
             strategy[CALL_CHECK as usize] += shifted;
+            shifted_fold = true;
         }
     }
-    if to_call > 0 {
+    if to_call > 0 && !shifted_fold {
         strategy[FOLD as usize] *= fold_m;
     }
     for r in RAISE_MIN..=ALL_IN {

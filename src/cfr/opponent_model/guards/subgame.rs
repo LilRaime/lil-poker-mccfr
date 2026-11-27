@@ -32,7 +32,21 @@ impl OpponentTracker {
         if ctx.post_bucket.is_air_or_weak_draw()
             && self.is_guard_enabled(GuardId::PostAllinBluffCap)
         {
-            shift_action_to(probs, ctx.legal_actions, ALL_IN, &[CALL_CHECK]);
+            if shift_action_to(probs, ctx.legal_actions, ALL_IN, &[CALL_CHECK]) > 0.0 {
+                reasons.insert(GuardId::PostAllinBluffCap);
+            }
+        } else if self.is_guard_enabled(GuardId::PostAllinBluffCap)
+            && (ctx.bucket < 25 || (ctx.is_paired_board && ctx.bucket < BUCKET_WEAK_PAIR_MIN))
+            && (ctx.my_chips == 0 || ctx.my_chips * 4 > ctx.pot * 3)
+        {
+            let targets: &[u8] = if ctx.to_call > 0 {
+                &[CALL_CHECK]
+            } else {
+                &[RAISE_THIRD_POT, RAISE_MIN, CALL_CHECK]
+            };
+            if shift_action_to(probs, ctx.legal_actions, ALL_IN, targets) > 0.0 {
+                reasons.insert(GuardId::PostAllinBluffCap);
+            }
         }
         apply_river_bluff_cap(self, probs, ctx, true, reasons);
         apply_shared_turn_river_free_pot_control(self, probs, ctx);
@@ -243,16 +257,38 @@ impl OpponentTracker {
             && !ctx.is_four_board_danger
             && ctx.my_chips > 0
             && ctx.my_chips * 5 <= ctx.pot * 6;
-        if ctx.to_call != 0
-            || (!is_river_nut && !is_low_spr_two_pair_plus)
-            || ctx.is_three_flush
-            || !self.is_guard_enabled(GuardId::PostNutValueFloor)
-        {
+        let is_three_flush_two_pair_plus = ctx.round >= ROUND_TURN
+            && ctx.is_three_flush
+            && !ctx.is_four_flush_board
+            && !ctx.is_four_board_danger
+            && ctx.bucket >= 60
+            && ctx.bucket < BUCKET_FLUSH_MIN
+            && !(ctx.is_paired_board && ctx.bucket < BUCKET_TRIPS_MIN);
+        if ctx.to_call != 0 || !self.is_guard_enabled(GuardId::PostNutValueFloor) {
             return;
         }
         let Some(c_i) = action_idx(ctx.legal_actions, CALL_CHECK) else {
             return;
         };
+        if is_three_flush_two_pair_plus {
+            if probs[c_i] <= 0.45 {
+                return;
+            }
+            if let Some(t_i) = first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]) {
+                let shift = (probs[c_i] - 0.25).max(0.0) * 0.65;
+                if shift > 0.0 {
+                    reasons.insert(GuardId::PostNutValueFloor);
+                    probs[c_i] -= shift;
+                    probs[t_i] += shift;
+                }
+            }
+            return;
+        }
+        if (!is_river_nut && !is_low_spr_two_pair_plus)
+            || (ctx.is_three_flush && ctx.bucket < BUCKET_FLUSH_MIN)
+        {
+            return;
+        }
         let (check_thresh, keep_floor, shift_frac) = if is_river_nut {
             (0.20, 0.08, 0.88)
         } else {

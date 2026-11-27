@@ -6,7 +6,7 @@ use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
 use crate::cfr::abstraction::{
     nash_call_shove_max_bb, nash_open_push_max_bb, preflop_strength_tier,
 };
-use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_MIN, RAISE_THIRD_POT};
+use crate::game::config::{ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT};
 
 impl OpponentTracker {
     pub(super) fn apply_preflop_discipline_guard(
@@ -325,10 +325,13 @@ impl OpponentTracker {
             }
         } else if !ctx.is_allin_call
             && ctx.pot >= ctx.bb * 15
-            && ctx.to_call >= ctx.bb * 5
-            && ctx.pot_odds > 0.18
-            && pf_tier >= 5
             && !ctx.is_extreme_shove_bot
+            && ((ctx.to_call >= ctx.bb * 5 && ctx.pot_odds > 0.18 && pf_tier >= 5)
+                || (ctx.to_call >= ctx.bb * 6
+                    && ctx.pot_odds >= 0.24
+                    && pf_tier == 4
+                    && ctx.bucket >= 91
+                    && !ctx.is_known_maniac))
         {
             reasons.insert(GuardId::PfDisciplineGuard);
             let shifted = zero_and_sum(probs, ctx.legal_actions, |a| a >= RAISE_MIN);
@@ -433,6 +436,31 @@ impl OpponentTracker {
         pf_tier: u8,
         reasons: &mut GuardSet,
     ) {
+        if ctx.to_call >= ctx.bb
+            && ctx.to_call <= ctx.bb * 3
+            && ctx.pot < ctx.bb * 6
+            && ctx.eff_stack_bb > 25
+            && pf_tier >= 5
+            && let Some(hp_i) = action_idx(ctx.legal_actions, RAISE_HALF_POT)
+        {
+            let s = probs[hp_i];
+            if s > 0.0 {
+                reasons.insert(GuardId::PfDisciplineGuard);
+                probs[hp_i] = 0.0;
+                match (
+                    first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]),
+                    action_idx(ctx.legal_actions, CALL_CHECK),
+                ) {
+                    (Some(ri), Some(ci)) => {
+                        probs[ri] += s * 0.50;
+                        probs[ci] += s * 0.50;
+                    }
+                    (Some(ri), None) => probs[ri] += s,
+                    (None, Some(ci)) => probs[ci] += s,
+                    (None, None) => {}
+                }
+            }
+        }
         if ctx.eff_stack_bb > 35
             && !ctx.is_allin_call
             && ctx.to_call > ctx.bb * 4

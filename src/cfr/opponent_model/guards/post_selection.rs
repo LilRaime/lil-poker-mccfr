@@ -135,9 +135,29 @@ impl OpponentTracker {
                     && pb.is_air_or_weak_draw())
                     || pb.in_range(34, PostflopBucket::DRY_MID_OR_UNDERPAIR_MAX))
                 && *chosen <= RAISE_THIRD_POT;
+            let hero_was_hu_3bettor = req.active_opponents == 1
+                && req.round == ROUND_FLOP
+                && req.to_call == 0
+                && req.pot >= bb * 10
+                && eff_chips > req.pot
+                && req.history.map_or(req.pot >= bb * 12, |hist| {
+                    let Some(my_player) = req.my_player else {
+                        return req.pot >= bb * 12;
+                    };
+                    let pf_hist = hist[0].as_slice();
+                    let pf_raises = pf_hist.iter().filter(|&&a| a >= RAISE_MIN).count();
+                    let hero_last_raiser = pf_hist
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|&(_, &a)| a >= RAISE_MIN)
+                        .is_some_and(|(idx, _)| (idx % 2) == my_player);
+                    pf_raises >= 2 && hero_last_raiser
+                });
+            let allow_hu_3bet_cbet =
+                !is_sticky_or_station && (allow_hu_3bet_overcard_cbet || hero_was_hu_3bettor);
             if req.to_call == 0
                 && *chosen >= RAISE_MIN
-                && !allow_hu_3bet_overcard_cbet
                 && req.legal_actions.contains(&CALL_CHECK)
                 && (is_four_board_pair
                     || is_bloated_flop_weak
@@ -145,8 +165,15 @@ impl OpponentTracker {
                         && *chosen >= RAISE_THIRD_POT
                         && (eff_chips <= req.pot * 2 || req.pot >= bb * 8)))
             {
-                *chosen = CALL_CHECK;
-                reasons.insert(GuardId::LowSprBluffSuppress);
+                if allow_hu_3bet_cbet {
+                    if *chosen > RAISE_THIRD_POT && req.legal_actions.contains(&RAISE_THIRD_POT) {
+                        *chosen = RAISE_THIRD_POT;
+                        reasons.insert(GuardId::LowSprBluffSuppress);
+                    }
+                } else {
+                    *chosen = CALL_CHECK;
+                    reasons.insert(GuardId::LowSprBluffSuppress);
+                }
             } else if req.to_call > bb
                 && (pb.is_air_or_weak_draw() || pb.is_crushed_pair())
                 && *chosen == CALL_CHECK

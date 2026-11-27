@@ -5,7 +5,7 @@ use super::guard_id::{GuardId, GuardSet};
 use super::helpers::{action_idx, first_action_idx, force_action, zero_and_sum};
 use crate::cfr::abstraction::{
     BUCKET_FLUSH_MIN, BUCKET_SECOND_NUT_FLUSH, BUCKET_STRAIGHT_MIN, BUCKET_TRIPS_MIN,
-    BUCKET_WEAK_PAIR_MIN, PostflopBucket,
+    BUCKET_WEAK_PAIR_MIN, PostflopBucket, detect_draws_detailed,
 };
 use crate::game::config::{
     ALL_IN, CALL_CHECK, FOLD, RAISE_HALF_POT, RAISE_MIN, RAISE_THIRD_POT, ROUND_RIVER, ROUND_TURN,
@@ -68,10 +68,26 @@ pub(in crate::cfr::opponent_model) fn is_unpaired_third_or_worse_pair(
 #[inline]
 pub(in crate::cfr::opponent_model) fn is_turn_overpriced_air(ctx: &GuardContext<'_>) -> bool {
     let pb = ctx.post_bucket;
-    ctx.round == ROUND_TURN
-        && ctx.to_call >= ctx.bb
-        && ((ctx.pot_odds >= 0.16 && pb.is_air_or_weak_draw())
-            || (ctx.pot_odds > 0.12 && (pb.is_high_card() || pb.is_crushed_pair())))
+    if ctx.round != ROUND_TURN || ctx.to_call < ctx.bb {
+        return false;
+    }
+    if pb.is_crushed_pair()
+        && ctx.hole.zip(ctx.board).is_some_and(|(h, b)| {
+            let d = detect_draws_detailed(h, b);
+            d.is_straight_draw || d.is_flush_draw
+        })
+    {
+        return false;
+    }
+    let strong_high_or_gutshot = (pb.as_u8() >= PostflopBucket::STRONG_ACE_KING_MIN
+        && pb.is_high_card())
+        || (pb.as_u8() >= 13 && pb.is_air_or_weak_draw());
+    if strong_high_or_gutshot {
+        ctx.pot_odds >= 0.22
+    } else {
+        (ctx.pot_odds >= 0.16 && pb.is_air_or_weak_draw())
+            || (ctx.pot_odds > 0.12 && (pb.is_high_card() || pb.is_crushed_pair()))
+    }
 }
 
 /** Shared `TURN_DRAW_ODDS_FOLD` guard across both subgame and blueprint postflop pipelines. */
@@ -97,11 +113,11 @@ pub(in crate::cfr::opponent_model) fn apply_shared_turn_draw_odds_fold(
     } else if pb.is_nut_or_combo_draw() {
         if ctx.is_overbet_bluffer { 0.36 } else { 0.30 }
     } else if pb.as_u8() >= 19 {
-        if ctx.is_overbet_bluffer { 0.32 } else { 0.26 }
+        if ctx.is_overbet_bluffer { 0.33 } else { 0.28 }
     } else if ctx.is_overbet_bluffer {
-        0.25
+        0.27
     } else {
-        0.19
+        0.23
     };
     if ctx.pot_odds > max_turn_draw_odds && force_action(probs, ctx.legal_actions, FOLD) {
         reasons.insert(GuardId::TurnDrawOddsFold);

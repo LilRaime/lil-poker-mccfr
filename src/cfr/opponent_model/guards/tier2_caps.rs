@@ -147,8 +147,10 @@ impl OpponentTracker {
                 && !ctx.is_passive_station
                 && !ctx.is_three_flush
                 && (ctx.my_chips == 0 || ctx.my_chips > ctx.pot);
+            let allow_compact_hu_3bet_cbet =
+                clean_hu_3bet_cbet && ctx.pot >= ctx.bb * 12 && pb.is_air_or_weak_draw();
             let air_cap_blocked = if clean_hu_3bet_cbet {
-                pb.as_u8() < PostflopBucket::STRONG_OVERCARDS_MIN
+                !allow_compact_hu_3bet_cbet && pb.as_u8() < PostflopBucket::STRONG_OVERCARDS_MIN
             } else {
                 pb.is_air_or_weak_draw()
             };
@@ -163,7 +165,25 @@ impl OpponentTracker {
                     )
                     && ctx.pot >= ctx.bb * 10)
                 || (ctx.is_sticky_caller && pb.is_high_card());
-            if compact_hu_3bet_mid_pair {
+            if allow_compact_hu_3bet_cbet {
+                let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
+                    a == RAISE_HALF_POT || a == ALL_IN
+                });
+                if oversized > 0.0 {
+                    match (
+                        first_action_idx(ctx.legal_actions, &[RAISE_THIRD_POT, RAISE_MIN]),
+                        action_idx(ctx.legal_actions, CALL_CHECK),
+                    ) {
+                        (Some(s_i), Some(c_i)) => {
+                            probs[s_i] += oversized * 0.50;
+                            probs[c_i] += oversized * 0.50;
+                        }
+                        (Some(s_i), None) => probs[s_i] += oversized,
+                        (None, Some(c_i)) => probs[c_i] += oversized,
+                        (None, None) => {}
+                    }
+                }
+            } else if compact_hu_3bet_mid_pair {
                 let oversized = zero_and_sum(probs, ctx.legal_actions, |a| {
                     a == RAISE_HALF_POT || a == ALL_IN
                 });

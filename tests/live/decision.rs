@@ -1,135 +1,122 @@
-use lil_poker_mccfr::cfr::abstraction::{nash_open_push_max_bb, preflop_bucket};
+use super::{board, hole};
+use lil_poker_mccfr::cfr::abstraction::{
+    nash_open_push_max_bb, postflop_equity_bucket, preflop_bucket,
+};
 use lil_poker_mccfr::cfr::fallback::StrategyLookupIndex;
-use lil_poker_mccfr::cfr::opponent_model::{GuardId, OpponentTracker};
+use lil_poker_mccfr::cfr::opponent_model::{DecisionTrace, GuardId, OpponentTracker};
 use lil_poker_mccfr::cfr::subgame::{SubgameContext, SubgameSolver};
+use lil_poker_mccfr::game::config::{RAISE_HALF_POT, RAISE_THIRD_POT};
 use lil_poker_mccfr::game::holdem::{
-    ALL_IN, CALL_CHECK, Card, FOLD, NUM_ROUNDS, RAISE_MIN, Rank, RoundHistory, Suit,
+    ALL_IN, CALL_CHECK, Card, FOLD, NUM_ROUNDS, RAISE_MIN, RoundHistory,
 };
 use lil_poker_mccfr::live::decision::{LiveDecisionRequest, decide_action, decide_action_traced};
+use lil_poker_mccfr::live::protocol::ActionTranslationBlend;
 use lil_poker_mccfr::live::state::derive_legal_actions;
 use std::collections::HashMap;
 
+fn legal_list(acts: &[&str]) -> Vec<String> {
+    acts.iter().map(|s| (*s).to_string()).collect()
+}
+
+fn base_req<'a>(
+    hole: [Card; 2],
+    board: &'a [Card],
+    legal: &'a [String],
+    pot: i32,
+    to_call: i32,
+) -> LiveDecisionRequest<'a> {
+    LiveDecisionRequest {
+        hole,
+        board,
+        legal,
+        pot,
+        to_call,
+        history: [RoundHistory::new(); NUM_ROUNDS],
+        ..Default::default()
+    }
+}
+
+fn p1_req<'a>(
+    base: LiveDecisionRequest<'a>,
+    contrib: [i32; 2],
+    state: (i32, i32, u8, i32),
+) -> LiveDecisionRequest<'a> {
+    LiveDecisionRequest {
+        my_player: 1,
+        contributions: contrib,
+        big_blind: state.0,
+        my_chips: state.1,
+        raises_this_round: state.2,
+        current_bet: state.3,
+        ..base
+    }
+}
+
+fn empty_decide(req: &LiveDecisionRequest<'_>, tracker: &OpponentTracker) -> (String, i32) {
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+    decide_action(req, &strategy_map, tracker, None)
+}
+
+fn trace_empty(
+    req: &LiveDecisionRequest<'_>,
+    tracker: &OpponentTracker,
+) -> (String, i32, DecisionTrace) {
+    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
+    decide_action_traced(req, &strategy_map, tracker, None)
+}
+
 #[test]
 fn test_live_decide_action_with_real_contributions() {
-    let hole = [
-        Card::new(Rank::Ace, Suit::Spades),
-        Card::new(Rank::King, Suit::Spades),
-    ];
-    let board = [
-        Card::new(Rank::Queen, Suit::Spades),
-        Card::new(Rank::Jack, Suit::Hearts),
-        Card::new(Rank::Ten, Suit::Diamonds),
-    ];
-    let legal = vec![
-        "fold".to_string(),
-        "check".to_string(),
-        "bet".to_string(),
-        "allin".to_string(),
-    ];
+    let (h, b) = (hole("As Ks"), board("Qs Jh Td"));
     let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
     let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
     let index = StrategyLookupIndex::new();
     let solver = SubgameSolver::new(50);
     let mut ctx = SubgameContext::new();
 
-    /* 1. As player 0 (SB) with contributions [100, 100], to_call = 0 */
-    let (act1, amt1) = decide_action(
-        &LiveDecisionRequest {
-            hole,
-            board: &board,
-            legal: &legal,
-            pot: 200,
-            subgame_search: true,
-            history,
-            contributions: [100, 100],
-            strategy_index: Some(&index),
-            solver: Some(&solver),
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        Some(&mut ctx),
-    );
-    assert!(!act1.is_empty() && act1 != "fold");
-    assert!(amt1 >= 0);
+    let legal_chk = legal_list(&["fold", "check", "bet", "allin"]);
+    let mut r1 = base_req(h, &b, &legal_chk, 200, 0);
+    r1.subgame_search = true;
+    r1.contributions = [100, 100];
+    r1.strategy_index = Some(&index);
+    r1.solver = Some(&solver);
+    let (act1, amt1) = decide_action(&r1, &strategy_map, &tracker, Some(&mut ctx));
+    assert!(!act1.is_empty() && act1 != "fold" && amt1 >= 0);
 
-    /* 2. As player 1 (BB) facing a raise with contributions [250, 100], to_call = 150 */
-    let legal_facing_raise = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
-    let (act2, amt2) = decide_action(
-        &LiveDecisionRequest {
-            hole,
-            board: &board,
-            legal: &legal_facing_raise,
-            to_call: 150,
-            pot: 350,
-            subgame_search: true,
-            history,
-            my_player: 1,
-            contributions: [250, 100],
-            raises_this_round: 1,
-            strategy_index: Some(&index),
-            solver: Some(&solver),
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        Some(&mut ctx),
+    let legal_raise = legal_list(&["fold", "call", "raise", "allin"]);
+    let mut r2 = p1_req(
+        base_req(h, &b, &legal_raise, 350, 150),
+        [250, 100],
+        (100, 10_000, 1, 150),
     );
-    assert!(!act2.is_empty() && act2 != "fold");
-    assert!(amt2 >= 0);
+    r2.subgame_search = true;
+    r2.strategy_index = Some(&index);
+    r2.solver = Some(&solver);
+    let (act2, amt2) = decide_action(&r2, &strategy_map, &tracker, Some(&mut ctx));
+    assert!(!act2.is_empty() && act2 != "fold" && amt2 >= 0);
 }
 
 #[test]
 fn test_bot_value_bets_straight_in_live_game() {
-    /* Bot holds [10s, 8d], Board on Turn is [Qd, 10c, Js, 9d] -> Straight, Queen High */
-    let hole = [
-        Card::new(Rank::Ten, Suit::Spades),
-        Card::new(Rank::Eight, Suit::Diamonds),
-    ];
-    let board = [
-        Card::new(Rank::Queen, Suit::Diamonds),
-        Card::new(Rank::Ten, Suit::Clubs),
-        Card::new(Rank::Jack, Suit::Spades),
-        Card::new(Rank::Nine, Suit::Diamonds),
-    ];
-
+    let (h, b) = (hole("Ts 8d"), board("Qd Tc Js 9d"));
     let legal = derive_legal_actions(0, 9600);
     let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
     let solver = SubgameSolver::new(400);
     let mut ctx = SubgameContext::new();
     let empty_map: HashMap<String, [f64; 6]> = HashMap::new();
     let index = StrategyLookupIndex::new();
+    let mut req = p1_req(
+        base_req(h, &b, &legal, 200, 0),
+        [100, 100],
+        (100, 10_000, 0, 0),
+    );
+    req.subgame_search = true;
+    req.strategy_index = Some(&index);
+    req.solver = Some(&solver);
 
-    let mut raise_count = 0;
-    let num_trials = 60;
-
+    let (mut raise_count, num_trials) = (0usize, 60usize);
     for _ in 0..num_trials {
-        let (action, amount) = decide_action(
-            &LiveDecisionRequest {
-                hole,
-                board: &board,
-                legal: &legal,
-                pot: 200,
-                subgame_search: true,
-                history,
-                my_player: 1,
-                contributions: [100, 100],
-                strategy_index: Some(&index),
-                solver: Some(&solver),
-                ..Default::default()
-            },
-            &empty_map,
-            &tracker,
-            Some(&mut ctx),
-        );
-
+        let (action, amount) = decide_action(&req, &empty_map, &tracker, Some(&mut ctx));
         if action == "raise" {
             raise_count += 1;
             assert!(amount >= 100, "Raise amount must be at least min_raise");
@@ -137,208 +124,89 @@ fn test_bot_value_bets_straight_in_live_game() {
             raise_count += 1;
         }
     }
-
     let raise_rate = raise_count as f64 / num_trials as f64;
+    let pct = raise_rate * 100.0;
     assert!(
         raise_rate >= 0.50,
-        "Expected bot with Straight to value bet at least 50% of the time, got {:.1}% ({}/{})",
-        raise_rate * 100.0,
-        raise_count,
-        num_trials
+        "Straight value bet >= 50%, got {pct:.1}% ({raise_count}/{num_trials})"
     );
 }
 
 #[test]
 fn test_short_stack_bb_check_and_min_raise_defense() {
     let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let legal_bb = vec![
-        "fold".to_string(),
-        "check".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
+    let legal_bb = legal_list(&["fold", "check", "raise", "allin"]);
+    let legal_pf = legal_list(&["fold", "call", "raise", "allin"]);
 
-    /* 1. Short stack (11 BB) in BB facing a limp with a weak Tier 6 hand (9h 6h) must check */
-    let hole_96s = [
-        Card::new(Rank::Nine, Suit::Hearts),
-        Card::new(Rank::Six, Suit::Hearts),
-    ];
-    let (act_bb_limp, _) = decide_action(
-        &LiveDecisionRequest {
-            hole: hole_96s,
-            legal: &legal_bb,
-            pot: 400,
-            subgame_search: true,
-            history,
-            my_player: 1,
-            contributions: [200, 200],
-            big_blind: 200,
-            my_chips: 2200,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let mut r1 = p1_req(
+        base_req(hole("9h 6h"), &[], &legal_bb, 400, 0),
+        [200, 200],
+        (200, 2200, 0, 0),
     );
+    r1.subgame_search = true;
     assert_eq!(
-        act_bb_limp, "check",
-        "Weak suited connector in BB facing a limp at 11 BB must check, not shove!"
+        empty_decide(&r1, &tracker).0,
+        "check",
+        "9h6h BB limp must check"
     );
 
-    /* 2. In BB at ~10 BB (my_chips = 1950, bb = 200) facing a 2x min-raise (to_call = 200, pot = 600)
-     * with offsuit Ace-rag (A4o, Tier 4), bot should flat call to see the flop rather than open-jamming all-in! */
-    let hole_a4o = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::Four, Suit::Clubs),
-    ];
-    let legal_pf = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
-    let (act_bb_defend, _) = decide_action(
-        &LiveDecisionRequest {
-            hole: hole_a4o,
-            legal: &legal_pf,
-            to_call: 200,
-            pot: 600,
-            subgame_search: true,
-            history,
-            my_player: 1,
-            contributions: [200, 400],
-            big_blind: 200,
-            my_chips: 1950,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let mut r2 = p1_req(
+        base_req(hole("Ah 4c"), &[], &legal_pf, 600, 200),
+        [200, 400],
+        (200, 1950, 0, 0),
     );
+    r2.subgame_search = true;
     assert_eq!(
-        act_bb_defend, "call",
-        "In BB at ~10 BB facing a 2x min-raise with A4o, bot should flat-call rather than jam all-in"
+        empty_decide(&r2, &tracker).0,
+        "call",
+        "A4o at 10 BB facing 2x should flat-call"
     );
 }
 
 #[test]
 fn test_6max_small_pair_folds_8x_open_and_flop_shove() {
     let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let hole_66 = [
-        Card::new(Rank::Six, Suit::Hearts),
-        Card::new(Rank::Six, Suit::Diamonds),
-    ];
-    let legal = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
+    let hole_66 = hole("6h 6d");
+    let legal_pf = legal_list(&["fold", "call", "raise", "allin"]);
+    let legal_shove = legal_list(&["fold", "call", "allin"]);
 
-    /* 1. Preflop 6-max (200/400): 66 facing 8x open (to_call = 3200, pot = 3800) must fold */
-    let (pf_act, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_66,
-            legal: &legal,
-            to_call: 3200,
-            pot: 3800,
-            history,
-            my_player: 1,
-            contributions: [200, 3200],
-            raises_this_round: 1,
-            active_opponents: 2,
-            big_blind: 400,
-            my_chips: 12000,
-            current_bet: 3200,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let mut r1 = p1_req(
+        base_req(hole_66, &[], &legal_pf, 3800, 3200),
+        [200, 3200],
+        (400, 12000, 1, 3200),
     );
+    r1.active_opponents = 2;
     assert_eq!(
-        pf_act, "fold",
-        "66 must fold preflop facing an 8x open raise"
+        trace_empty(&r1, &tracker).0,
+        "fold",
+        "66 must fold vs 8x open"
     );
 
-    /* 2. Flop J-8-2 facing all-in shove where to_call == my_chips (66 < second pair) must fold */
-    let board_j82 = vec![
-        Card::new(Rank::Jack, Suit::Clubs),
-        Card::new(Rank::Eight, Suit::Spades),
-        Card::new(Rank::Two, Suit::Diamonds),
-    ];
-    let legal_shove = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (flop_act, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_66,
-            board: &board_j82,
-            legal: &legal_shove,
-            to_call: 8000,
-            pot: 15200,
-            history,
-            my_player: 1,
-            contributions: [3200, 3200],
-            raises_this_round: 1,
-            big_blind: 400,
-            my_chips: 8000,
-            current_bet: 8000,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let board_j82 = board("Jc 8s 2d");
+    let r2 = p1_req(
+        base_req(hole_66, &board_j82, &legal_shove, 15200, 8000),
+        [3200, 3200],
+        (400, 8000, 1, 8000),
     );
     assert_eq!(
-        flop_act, "fold",
-        "66 on J-8-2 facing an all-in call (to_call == my_chips) must fold"
+        trace_empty(&r2, &tracker).0,
+        "fold",
+        "66 on J-8-2 must fold vs shove"
     );
 }
 
 #[test]
 fn test_hu_bare_flush_draw_flop_raise_and_3bet_discipline() {
     let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let hole_j6s = [
-        Card::new(Rank::Jack, Suit::Spades),
-        Card::new(Rank::Six, Suit::Spades),
-    ];
-    let board_583 = vec![
-        Card::new(Rank::Five, Suit::Spades),
-        Card::new(Rank::Eight, Suit::Clubs),
-        Card::new(Rank::Three, Suit::Spades),
-    ];
-    let legal = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
+    let (hole_j6s, board_583) = (hole("Js 6s"), board("5s 8c 3s"));
+    let legal = legal_list(&["fold", "call", "raise", "allin"]);
 
-    /* 1. Facing 4x BB bet (600 into 1200) on flop with bare flush draw (Js6s): must not check-raise */
-    let (act_vs_bet, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_j6s,
-            board: &board_583,
-            legal: &legal,
-            to_call: 600,
-            pot: 1200,
-            history,
-            my_player: 1,
-            contributions: [300, 300],
-            big_blind: 150,
-            my_chips: 9000,
-            current_bet: 600,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let r1 = p1_req(
+        base_req(hole_j6s, &board_583, &legal, 1200, 600),
+        [300, 300],
+        (150, 9000, 0, 600),
     );
+    let act_vs_bet = trace_empty(&r1, &tracker).0;
     assert_ne!(
         act_vs_bet, "raise",
         "Bare draw should not check-raise vs large flop bet"
@@ -348,89 +216,52 @@ fn test_hu_bare_flush_draw_flop_raise_and_3bet_discipline() {
         "Bare draw should not shove vs flop bet"
     );
 
-    /* 2. Facing 25 BB 3-bet on flop (3750 into 7500, 33.3% pot odds) with bare flush draw: must fold */
-    let (act_vs_3bet, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_j6s,
-            board: &board_583,
-            legal: &legal,
-            to_call: 3750,
-            pot: 7500,
-            history,
-            my_player: 1,
-            contributions: [300, 300],
-            raises_this_round: 1,
-            big_blind: 150,
-            my_chips: 8000,
-            current_bet: 3750,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let r2 = p1_req(
+        base_req(hole_j6s, &board_583, &legal, 7500, 3750),
+        [300, 300],
+        (150, 8000, 1, 3750),
     );
     assert_eq!(
-        act_vs_3bet, "fold",
-        "Bare flush draw must fold facing 25 BB flop 3-bet at ~33% pot odds"
+        trace_empty(&r2, &tracker).0,
+        "fold",
+        "Bare FD must fold facing 25 BB 3-bet"
     );
 }
 
 #[test]
 fn test_hu_suited_connector_12bb_no_open_jam() {
-    let hole_76s = [
-        Card::new(Rank::Seven, Suit::Hearts),
-        Card::new(Rank::Six, Suit::Hearts),
-    ];
-    let (idx_76s, _) = preflop_bucket(hole_76s[0], hole_76s[1]);
+    let hole_76s = hole("7h 6h");
+    let max_bb = nash_open_push_max_bb(preflop_bucket(hole_76s[0], hole_76s[1]).0, 1);
     assert!(
-        nash_open_push_max_bb(idx_76s, 1) <= 9,
-        "76s push threshold should be <= 9 BB (got {})",
-        nash_open_push_max_bb(idx_76s, 1)
+        max_bb <= 9,
+        "76s push threshold should be <= 9 BB (got {max_bb})"
     );
 
-    let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let legal = vec![
-        "fold".to_string(),
-        "call".to_string(),
-        "raise".to_string(),
-        "allin".to_string(),
-    ];
-    let (act, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_76s,
-            legal: &legal,
-            to_call: 400,
-            pot: 1200,
-            history,
-            contributions: [400, 800],
-            big_blind: 800,
-            my_chips: 10000,
-            current_bet: 800,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
-    );
+    let legal = legal_list(&["fold", "call", "raise", "allin"]);
+    let mut req = base_req(hole_76s, &[], &legal, 1200, 400);
+    req.contributions = [400, 800];
+    req.big_blind = 800;
+    req.my_chips = 10000;
+    req.current_bet = 800;
     assert_ne!(
-        act, "allin",
-        "76s at 12.5 BB (10,000 chips @ 400/800) must not open-jam all-in"
+        trace_empty(&req, &OpponentTracker::new()).0,
+        "allin",
+        "76s at 12.5 BB must not open-jam all-in"
     );
 }
 
 #[test]
 fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
-    let hole_aqo = [
-        Card::new(Rank::Ace, Suit::Clubs),
-        Card::new(Rank::Queen, Suit::Diamonds),
-    ];
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let legal = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
+    let hole_aqo = hole("Ac Qd");
+    let legal = legal_list(&["fold", "call", "allin"]);
+    let shove_req = |chips: i32, pot: i32| {
+        p1_req(
+            base_req(hole_aqo, &[], &legal, pot, chips),
+            [200, 200],
+            (200, chips, 1, chips),
+        )
+    };
 
-    /* 1. TAG opponent (~31% VPIP, ~25% PFR): AQo folds to a 33 BB shove (33 > 30 BB HU Nash cap) */
     let mut tag_tracker = OpponentTracker::new();
     for i in 0..16 {
         if i < 4 {
@@ -445,152 +276,59 @@ fn test_33bb_aqo_folds_vs_tag_shove_and_calls_maniac() {
         }
         tag_tracker.end_hand();
     }
-    let (tag_act, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_aqo,
-            legal: &legal,
-            to_call: 6600,
-            pot: 7000,
-            history,
-            my_player: 1,
-            contributions: [200, 200],
-            raises_this_round: 1,
-            big_blind: 200,
-            my_chips: 6600,
-            current_bet: 6600,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tag_tracker,
-        None,
-    );
-    assert_eq!(tag_act, "fold", "AQo must fold vs non-maniac 33 BB shove");
+    assert_eq!(trace_empty(&shove_req(6600, 7000), &tag_tracker).0, "fold");
 
-    /* 2. TAG opponent at 28 BB: within HU Nash call cap (28 <= 30 BB), mixed/majority call */
-    let mut hu_28_calls = 0usize;
-    for _ in 0..30 {
-        let (hu_28_act, _, _) = decide_action_traced(
-            &LiveDecisionRequest {
-                hole: hole_aqo,
-                legal: &legal,
-                to_call: 5600,
-                pot: 6000,
-                history,
-                my_player: 1,
-                contributions: [200, 200],
-                raises_this_round: 1,
-                big_blind: 200,
-                my_chips: 5600,
-                current_bet: 5600,
-                ..Default::default()
-            },
-            &strategy_map,
-            &tag_tracker,
-            None,
-        );
-        if hu_28_act != "fold" {
-            hu_28_calls += 1;
-        }
-    }
+    let hu_28_calls = (0..30)
+        .filter(|_| trace_empty(&shove_req(5600, 6000), &tag_tracker).0 != "fold")
+        .count();
     assert!(
         hu_28_calls >= 12,
-        "AQo should frequently call <= 30 BB HU shove (got {hu_28_calls}/30 calls)"
+        "AQo should call <= 30 BB HU shove ({hu_28_calls}/30)"
     );
 
-    /* 3. Maniac opponent at 33 BB: expanded maniac cap (33 <= 38 BB) calls */
     let mut maniac_tracker = OpponentTracker::new();
     for _ in 0..16 {
         maniac_tracker.record_action_street_detailed(ALL_IN, 1, false, 4000, 600);
         maniac_tracker.record_preflop_positional(true, true, true);
         maniac_tracker.end_hand();
     }
-    let (maniac_act, _, _) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_aqo,
-            legal: &legal,
-            to_call: 6600,
-            pot: 7000,
-            history,
-            my_player: 1,
-            contributions: [200, 200],
-            raises_this_round: 1,
-            big_blind: 200,
-            my_chips: 6600,
-            current_bet: 6600,
-            ..Default::default()
-        },
-        &strategy_map,
-        &maniac_tracker,
-        None,
+    assert_ne!(
+        trace_empty(&shove_req(6600, 7000), &maniac_tracker).0,
+        "fold"
     );
-    assert_ne!(maniac_act, "fold", "AQo should call maniac 33 BB shove");
 }
 
 #[test]
 fn test_preflop_micro_stack_1chip_calls() {
-    let tracker = OpponentTracker::new();
-    let history = [RoundHistory::new(); NUM_ROUNDS];
-    let strategy_map: HashMap<String, Vec<f64>> = HashMap::new();
-
-    /* Micro-stack preflop commitment: Kd Qc with 1 chip remaining facing 1-chip effective call into 5,248 pot
-     * must return "call" (NEVER "fold" and NEVER "allin"/"raise" when to_call >= my_chips) */
-    let hole_kqo = [
-        Card::new(Rank::King, Suit::Diamonds),
-        Card::new(Rank::Queen, Suit::Clubs),
-    ];
-    let legal_1chip = vec!["fold".to_string(), "call".to_string(), "allin".to_string()];
-    let (act_1chip, _, tr_1chip) = decide_action_traced(
-        &LiveDecisionRequest {
-            hole: hole_kqo,
-            legal: &legal_1chip,
-            to_call: 1,
-            pot: 5248,
-            history,
-            my_player: 1,
-            contributions: [2624, 2624],
-            raises_this_round: 1,
-            big_blind: 400,
-            my_chips: 1,
-            current_bet: 13124,
-            ..Default::default()
-        },
-        &strategy_map,
-        &tracker,
-        None,
+    let legal_1chip = legal_list(&["fold", "call", "allin"]);
+    let req = p1_req(
+        base_req(hole("Kd Qc"), &[], &legal_1chip, 5248, 1),
+        [2624, 2624],
+        (400, 1, 1, 13124),
     );
+    let (act_1chip, _, tr_1chip) = trace_empty(&req, &OpponentTracker::new());
+    let reasons = &tr_1chip.guard_reasons;
     assert_eq!(
         act_1chip, "call",
-        "With 1 chip remaining facing 1 chip to call in 5248 pot, must return 'call' (reasons: {:?})",
-        tr_1chip.guard_reasons
+        "1 chip call in 5248 pot (reasons: {reasons:?})"
     );
 }
 
 #[test]
 fn test_flop_oop_donk_suppresses_min_and_third_pot() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-
     let tracker = OpponentTracker::new();
-    let mut history = [RoundHistory::new(); NUM_ROUNDS];
-    history[0].push(RAISE_MIN);
-    history[0].push(CALL_CHECK);
-
-    let hole = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::Six, Suit::Hearts),
-    ];
-    let board = [
-        Card::new(Rank::King, Suit::Diamonds),
-        Card::new(Rank::Jack, Suit::Spades),
-        Card::new(Rank::Eight, Suit::Clubs),
-    ];
-    let bucket = postflop_equity_bucket(&hole, &board);
+    let (h, b) = (hole("Ah 6h"), board("Kd Js 8c"));
+    let bucket = postflop_equity_bucket(&h, &b);
     let key = format!("P:rc|F:B{bucket:02}/");
-    let legal = vec![
-        "fold".to_string(),
-        "check".to_string(),
-        "bet".to_string(),
-        "allin".to_string(),
-    ];
+    let legal = legal_list(&["fold", "check", "bet", "allin"]);
+    let mut req = p1_req(
+        base_req(h, &b, &legal, 800, 0),
+        [400, 400],
+        (200, 4400, 0, 0),
+    );
+    req.history[0].push(RAISE_MIN);
+    req.history[0].push(CALL_CHECK);
+    req.opp_chips = Some(15000);
 
     for probs in [
         vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
@@ -599,29 +337,11 @@ fn test_flop_oop_donk_suppresses_min_and_third_pot() {
     ] {
         let mut strategy_map = HashMap::new();
         strategy_map.insert(key.clone(), probs);
-        let (act, amt, tr) = decide_action_traced(
-            &LiveDecisionRequest {
-                hole,
-                board: &board,
-                legal: &legal,
-                pot: 800,
-                subgame_search: false,
-                history,
-                my_player: 1,
-                contributions: [400, 400],
-                big_blind: 200,
-                my_chips: 4400,
-                opp_chips: Some(15000),
-                ..Default::default()
-            },
-            &strategy_map,
-            &tracker,
-            None,
-        );
+        let (act, amt, tr) = decide_action_traced(&req, &strategy_map, &tracker, None);
+        let reasons = &tr.guard_reasons;
         assert_eq!(
             act, "check",
-            "OOP flop micro/33% donk with bucket {bucket} into PF aggressor must suppress to check (reasons: {:?})",
-            tr.guard_reasons
+            "OOP flop donk bucket {bucket} (reasons: {reasons:?})"
         );
         assert_eq!(amt, 0);
         assert!(tr.guard_reasons.contains(GuardId::FlopOopMicroDonkSuppress));
@@ -630,99 +350,50 @@ fn test_flop_oop_donk_suppresses_min_and_third_pot() {
 
 #[test]
 fn test_live_decision_pseudo_harmonic_linear_interpolation() {
-    use lil_poker_mccfr::cfr::abstraction::postflop_equity_bucket;
-    use lil_poker_mccfr::game::config::{RAISE_HALF_POT, RAISE_THIRD_POT};
-    use lil_poker_mccfr::live::protocol::ActionTranslationBlend;
-
     let mut tracker = OpponentTracker::new();
     tracker.set_exploit_enabled(false);
-    let hole = [
-        Card::new(Rank::Ace, Suit::Hearts),
-        Card::new(Rank::King, Suit::Hearts),
-    ];
-    let board = [
-        Card::new(Rank::Ace, Suit::Spades),
-        Card::new(Rank::Eight, Suit::Clubs),
-        Card::new(Rank::Four, Suit::Diamonds),
-    ];
-    let bucket = postflop_equity_bucket(&hole, &board);
-
-    let mut history = [RoundHistory::new(); NUM_ROUNDS];
-    history[0].push(RAISE_MIN);
-    history[0].push(CALL_CHECK);
-    history[1].push(CALL_CHECK);
-    history[1].push(RAISE_THIRD_POT);
+    let (h, b) = (hole("Ah Kh"), board("As 8c 4d"));
+    let bucket = postflop_equity_bucket(&h, &b);
 
     let mut strategy_map = HashMap::new();
-    /* low_action = RAISE_THIRD_POT ('t'): pure CALL_CHECK (1) */
     strategy_map.insert(
         format!("P:rc|F:B{bucket:02}/ct"),
         vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
     );
-    /* high_action = RAISE_HALF_POT ('h'): pure FOLD (0) */
     strategy_map.insert(
         format!("P:rc|F:B{bucket:02}/ch"),
         vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     );
 
-    let legal = vec!["fold".to_string(), "call".to_string()];
-    let mut base_req = LiveDecisionRequest {
-        hole,
-        board: &board,
-        legal: &legal,
-        to_call: 250,
-        pot: 500,
-        subgame_search: false,
-        history,
-        my_player: 0,
-        contributions: [250, 500],
-        big_blind: 100,
-        my_chips: 9500,
-        opp_chips: Some(9500),
-        ..Default::default()
-    };
+    let legal = legal_list(&["fold", "call"]);
+    let mut req = base_req(h, &b, &legal, 500, 250);
+    req.history[0].push(RAISE_MIN);
+    req.history[0].push(CALL_CHECK);
+    req.history[1].push(CALL_CHECK);
+    req.history[1].push(RAISE_THIRD_POT);
+    req.my_player = 0;
+    req.contributions = [250, 500];
+    req.big_blind = 100;
+    req.my_chips = 9500;
+    req.opp_chips = Some(9500);
 
-    base_req.active_bet_blend = Some(ActionTranslationBlend {
-        low_action: RAISE_THIRD_POT,
-        high_action: RAISE_HALF_POT,
-        low_weight: 0.85,
-    });
-    let (_, _, tr_hi) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
-    assert_eq!(
-        tr_hi.raw_top_action, CALL_CHECK,
-        "High low_weight interpolation should favor low_action top choice (CALL_CHECK)"
-    );
-
-    base_req.active_bet_blend = Some(ActionTranslationBlend {
-        low_action: RAISE_THIRD_POT,
-        high_action: RAISE_HALF_POT,
-        low_weight: 0.10,
-    });
-    let (_, _, tr_lo) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
-    assert_eq!(
-        tr_lo.raw_top_action, FOLD,
-        "Low low_weight interpolation should shift top choice toward high_action policy (FOLD)"
-    );
-
-    base_req.active_bet_blend = Some(ActionTranslationBlend {
-        low_action: RAISE_THIRD_POT,
-        high_action: RAISE_HALF_POT,
-        low_weight: 0.99,
-    });
-    let (act_call, _, _) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
-    assert_eq!(
-        act_call, "call",
-        "0.99 low_weight should purify deterministically to call"
-    );
-
-    base_req.active_bet_blend = Some(ActionTranslationBlend {
-        low_action: RAISE_THIRD_POT,
-        high_action: RAISE_HALF_POT,
-        low_weight: 0.01,
-    });
-    let (act_fold, _, _) = decide_action_traced(&base_req, &strategy_map, &tracker, None);
-    assert_eq!(
-        act_fold, "fold",
-        "0.01 low_weight should purify deterministically to fold"
-    );
+    for (low_weight, expected_top, expected_act) in [
+        (0.85, Some(CALL_CHECK), None),
+        (0.10, Some(FOLD), None),
+        (0.99, None, Some("call")),
+        (0.01, None, Some("fold")),
+    ] {
+        req.active_bet_blend = Some(ActionTranslationBlend {
+            low_action: RAISE_THIRD_POT,
+            high_action: RAISE_HALF_POT,
+            low_weight,
+        });
+        let (act, _, tr) = decide_action_traced(&req, &strategy_map, &tracker, None);
+        if let Some(top) = expected_top {
+            assert_eq!(tr.raw_top_action, top, "low_weight {low_weight}");
+        }
+        if let Some(exp_act) = expected_act {
+            assert_eq!(act, exp_act, "low_weight {low_weight}");
+        }
+    }
 }
